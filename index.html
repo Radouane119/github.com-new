@@ -337,6 +337,23 @@ const livePrice = {
   intervalId: null,
 };
 
+let webhookUrl = "";
+
+function loadWebhook() { try { const s = localStorage.getItem("webhookUrl"); if (s) webhookUrl = s; } catch {} }
+function saveWebhook() { try { localStorage.setItem("webhookUrl", webhookUrl); } catch {} }
+
+async function sendWebhook(entry) {
+  if (!webhookUrl) return;
+  const msg = `${entry.direction === "BUY" ? "🟢" : "🔴"} *${entry.direction} ${entry.pair}*\nConfidence: ${entry.confidence}% | Risk: ${entry.risk}\nEntry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Stop: ${entry.stop != null ? formatPrice(entry.stop, entry.pair) : "-"} | Target: ${entry.target != null ? formatPrice(entry.target, entry.pair) : "-"}`;
+  try {
+    if (webhookUrl.includes("discord")) {
+      await fetch(webhookUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: msg.replace(/\*/g, "**") }) });
+    } else {
+      await fetch(webhookUrl + (webhookUrl.includes("?") ? "&" : "?") + "parse_mode=Markdown&text=" + encodeURIComponent(msg));
+    }
+  } catch {}
+}
+
 const allScanPairs = [
   "EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CAD","NZD/USD","USD/CHF",
   "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CHF",
@@ -761,8 +778,16 @@ function render() {
           <label class="select-wrap"><span>${names[state.quote] || state.quote}</span><select id="quote" ${nonFiat.has(state.base) ? "disabled" : ""}>${options(state.quote, state.base, true)}</select></label>
           <button class="icon-button" id="refresh" title="Refresh analysis">↻</button>
           <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
+          <button class="icon-button" id="settingsToggle" title="Settings">⚙</button>
         </div>
         <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}${!nonFiat.has(state.base) && tf !== "1d" ? " disabled" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
+        <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
+          <label style="font-size:.72rem;color:#8c98a5">Webhook URL (Discord or Telegram)</label>
+          <div style="display:flex;gap:6px">
+            <input type="url" id="webhookInput" value="${webhookUrl}" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+            <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
+          </div>
+        </div>
       </section>
 
       <section class="summary-grid">
@@ -1020,6 +1045,7 @@ function deleteHistoryEntry(id) {
 
 function notifySignal(entry) {
   playBeep();
+  sendWebhook(entry);
   if (!("Notification" in window) || Notification.permission === "denied") return;
   if (Notification.permission === "granted") {
     new Notification(`${entry.direction} ${entry.pair}`, {
@@ -1459,6 +1485,12 @@ function redrawChart() {
 }
 
 function setupEvents() {
+  root.addEventListener("input", (event) => {
+    if (event.target.id === "webhookInput") {
+      webhookUrl = event.target.value;
+      saveWebhook();
+    }
+  });
   root.addEventListener("change", (event) => {
     if (event.target.id === "base") {
       state.base = event.target.value;
@@ -1513,6 +1545,20 @@ function setupEvents() {
       if (nonFiat.has(state.base)) {
         state.timeframe = target.dataset.tf;
         load();
+      }
+      return;
+    }
+    if (target.id === "settingsToggle") {
+      const panel = document.getElementById("settingsPanel");
+      if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
+      return;
+    }
+    if (target.id === "testWebhook") {
+      const inp = document.getElementById("webhookInput");
+      if (inp) {
+        webhookUrl = inp.value;
+        saveWebhook();
+        sendWebhook({ direction: "TEST", pair: "Webhook", confidence: 100, risk: "Test", entry: null, stop: null, target: null });
       }
       return;
     }
@@ -1583,6 +1629,7 @@ function observeChartContainer() {
 
 loadHistory();
 loadPositions();
+loadWebhook();
 setupEvents();
 load();
 connectWS();
