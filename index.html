@@ -311,17 +311,24 @@ function makeOhlc(date, close, previousClose) {
 async function fetchFxRows(base, quote) {
   const end = new Date();
   const start = new Date();
-  start.setDate(start.getDate() - 430);
+  start.setDate(start.getDate() - 300);
   const fmt = (date) => date.toISOString().slice(0, 10);
-  const response = await fetch(`https://api.frankfurter.app/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`);
-  if (!response.ok) throw new Error("FX data is unavailable for this pair.");
-  const data = await response.json();
-  const dates = Object.keys(data.rates).sort();
-  return dates.map((date, index) => {
-    const close = data.rates[date][quote];
-    const previous = index > 0 ? data.rates[dates[index - 1]][quote] : close;
-    return makeOhlc(date, close, previous);
-  });
+  const url = `https://api.frankfurter.app/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error("FX data not available for this pair.");
+    const data = await response.json();
+    const dates = Object.keys(data.rates).sort();
+    return dates.map((date, index) => {
+      const close = data.rates[date][quote];
+      const previous = index > 0 ? data.rates[dates[index - 1]][quote] : close;
+      return makeOhlc(date, close, previous);
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function binanceSymbol(base, quote) {
@@ -355,10 +362,13 @@ async function fetchLivePrice(base, quote) {
       const d = await r.json();
       return { price: Number(d.lastPrice), change: Number(d.priceChangePercent) };
     }
-    const r = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${quote}`);
-    if (!r.ok) return null;
-    const d = await r.json();
-    return { price: d.rates[quote], change: null };
+    try {
+      const r = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${quote}`);
+      if (r.ok) { const d = await r.json(); return { price: d.rates[quote], change: null }; }
+    } catch {}
+    const r2 = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${base.toLowerCase()}.min.json`);
+    if (r2.ok) { const d2 = await r2.json(); const rate = d2[base.toLowerCase()]?.[quote.toLowerCase()]; if (rate) return { price: rate, change: null }; }
+    return null;
   } catch {
     return null;
   }
@@ -763,6 +773,7 @@ async function loadDataOnly() {
     if (state.rows.length < 80) throw new Error("Not enough history for strict signal mode.");
     state.status = "ready";
   } catch (error) {
+    console.error(`[${state.base}/${state.quote}] Data fetch failed:`, error?.message || error);
     state.rows = generateFallbackRows(state.base, state.quote);
     state.source = "Offline demo data because live market data could not be reached";
     state.status = "ready";
