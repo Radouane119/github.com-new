@@ -179,7 +179,7 @@ const names = {
   SGD: "Singapore Dollar",
 };
 
-const cryptoIds = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", XRP: "ripple", ADA: "cardano", DOGE: "dogecoin", DOT: "polkadot", LINK: "chainlink", AVAX: "avalanche-2" };
+const cryptoIds = { XAU: "pax-gold", BTC: "bitcoin", ETH: "ethereum", SOL: "solana", XRP: "ripple", ADA: "cardano", DOGE: "dogecoin", DOT: "polkadot", LINK: "chainlink", AVAX: "avalanche-2" };
 const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX"]);
 
 const state = {
@@ -339,42 +339,8 @@ async function fetchCryptoRows(cryptoId, quote) {
     .slice(-430);
 }
 
-async function fetchGoldRows() {
-  const response = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=2y&interval=1d");
-  if (!response.ok) throw new Error("Gold data is unavailable right now.");
-  const data = await response.json();
-  const result = data.chart.result[0];
-  if (!result) throw new Error("Gold data format unexpected.");
-  const timestamps = result.timestamp;
-  const quote = result.indicators.quote[0];
-  const rows = [];
-  for (let i = 0; i < timestamps.length; i++) {
-    const close = quote.close[i];
-    if (close == null) continue;
-    const date = new Date(timestamps[i] * 1000).toISOString().slice(0, 10);
-    rows.push({
-      date,
-      open: quote.open[i] ?? close,
-      high: quote.high[i] ?? close,
-      low: quote.low[i] ?? close,
-      close,
-    });
-  }
-  return rows.filter((row) => Number.isFinite(row.close)).slice(-430);
-}
-
 async function fetchLivePrice(base, quote) {
   try {
-    if (base === "XAU") {
-      const r = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=1d&interval=1d", { signal: AbortSignal.timeout(8000) });
-      if (r.ok) {
-        const d = await r.json();
-        const price = d.chart.result?.[0]?.meta?.regularMarketPrice;
-        if (price) return { price, change: null };
-      }
-      if (state.rows.length > 0) return { price: state.rows.at(-1).close, change: null };
-      return null;
-    }
     if (nonFiat.has(base)) {
       const id = cryptoIds[base];
       const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=${quote.toLowerCase()}&include_24hr_change=true`, { signal: AbortSignal.timeout(8000) });
@@ -783,10 +749,7 @@ async function loadDataOnly() {
   state.rows = [];
   state.source = "";
   try {
-    if (state.base === "XAU") {
-      state.rows = await fetchGoldRows();
-      state.source = "Yahoo Finance GC=F daily prices";
-    } else if (nonFiat.has(state.base)) {
+    if (nonFiat.has(state.base)) {
       state.rows = await fetchCryptoRows(cryptoIds[state.base], state.quote);
       state.source = `CoinGecko ${names[state.base]}/${state.quote} daily prices`;
     } else {
