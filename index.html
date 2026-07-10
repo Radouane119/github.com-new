@@ -839,7 +839,7 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span>${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
@@ -1165,6 +1165,13 @@ async function updateLivePrice() {
       multiScan.results[pair].price = result.price;
       if (result.change != null) multiScan.results[pair].change = result.change;
     }
+    const pEl = document.getElementById(`op-${pair.replace("/","-")}`);
+    if (pEl) pEl.textContent = formatPrice(result.price, pair);
+    const cEl = document.getElementById(`oc-${pair.replace("/","-")}`);
+    if (cEl && result.change != null) {
+      cEl.textContent = (result.change >= 0 ? "+" : "") + result.change.toFixed(1) + "%";
+      cEl.className = result.change >= 0 ? "chg-up" : "chg-down";
+    }
   }
   const el = document.getElementById("livePrice");
   if (el) renderLivePrice(el);
@@ -1197,20 +1204,12 @@ function connectWS() {
         const pair = crypto.find(p => binanceSymbol(p.split("/")[0], p.split("/")[1]) === sym);
         if (!pair) return;
         if (multiScan.results[pair]) { multiScan.results[pair].price = price; multiScan.results[pair].change = change; }
-        const cards = document.querySelectorAll(".ov-card");
-        for (const card of cards) {
-          const pe = card.querySelector(".ov-pair");
-          if (!pe || pe.textContent !== pair) continue;
-          const ch = card.querySelector(".ov-meta")?.children;
-          if (ch && ch.length >= 2) {
-            ch[1].textContent = formatPrice(price, pair);
-            if (ch[2]) {
-              ch[2].textContent = (change >= 0 ? "+" : "") + change.toFixed(1) + "%";
-              ch[2].className = change >= 0 ? "chg-up" : "chg-down";
-            }
-          }
-          break;
-        }
+        const pId = `op-${pair.replace("/","-")}`;
+        const cId = `oc-${pair.replace("/","-")}`;
+        const pEl = document.getElementById(pId);
+        if (pEl) pEl.textContent = formatPrice(price, pair);
+        const cEl = document.getElementById(cId);
+        if (cEl) { cEl.textContent = (change >= 0 ? "+" : "") + change.toFixed(1) + "%"; cEl.className = change >= 0 ? "chg-up" : "chg-down"; }
         document.querySelectorAll(".pos-row").forEach(row => {
           if (row.classList.contains("closed")) return;
           const pe = row.querySelector(".pos-pair");
@@ -1285,20 +1284,16 @@ async function updateOverviewPrices() {
         if (results[pair].change != null) multiScan.results[pair].change = results[pair].change;
       }
     }
-    document.querySelectorAll(".ov-card").forEach(card => {
-      const pair = card.querySelector(".ov-pair")?.textContent;
-      if (!pair) return;
+    for (const pair of Object.keys(results)) {
+      const pEl = document.getElementById(`op-${pair.replace("/","-")}`);
       const d = multiScan.results[pair];
-      if (!d || d.price == null) return;
-      const children = card.querySelector(".ov-meta")?.children;
-      if (children && children.length >= 2) {
-        children[1].textContent = formatPrice(d.price, pair);
-        if (children[2] && d.change != null) {
-          children[2].textContent = (d.change >= 0 ? "+" : "") + d.change.toFixed(1) + "%";
-          children[2].className = d.change >= 0 ? "chg-up" : "chg-down";
-        }
+      if (pEl && d && d.price != null) pEl.textContent = formatPrice(d.price, pair);
+      const cEl = document.getElementById(`oc-${pair.replace("/","-")}`);
+      if (cEl && d && d.change != null) {
+        cEl.textContent = (d.change >= 0 ? "+" : "") + d.change.toFixed(1) + "%";
+        cEl.className = d.change >= 0 ? "chg-up" : "chg-down";
       }
-    });
+    }
     document.querySelectorAll(".pos-row").forEach(row => {
       if (row.classList.contains("closed")) return;
       const pair = row.querySelector(".pos-pair")?.textContent;
