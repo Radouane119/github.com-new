@@ -1251,14 +1251,22 @@ async function updateOverviewPrices() {
       for (const d of data) { if (d) results[d.pair] = d; }
     }
     if (fxBases.length > 0) {
-      const fxData = await Promise.all(fxBases.map(async (base) => {
-        try {
-          const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}`);
-          if (!r.ok) return null;
-          const d = await r.json();
-          return { base, rates: d.rates };
-        } catch { return null; }
-      }));
+      const now = Date.now();
+      let fxData = null;
+      if (fxCache.rates && now - fxCache.time < 3600000) {
+        fxData = fxCache.rates;
+      } else {
+        const fresh = await Promise.all(fxBases.map(async (base) => {
+          try {
+            const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}`);
+            if (!r.ok) return null;
+            const d = await r.json();
+            return { base, rates: d.rates };
+          } catch { return null; }
+        }));
+        fxCache = { rates: fresh, time: now };
+        fxData = fresh;
+      }
       for (const fd of fxData) {
         if (!fd) continue;
         for (const pair of fx) {
