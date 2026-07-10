@@ -730,12 +730,10 @@ function updateScanUI() {
   }
 }
 
-function recordSignal() {
-  const task = state.rows.length > 0 ? analyze(state.rows) : null;
-  const pair = `${state.base}/${state.quote}`;
+function addSignalToHistory(pair, task) {
   const direction = task?.direction ?? "WAIT";
   const lastForPair = autoScan.history.find(e => e.pair === pair);
-  if (lastForPair && lastForPair.direction === direction) {
+  if (lastForPair && lastForPair.direction === direction && lastForPair.result === "pending") {
     Object.assign(lastForPair, {
       timestamp: new Date(),
       confidence: task?.confidence ?? 0,
@@ -747,16 +745,15 @@ function recordSignal() {
       buyScore: task?.buyScore ?? 0,
       sellScore: task?.sellScore ?? 0,
       reasons: task?.reasons ?? [],
-      result: "pending",
     });
     saveHistory();
-    return;
+    return false;
   }
   autoScan.history.unshift({
     id: Date.now(),
     timestamp: new Date(),
-    pair: `${state.base}/${state.quote}`,
-    direction: task?.direction ?? "WAIT",
+    pair,
+    direction,
     confidence: task?.confidence ?? 0,
     risk: task?.risk ?? "No trade",
     entry: task?.entry ?? null,
@@ -768,10 +765,16 @@ function recordSignal() {
     reasons: task?.reasons ?? [],
     result: "pending",
   });
-  if (autoScan.history.length > autoScan.maxEntries) {
-    autoScan.history.length = autoScan.maxEntries;
-  }
+  if (autoScan.history.length > autoScan.maxEntries) autoScan.history.length = autoScan.maxEntries;
   saveHistory();
+  return true;
+}
+
+function recordSignal() {
+  const task = state.rows.length > 0 ? analyze(state.rows) : null;
+  const dir = task?.direction ?? "WAIT";
+  const isNew = addSignalToHistory(`${state.base}/${state.quote}`, task);
+  if (isNew && dir !== "WAIT") notifySignal({ direction: dir, pair: `${state.base}/${state.quote}`, confidence: task.confidence, risk: task.risk, entry: task.entry });
 }
 
 function saveHistory() {
@@ -858,6 +861,8 @@ async function scanPairForOverview(pair) {
     render();
     const rows = nonFiat.has(base) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
     const analysis = rows.length >= 80 ? analyze(rows) : null;
+    const task = analysis ? { direction: analysis.direction, confidence: analysis.confidence, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
+    const isNew = addSignalToHistory(pair, task);
     let price = null;
     try { const lp = await fetchLivePrice(base, quote); if (lp) price = lp.price; } catch {}
     multiScan.results[pair] = {
@@ -865,6 +870,7 @@ async function scanPairForOverview(pair) {
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, entry: analysis?.entry,
       stop: analysis?.stop, target: analysis?.target,
     };
+    if (isNew && task && task.direction !== "WAIT") notifySignal({ direction: task.direction, pair, confidence: task.confidence, risk: task.risk, entry: task.entry });
   } catch {
     multiScan.results[pair] = { loading: false, direction: "WAIT", confidence: 0, price: null };
   }
@@ -943,8 +949,6 @@ function startAutoScan() {
   (async () => {
     await loadDataOnly();
     recordSignal();
-    const latest = autoScan.history[0];
-    if (latest && latest.direction !== "WAIT") notifySignal(latest);
     render();
     await verifySignals();
     await updateLivePrice();
@@ -954,8 +958,6 @@ function startAutoScan() {
   autoScan.intervalId = setInterval(async () => {
     await loadDataOnly();
     recordSignal();
-    const latest = autoScan.history[0];
-    if (latest && latest.direction !== "WAIT") notifySignal(latest);
     render();
     await verifySignals();
   }, 60000);
@@ -1017,8 +1019,6 @@ async function load() {
   render();
   await loadDataOnly();
   recordSignal();
-  const latest = autoScan.history[0];
-  if (latest && latest.direction !== "WAIT") notifySignal(latest);
   render();
   await verifySignals();
   if (autoScan.enabled) updateLivePrice();
