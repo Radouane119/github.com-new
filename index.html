@@ -69,6 +69,13 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .check.bad span{background:#3a1a1a;color:#f85149}
 /* signal history */
 .history-section{margin-top:8px}
+.stats-bar{display:flex;flex-wrap:wrap;gap:16px;padding:10px 16px;background:#0e151e;border:1px solid #1f2a36;border-radius:10px;margin-bottom:8px;font-size:.75rem}
+.stat-item{display:flex;gap:6px;align-items:baseline}
+.stat-item span{color:#5c6a7a}
+.stat-item strong{color:#f0f4f8;font-weight:600;font-variant-numeric:tabular-nums}
+.stat-item .stat-win{color:#3fb950}
+.stat-item .stat-loss{color:#f85149}
+.stat-item .stat-pending{color:#73808d}
 .history-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;background:#141c26;border:1px solid #1f2a36;border-radius:12px;padding:14px 20px;cursor:pointer;font-family:inherit;color:#e6edf3;transition:background .15s}
 .history-toggle:hover{background:#1a2533}
 .history-toggle-left{display:flex;align-items:center;gap:12px}
@@ -321,17 +328,23 @@ async function fetchFxRows(base, quote) {
   const start = new Date();
   start.setDate(start.getDate() - 300);
   const fmt = (date) => date.toISOString().slice(0, 10);
-  const url = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`;
+  const mid = new Date(start.getTime() + (end.getTime() - start.getTime()) / 2);
+  const url1 = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(mid)}?from=${base}&to=${quote}`;
+  const url2 = `https://api.frankfurter.dev/v1/${fmt(mid)}..${fmt(end)}?from=${base}&to=${quote}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error("FX data not available for this pair.");
-    const data = await response.json();
-    const dates = Object.keys(data.rates).sort();
+    const [res1, res2] = await Promise.all([
+      fetch(url1, { signal: controller.signal }),
+      fetch(url2, { signal: controller.signal }),
+    ]);
+    if (!res1.ok || !res2.ok) throw new Error("FX data not available for this pair.");
+    const [data1, data2] = await Promise.all([res1.json(), res2.json()]);
+    const allRates = { ...data1.rates, ...data2.rates };
+    const dates = Object.keys(allRates).sort();
     return dates.map((date, index) => {
-      const close = data.rates[date][quote];
-      const previous = index > 0 ? data.rates[dates[index - 1]][quote] : close;
+      const close = allRates[date][quote];
+      const previous = index > 0 ? allRates[dates[index - 1]][quote] : close;
       return makeOhlc(date, close, previous);
     });
   } finally {
@@ -580,6 +593,7 @@ function render() {
           : ""
       }
 
+      ${autoScan.history.length > 0 ? (() => { const s = calcStats(); return s.total > 0 ? `<div class="stats-bar"><div class="stat-item"><span>Signals</span><strong>${s.total}</strong></div><div class="stat-item"><span>Wins</span><strong class="stat-win">${s.wins}</strong></div><div class="stat-item"><span>Losses</span><strong class="stat-loss">${s.losses}</strong></div><div class="stat-item"><span>Win rate</span><strong style="color:${s.winRate >= 50 ? '#3fb950' : '#f85149'}">${s.winRate}%</strong></div>${s.streak > 0 ? `<div class="stat-item"><span>Streak</span><strong class="${s.streakType === 'win' ? 'stat-win' : 'stat-loss'}">${s.streak} ${s.streakType}${s.streak > 1 ? 's' : ''}</strong></div>` : ''}</div>` : "" })() : ""}
       <section class="history-section">
         <button class="history-toggle no-select" id="historyToggle">
           <div class="history-toggle-left">
@@ -697,16 +711,61 @@ function recordSignal() {
   if (autoScan.history.length > autoScan.maxEntries) {
     autoScan.history.length = autoScan.maxEntries;
   }
+  saveHistory();
+}
+
+function saveHistory() {
+  try { localStorage.setItem("signalHistory", JSON.stringify(autoScan.history)); } catch {}
+}
+
+function loadHistory() {
+  try {
+    const saved = localStorage.getItem("signalHistory");
+    if (saved) {
+      autoScan.history = JSON.parse(saved);
+      autoScan.history.forEach(e => e.timestamp = new Date(e.timestamp));
+    }
+  } catch {}
 }
 
 function clearSignalHistory() {
   autoScan.history = [];
+  saveHistory();
   render();
 }
 
 function deleteHistoryEntry(id) {
   autoScan.history = autoScan.history.filter(e => e.id !== id);
+  saveHistory();
   render();
+}
+
+function notifySignal(entry) {
+  if (!("Notification" in window) || Notification.permission === "denied") return;
+  if (Notification.permission === "granted") {
+    new Notification(`${entry.direction} ${entry.pair}`, {
+      body: `Confidence: ${entry.confidence}% | Risk: ${entry.risk}${entry.entry ? " | $" + formatPrice(entry.entry, entry.pair) : ""}`,
+      silent: true,
+    });
+  } else if (Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function calcStats() {
+  const signals = autoScan.history.filter(e => e.direction !== "WAIT" && e.result !== "pending");
+  const total = signals.length;
+  const wins = signals.filter(e => e.result === "win").length;
+  const losses = signals.filter(e => e.result === "loss").length;
+  const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
+  let streak = 0;
+  let streakType = "";
+  for (let i = 0; i < signals.length; i++) {
+    if (signals[i].result === "win") { if (streakType === "loss") break; streakType = "win"; streak++; }
+    else if (signals[i].result === "loss") { if (streakType === "win") break; streakType = "loss"; streak++; }
+    else break;
+  }
+  return { total, wins, losses, winRate, streak, streakType };
 }
 
 async function verifySignals() {
@@ -733,7 +792,7 @@ async function verifySignals() {
     }
     if (entry.result !== "pending") changed = true;
   }
-  if (changed) render();
+  if (changed) { saveHistory(); render(); }
 }
 
 async function updateLivePrice() {
@@ -765,6 +824,8 @@ function startAutoScan() {
   (async () => {
     await loadDataOnly();
     recordSignal();
+    const latest = autoScan.history[0];
+    if (latest && latest.direction !== "WAIT") notifySignal(latest);
     render();
     await verifySignals();
     await updateLivePrice();
@@ -774,6 +835,8 @@ function startAutoScan() {
   autoScan.intervalId = setInterval(async () => {
     await loadDataOnly();
     recordSignal();
+    const latest = autoScan.history[0];
+    if (latest && latest.direction !== "WAIT") notifySignal(latest);
     render();
     await verifySignals();
   }, 60000);
@@ -835,6 +898,8 @@ async function load() {
   render();
   await loadDataOnly();
   recordSignal();
+  const latest = autoScan.history[0];
+  if (latest && latest.direction !== "WAIT") notifySignal(latest);
   render();
   await verifySignals();
   if (autoScan.enabled) updateLivePrice();
@@ -978,6 +1043,7 @@ function observeChartContainer() {
   if (container) resizeObserver.observe(container);
 }
 
+loadHistory();
 setupEvents();
 load();
 </script>
