@@ -114,11 +114,13 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .history-actions{display:flex;gap:8px;padding:10px 16px;background:#0e151e;border-top:1px solid #1f2a36;justify-content:flex-end}
 .history-actions button{background:#1f2a36;border:none;color:#8c98a5;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.75rem;font-family:inherit;transition:background .15s}
 .history-actions button:hover{background:#2a3848;color:#e6edf3}
-/* auto-scan indicator */
-.auto-scan-status{display:flex;align-items:center;gap:6px;font-size:.72rem;color:#5c6a7a}
-.auto-scan-status .dot{width:7px;height:7px;border-radius:50%;background:#5c6a7a;transition:background .3s}
-.auto-scan-status .dot.active{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,.4)}
-.auto-scan-status .dot.active.pulse{animation:pulse 1.5s ease-in-out infinite}
+/* scan button */
+.scan-button{display:inline-flex;align-items:center;gap:6px;background:#1a2533;border:1px solid #1f2a36;color:#8c98a5;padding:6px 14px 6px 10px;border-radius:8px;cursor:pointer;font-size:.78rem;font-family:inherit;transition:all .2s;white-space:nowrap}
+.scan-button:hover{background:#1f2a36;color:#e6edf3}
+.scan-button .dot{width:7px;height:7px;border-radius:50%;background:#5c6a7a;transition:background .3s}
+.scan-button .dot.active{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,.4)}
+.scan-button .dot.active.pulse{animation:pulse 1.5s ease-in-out infinite}
+.scan-button.active{background:#0f2a1a;border-color:#2ea043;color:#3fb950}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .no-select{-webkit-user-select:none;user-select:none}
 @media(max-width:640px){
@@ -147,7 +149,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 }
 @media(max-width:480px){
   .pair-controls .icon-button{width:28px;height:28px;font-size:.85rem}
-  .auto-scan-status{font-size:.65rem}
+  .scan-button{font-size:.7rem;padding:4px 8px 4px 6px}
 }
 </style>
 </head>
@@ -194,6 +196,13 @@ const autoScan = {
   intervalId: null,
   history: [],
   maxEntries: 50,
+};
+
+const livePrice = {
+  price: null,
+  prevClose: null,
+  timestamp: null,
+  intervalId: null,
 };
 
 const root = document.getElementById("root");
@@ -344,6 +353,32 @@ async function fetchGoldRows() {
     })
     .filter((row) => Number.isFinite(row.close))
     .slice(-430);
+}
+
+async function fetchLivePrice(base, quote) {
+  try {
+    if (nonFiat.has(base) && base !== "XAU") {
+      const id = cryptoIds[base];
+      const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=${quote.toLowerCase()}&include_24hr_change=true`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      const d = await r.json();
+      if (!d[id]) return null;
+      return { price: d[id][quote.toLowerCase()], change: d[id][`${quote.toLowerCase()}_24h_change`] ?? null };
+    }
+    if (base !== "XAU") {
+      const r = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${quote}`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      const d = await r.json();
+      return { price: d.rates[quote], change: null };
+    }
+    if (state.rows.length > 0) {
+      const last = state.rows.at(-1);
+      return { price: last.close, change: null };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function seededRandom(seedText) {
@@ -501,8 +536,7 @@ function render() {
           <button class="icon-button" id="swap" title="Swap pair" ${nonFiat.has(state.base) ? "disabled" : ""}>⇄</button>
           <label class="select-wrap"><span>${names[state.quote] || state.quote}</span><select id="quote" ${nonFiat.has(state.base) ? "disabled" : ""}>${options(state.quote, state.base, true)}</select></label>
           <button class="icon-button" id="refresh" title="Refresh analysis">↻</button>
-          <button class="icon-button" id="autoScanToggle" title="Toggle auto-scan">⟳</button>
-          <span class="auto-scan-status"><span class="dot" id="scanDot"></span><span id="scanLabel">Off</span></span>
+          <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
         </div>
       </section>
 
@@ -511,6 +545,7 @@ function render() {
           <div class="panel-label">Current idea</div>
           <div class="signal-row"><span>${headlineSignal}</span><small>${pair}</small></div>
           <p>${signalCopy(analysis, state.status)}</p>
+          <span id="livePrice" style="display:${livePrice.price != null ? "inline" : "none"};font-size:.75rem;margin-top:6px"></span>
         </div>
         ${metric("Risk mode", analysis?.risk ?? "-")}
         ${metric("Confidence", analysis ? `${analysis.confidence}%` : "-")}
@@ -571,6 +606,8 @@ function render() {
   resizeObserver.disconnect();
   observeChartContainer();
   updateScanUI();
+  const lp = document.getElementById("livePrice");
+  if (lp && livePrice.price != null) renderLivePrice(lp);
 }
 
 function renderHistoryEntry(entry, idx) {
@@ -622,13 +659,16 @@ function level(label, value) {
 function updateScanUI() {
   const dot = document.getElementById("scanDot");
   const label = document.getElementById("scanLabel");
-  if (!dot || !label) return;
+  const btn = document.getElementById("autoScanToggle");
+  if (!dot || !label || !btn) return;
   if (autoScan.enabled) {
     dot.className = "dot active pulse";
     label.textContent = "Scanning";
+    btn.classList.add("active");
   } else {
     dot.className = "dot";
-    label.textContent = "Off";
+    label.textContent = "Auto-scan";
+    btn.classList.remove("active");
   }
 }
 
@@ -659,6 +699,28 @@ function clearSignalHistory() {
   render();
 }
 
+async function updateLivePrice() {
+  const result = await fetchLivePrice(state.base, state.quote);
+  if (result) {
+    const prev = livePrice.price;
+    livePrice.price = result.price;
+    livePrice.change = result.change != null ? result.change : (prev != null ? ((result.price - prev) / prev) * 100 : null);
+    livePrice.timestamp = new Date();
+  }
+  const el = document.getElementById("livePrice");
+  if (el) renderLivePrice(el);
+}
+
+function renderLivePrice(el) {
+  if (livePrice.price == null) { el.textContent = ""; el.style.display = "none"; return; }
+  el.style.display = "inline";
+  const change = livePrice.change;
+  const arrow = change == null ? "" : change >= 0 ? "▲" : "▼";
+  const color = change == null ? "#8c98a5" : change >= 0 ? "#3fb950" : "#f85149";
+  const pair = `${state.base}/${state.quote}`;
+  el.innerHTML = `${pair} <strong>${formatPrice(livePrice.price, pair)}</strong> <span style="color:${color};font-size:.7rem">${arrow}${change != null ? (change >= 0 ? "+" : "") + change.toFixed(2) + "%" : ""}</span>`;
+}
+
 function startAutoScan() {
   if (autoScan.intervalId) return;
   autoScan.enabled = true;
@@ -667,6 +729,9 @@ function startAutoScan() {
     await loadDataOnly();
     recordSignal();
     render();
+    await updateLivePrice();
+    if (livePrice.intervalId) clearInterval(livePrice.intervalId);
+    livePrice.intervalId = setInterval(updateLivePrice, 30000);
   })();
   autoScan.intervalId = setInterval(async () => {
     await loadDataOnly();
@@ -679,6 +744,13 @@ function stopAutoScan() {
   if (autoScan.intervalId) {
     clearInterval(autoScan.intervalId);
     autoScan.intervalId = null;
+  }
+  if (livePrice.intervalId) {
+    clearInterval(livePrice.intervalId);
+    livePrice.intervalId = null;
+    livePrice.price = null;
+    livePrice.change = null;
+    livePrice.timestamp = null;
   }
   autoScan.enabled = false;
   updateScanUI();
@@ -727,6 +799,7 @@ async function load() {
   await loadDataOnly();
   recordSignal();
   render();
+  if (autoScan.enabled) updateLivePrice();
 }
 
 function drawChart(canvas, rows, pair) {
