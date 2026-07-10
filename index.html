@@ -1120,12 +1120,17 @@ async function verifySignals() {
 }
 
 async function updateLivePrice() {
+  const pair = `${state.base}/${state.quote}`;
   const result = await fetchLivePrice(state.base, state.quote);
   if (result) {
     const prev = livePrice.price;
     livePrice.price = result.price;
     livePrice.change = result.change != null ? result.change : (prev != null ? ((result.price - prev) / prev) * 100 : null);
     livePrice.timestamp = new Date();
+    if (multiScan.results[pair]) {
+      multiScan.results[pair].price = result.price;
+      if (result.change != null) multiScan.results[pair].change = result.change;
+    }
   }
   const el = document.getElementById("livePrice");
   if (el) renderLivePrice(el);
@@ -1142,66 +1147,88 @@ function renderLivePrice(el) {
 }
 
 async function updateOverviewPrices() {
-  const batch = scanPairs.filter(p => nonFiat.has(p.split("/")[0]));
-  if (batch.length === 0) return;
+  const pairs = scanPairs;
+  if (pairs.length === 0) return;
   try {
-    const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
-    if (!r.ok) return;
-    const all = await r.json();
-    const map = {};
-    for (const t of all) map[t.symbol] = { price: Number(t.lastPrice), change: Number(t.priceChangePercent) };
-    for (const pair of batch) {
-      const [base, quote] = pair.split("/");
-      const sym = binanceSymbol(base, quote);
-      const d = map[sym];
-      if (d && multiScan.results[pair]) {
-        multiScan.results[pair].price = d.price;
-        multiScan.results[pair].change = d.change;
+    const crypto = pairs.filter(p => nonFiat.has(p.split("/")[0]));
+    const fx = pairs.filter(p => !nonFiat.has(p.split("/")[0]));
+    const fxBases = [...new Set(fx.map(p => p.split("/")[0]))];
+    const results = {};
+    if (crypto.length > 0) {
+      const data = await Promise.all(crypto.map(async (pair) => {
+        const [base, quote] = pair.split("/");
+        try {
+          const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${binanceSymbol(base, quote)}`);
+          if (!r.ok) return null;
+          const d = await r.json();
+          return { pair, price: Number(d.lastPrice), change: Number(d.priceChangePercent) };
+        } catch { return null; }
+      }));
+      for (const d of data) { if (d) results[d.pair] = d; }
+    }
+    if (fxBases.length > 0) {
+      const fxData = await Promise.all(fxBases.map(async (base) => {
+        try {
+          const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}`);
+          if (!r.ok) return null;
+          const d = await r.json();
+          return { base, rates: d.rates };
+        } catch { return null; }
+      }));
+      for (const fd of fxData) {
+        if (!fd) continue;
+        for (const pair of fx) {
+          const [b, q] = pair.split("/");
+          if (b !== fd.base) continue;
+          const rate = fd.rates[q];
+          if (rate && multiScan.results[pair]) {
+            results[pair] = { pair, price: rate, change: null };
+          }
+        }
+      }
+    }
+    for (const pair of Object.keys(results)) {
+      if (multiScan.results[pair]) {
+        multiScan.results[pair].price = results[pair].price;
+        if (results[pair].change != null) multiScan.results[pair].change = results[pair].change;
       }
     }
     document.querySelectorAll(".ov-card").forEach(card => {
       const pairEl = card.querySelector(".ov-pair");
       if (!pairEl) return;
       const pair = pairEl.textContent;
-      const r = multiScan.results[pair];
-      if (!r || r.price == null) return;
+      const d = multiScan.results[pair];
+      if (!d || d.price == null) return;
       const meta = card.querySelector(".ov-meta");
       if (!meta) return;
-      const spans = meta.querySelectorAll("span");
-      if (spans.length >= 2) {
-        spans[1].textContent = formatPrice(r.price, pair);
-        if (spans[2] && r.change != null) {
-          spans[2].className = r.change >= 0 ? "chg-up" : "chg-down";
-          spans[2].textContent = (r.change >= 0 ? "+" : "") + r.change.toFixed(1) + "%";
+      const children = meta.children;
+      if (children.length >= 2) {
+        children[1].textContent = formatPrice(d.price, pair);
+        if (children[2] && d.change != null) {
+          children[2].className = d.change >= 0 ? "chg-up" : "chg-down";
+          children[2].textContent = (d.change >= 0 ? "+" : "") + d.change.toFixed(1) + "%";
         }
       }
     });
-    const posRows = document.querySelectorAll(".pos-row:not(.closed)");
-    posRows.forEach(row => {
+    document.querySelectorAll(".pos-row:not(.closed)").forEach(row => {
       const pairEl = row.querySelector(".pos-pair");
       if (!pairEl) return;
       const pair = pairEl.textContent;
-      const r = multiScan.results[pair];
-      if (!r || r.price == null) return;
-      const metas = row.querySelectorAll(".pos-meta span");
-      if (metas.length >= 2) metas[1].textContent = "Cur " + formatPrice(r.price, pair);
-      const entrySpan = metas.length >= 1 ? metas[0] : null;
-      if (entrySpan) {
-        const entry = positions.find(p => !p.closedAt && p.pair === pair)?.entry;
-        if (entry) {
-          const pnl = pair.includes("XAU") || nonFiat.has(pair.split("/")[0]) ? (r.price - entry) / entry * 100 : (r.price - entry) / entry * 100;
-          const dir = positions.find(p => !p.closedAt && p.pair === pair)?.direction;
-          const pnlVal = dir === "BUY" ? r.price - entry : entry - r.price;
-          const pnlPct = entry ? (pnlVal / entry) * 100 : 0;
-          const pnlEl = row.querySelector(".pos-profit, .pos-loss");
-          if (pnlEl) {
-            pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss";
-            pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
-          }
-        }
+      const d = multiScan.results[pair];
+      if (!d || d.price == null) return;
+      const spans = row.querySelectorAll(".pos-meta span");
+      if (spans.length >= 2) spans[1].textContent = "Cur " + formatPrice(d.price, pair);
+      const pos = positions.find(p => !p.closedAt && p.pair === pair);
+      if (!pos) return;
+      const pnlVal = pos.direction === "BUY" ? d.price - pos.entry : pos.entry - d.price;
+      const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+      const pnlEl = row.querySelector(".pos-profit, .pos-loss");
+      if (pnlEl) {
+        pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss";
+        pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
       }
     });
-  } catch {}
+  } catch (e) { console.warn("livePrice update error:", e); }
 }
 
 function startAutoScan() {
@@ -1495,6 +1522,7 @@ loadPositions();
 setupEvents();
 load();
 setInterval(updateOverviewPrices, 10000);
+setInterval(updateLivePrice, 15000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
