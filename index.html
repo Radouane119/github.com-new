@@ -208,6 +208,30 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
   .pair-controls .icon-button{width:28px;height:28px;font-size:.85rem}
   .scan-button{font-size:.7rem;padding:4px 8px 4px 6px}
 }
+.positions-section{border:1px solid #1f2a36;border-radius:10px;padding:12px;margin-bottom:10px}
+.positions-section.closed{opacity:.7}
+.positions-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.positions-head h4{font-size:.82rem;font-weight:600}
+.positions-head span{background:#1f2a36;padding:1px 8px;border-radius:8px;font-size:.72rem;color:#8c98a5}
+.pos-row{border:1px solid #1f2a36;border-radius:8px;padding:8px 10px;margin-bottom:6px;background:#0e151e}
+.pos-buy{border-left:3px solid #3fb950}
+.pos-sell{border-left:3px solid #f85149}
+.pos-top{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.pos-pair{font-size:.72rem;font-weight:700;text-transform:uppercase}
+.pos-dir{font-size:.65rem;padding:1px 6px;border-radius:4px;font-weight:700}
+.pos-buy .pos-dir{color:#3fb950;background:rgba(63,185,80,.12)}
+.pos-sell .pos-dir{color:#f85149;background:rgba(248,81,73,.12)}
+.pos-profit{color:#3fb950}
+.pos-loss{color:#f85149}
+.pos-btn{background:#1f2a36;border:none;color:#8c98a5;cursor:pointer;font-size:.65rem;padding:2px 8px;border-radius:4px}
+.pos-btn:hover{background:#2a384a;color:#e6edf3}
+.pos-meta{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:.65rem;color:#8c98a5}
+.pos-meta span{white-space:nowrap}
+.h-trade-btn{background:transparent;border:1px solid #2a384a;color:#73808d;cursor:pointer;font-size:.6rem;padding:0 5px;border-radius:3px;margin-left:2px;vertical-align:middle}
+.h-trade-btn[disabled]{opacity:.3;cursor:default}
+.h-trade-btn:hover:not([disabled]){border-color:#8c98a5;color:#e6edf3}
+.hd-trade-btn{display:block;margin:8px auto 0;background:#1f2a36;border:none;color:#8dd7ff;cursor:pointer;font-size:.72rem;padding:6px 14px;border-radius:6px}
+.hd-trade-btn:hover{background:#2a384a;color:#e6edf3}
 </style>
 </head>
 <body>
@@ -253,6 +277,52 @@ const autoScan = {
   history: [],
   maxEntries: 50,
 };
+
+let positions = [];
+
+function loadPositions() {
+  try {
+    const saved = localStorage.getItem("positions");
+    if (saved) {
+      positions = JSON.parse(saved);
+      positions.forEach(p => p.openedAt = new Date(p.openedAt));
+    }
+  } catch {}
+}
+
+function savePositions() {
+  try { localStorage.setItem("positions", JSON.stringify(positions)); } catch {}
+}
+
+function openTrade(pair, direction, entry, stop, target) {
+  positions.push({ id: Date.now(), pair, direction, entry, stop, target, openedAt: new Date(), closedAt: null, exitPrice: null, pnl: null, pnlPct: null });
+  savePositions();
+  render();
+}
+
+function closeTrade(id, exitPrice) {
+  const pos = positions.find(p => p.id === id);
+  if (!pos) return;
+  pos.closedAt = new Date();
+  pos.exitPrice = exitPrice;
+  const diff = exitPrice - pos.entry;
+  pos.pnl = pos.direction === "BUY" ? diff : -diff;
+  pos.pnlPct = pos.entry ? (pos.pnl / pos.entry) * 100 : 0;
+  savePositions();
+  render();
+}
+
+function deletePosition(id) {
+  positions = positions.filter(p => p.id !== id);
+  savePositions();
+  render();
+}
+
+function getPosPrice(pos) {
+  const r = multiScan.results[pos.pair];
+  if (r && r.price != null) return r.price;
+  return pos.entry;
+}
 
 const livePrice = {
   price: null,
@@ -742,6 +812,10 @@ function render() {
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
 
+      ${(() => { const open = positions.filter(p => !p.closedAt); if (open.length === 0) return ""; return `<section class="positions-section"><div class="positions-head"><h4>Open Positions</h4><span>${open.length}</span></div>${open.map(p => { const cp = getPosPrice(p); const pnl = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (pnl / p.entry) * 100 : 0; const pnlCls = pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'}"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span><button class="pos-btn" data-close-pos="${p.id}">Close</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Cur ${formatPrice(cp, p.pair)}</span><span>Stop ${formatPrice(p.stop, p.pair)}</span><span>Target ${formatPrice(p.target, p.pair)}</span></div></div>`; }).join("")}</section>`; })()}
+
+      ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div></div>`; }).join("")}</section>`; })()}
+
       ${(() => { const perfData = (() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss").reverse(); if (sigs.length < 2) return null; let cum = 0; return sigs.map(s => { cum += s.result === "win" ? 1 : -1; return { date: s.timestamp, value: cum }; }); })(); if (!perfData) return ""; const vals = perfData.map(p => p.value); const mx = Math.max(...vals); const mn = Math.min(...vals); const rng = mx - mn || 1; const w = 240; const h = 48; const xSt = w / (vals.length - 1); const pts = vals.map((v, i) => `${i * xSt},${h - ((v - mn) / rng) * (h - 6) - 3}`).join(" "); const color = vals[vals.length - 1] >= vals[0] ? "#3fb950" : "#f85149"; return `<section class="perf-section"><div class="perf-head"><h4>Performance</h4><span>${vals[vals.length - 1] >= 0 ? "+" : ""}${vals[vals.length - 1]} pts</span></div><svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg></section>`; })()}
 
       ${autoScan.history.length > 0 ? (() => { const s = calcStats(); return s.total > 0 ? `<div class="stats-bar"><div class="stat-item"><span>Signals</span><strong>${s.total}</strong></div><div class="stat-item"><span>Wins</span><strong class="stat-win">${s.wins}</strong></div><div class="stat-item"><span>Losses</span><strong class="stat-loss">${s.losses}</strong></div><div class="stat-item"><span>Win rate</span><strong style="color:${s.winRate >= 50 ? '#3fb950' : '#f85149'}">${s.winRate}%</strong></div>${s.streak > 0 ? `<div class="stat-item"><span>Streak</span><strong class="${s.streakType === 'win' ? 'stat-win' : 'stat-loss'}">${s.streak} ${s.streakType}${s.streak > 1 ? 's' : ''}</strong></div>` : ''}</div>` : "" })() : ""}
@@ -788,7 +862,7 @@ function renderHistoryEntry(entry, idx) {
       <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${entry.risk}</span>
       <span class="h-vol">${entry.volatilityPct.toFixed(2)}%</span>
       <span class="h-result ${entry.result}">${resultLabel}</span>
-      <span><button class="h-delete" data-del="${entry.id}" title="Delete entry">✕</button><span class="h-expand">▼</span></span>
+      <span><button class="h-delete" data-del="${entry.id}" title="Delete entry">✕</button><button class="h-trade-btn" data-trade="${entry.id}" title="Open trade" ${entry.direction === "WAIT" ? "disabled" : ""}>→</button><span class="h-expand">▼</span></span>
     </div>
     <div class="history-detail" id="hd-${idx}">
       <div class="history-detail-grid">
@@ -805,6 +879,7 @@ function renderHistoryEntry(entry, idx) {
         <div class="hd-item"><span>Sell score</span><span>${entry.sellScore}/7</span></div>
       </div>
       ${entry.reasons.length > 0 ? `<div class="history-detail-reasons"><p>Reasoning</p>${entry.reasons.map(r => `<div class="hd-reason"><span class="hd-r-icon ${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓' : '!'}</span>${r.text}</div>`).join("")}</div>` : ""}
+      ${entry.direction !== "WAIT" ? `<button class="hd-trade-btn" data-trade="${entry.id}">Open Trade →</button>` : ""}
     </div>
   </div>`;
 }
@@ -1281,6 +1356,23 @@ function setupEvents() {
       removeAlert(Number(target.dataset.rmAlert));
       return;
     }
+    if (target.dataset.trade) {
+      const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
+      if (entry && entry.direction !== "WAIT") {
+        openTrade(entry.pair, entry.direction, entry.entry, entry.stop, entry.target);
+      }
+      return;
+    }
+    if (target.dataset.closePos) {
+      const id = Number(target.dataset.closePos);
+      const exitPrice = prompt("Enter exit price:");
+      if (exitPrice && !isNaN(exitPrice)) closeTrade(id, Number(exitPrice));
+      return;
+    }
+    if (target.dataset.delPos) {
+      deletePosition(Number(target.dataset.delPos));
+      return;
+    }
     if (target.id === "swap") {
       if (nonFiat.has(state.base)) return;
       [state.base, state.quote] = [state.quote, state.base];
@@ -1330,6 +1422,7 @@ function observeChartContainer() {
 }
 
 loadHistory();
+loadPositions();
 setupEvents();
 load();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
