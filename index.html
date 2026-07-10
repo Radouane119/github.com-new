@@ -78,7 +78,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .history-toggle.open .arrow{transform:rotate(180deg)}
 .history-body{border:1px solid #1f2a36;border-top:none;border-radius:0 0 12px 12px;overflow:hidden;display:none}
 .history-body.open{display:block}
-.history-header{display:grid;grid-template-columns:100px 80px 70px 60px 70px 50px 1fr;gap:4px;padding:10px 16px;background:#0e151e;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#5c6a7a;border-bottom:1px solid #1f2a36}
+.history-header{display:grid;grid-template-columns:100px 80px 70px 60px 70px 50px 55px 1fr;gap:4px;padding:10px 16px;background:#0e151e;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#5c6a7a;border-bottom:1px solid #1f2a36}
 .history-scroll{max-height:500px;overflow-y:auto}
 .history-scroll::-webkit-scrollbar{width:5px}
 .history-scroll::-webkit-scrollbar-track{background:transparent}
@@ -86,7 +86,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .history-entry{border-bottom:1px solid #0e151e;cursor:pointer;transition:background .1s}
 .history-entry:hover{background:#0e151e}
 .history-entry:last-child{border-bottom:none}
-.history-summary{display:grid;grid-template-columns:100px 80px 70px 60px 70px 50px 1fr;gap:4px;padding:10px 16px;align-items:center;font-size:.8rem}
+.history-summary{display:grid;grid-template-columns:100px 80px 70px 60px 70px 50px 55px 1fr;gap:4px;padding:10px 16px;align-items:center;font-size:.8rem}
 .history-summary .h-time{color:#5c6a7a;font-size:.75rem;font-variant-numeric:tabular-nums}
 .history-summary .h-pair{color:#8c98a5;font-weight:500;font-size:.75rem}
 .history-summary .h-dir{font-weight:700;font-size:.78rem}
@@ -98,6 +98,12 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .history-summary .h-risk.valid{background:#1a3a2a;color:#3fb950}
 .history-summary .h-vol{color:#8c98a5;font-variant-numeric:tabular-nums;font-size:.75rem}
 .history-summary .h-expand{color:#5c6a7a;font-size:.65rem;text-align:right}
+.history-summary .h-result{font-size:.68rem;font-weight:600;text-align:center}
+.history-summary .h-result.win{color:#3fb950}
+.history-summary .h-result.loss{color:#f85149}
+.history-summary .h-result.pending{color:#73808d}
+.history-summary .h-delete{background:none;border:none;color:#5c6a7a;cursor:pointer;font-size:.8rem;padding:2px 6px;border-radius:4px;font-family:inherit;line-height:1;transition:color .15s,background .15s}
+.history-summary .h-delete:hover{color:#f85149;background:#3a1a1a}
 .history-detail{padding:14px 16px 16px;background:#0b1117;display:none;border-top:1px solid #1f2a36}
 .history-detail.open{display:block}
 .history-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;margin-bottom:12px}
@@ -139,10 +145,12 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
   .history-summary .h-time{grid-column:1}
   .history-summary .h-pair{grid-column:1}
   .history-summary .h-dir{grid-row:1;grid-column:2;text-align:right}
+  .history-summary .h-result{grid-row:1;grid-column:2;text-align:right;position:relative;top:-14px;font-size:.6rem}
   .history-summary .h-conf{grid-row:2;grid-column:2;text-align:right}
   .history-summary .h-risk{grid-row:3;grid-column:2;text-align:right}
   .history-summary .h-vol{display:none}
   .history-summary .h-expand{grid-column:1;text-align:left;color:#5c6a7a}
+  .history-summary .h-delete{position:relative;top:-8px;font-size:.7rem}
   .history-detail-grid{grid-template-columns:1fr}
   .chart-panel{padding:10px}
   #priceChart{height:280px}
@@ -582,7 +590,7 @@ function render() {
         </button>
         <div class="history-body" id="historyBody">
           <div class="history-header">
-            <span>Time</span><span>Pair</span><span>Signal</span><span>Conf.</span><span>Risk</span><span>Vol.</span><span></span>
+            <span>Time</span><span>Pair</span><span>Signal</span><span>Conf.</span><span>Risk</span><span>Vol.</span><span>Result</span><span></span>
           </div>
           <div class="history-scroll" id="historyScroll">
             ${autoScan.history.length === 0 ? '<div class="history-empty">No signals yet. Enable auto-scan or refresh to generate signals.</div>' : ""}
@@ -605,6 +613,7 @@ function render() {
 
 function renderHistoryEntry(entry, idx) {
   const dirClass = entry.direction.toLowerCase();
+  const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : "○";
   return `<div class="history-entry" data-idx="${idx}">
     <div class="history-summary">
       <span class="h-time">${entry.timestamp.toLocaleTimeString()}</span>
@@ -613,7 +622,8 @@ function renderHistoryEntry(entry, idx) {
       <span class="h-conf">${entry.confidence}%</span>
       <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${entry.risk}</span>
       <span class="h-vol">${entry.volatilityPct.toFixed(2)}%</span>
-      <span class="h-expand">▼</span>
+      <span class="h-result ${entry.result}">${resultLabel}</span>
+      <span><button class="h-delete" data-del="${entry.id}" title="Delete entry">✕</button><span class="h-expand">▼</span></span>
     </div>
     <div class="history-detail" id="hd-${idx}">
       <div class="history-detail-grid">
@@ -625,6 +635,7 @@ function renderHistoryEntry(entry, idx) {
         <div class="hd-item"><span>Confidence</span><span>${entry.confidence}%</span></div>
         <div class="hd-item"><span>Risk mode</span><span>${entry.risk}</span></div>
         <div class="hd-item"><span>Volatility</span><span>${entry.volatilityPct.toFixed(2)}%</span></div>
+        <div class="hd-item"><span>Result</span><span style="color:${entry.result === 'win' ? '#3fb950' : entry.result === 'loss' ? '#f85149' : '#73808d'}">${entry.result.charAt(0).toUpperCase() + entry.result.slice(1)}</span></div>
         <div class="hd-item"><span>Buy score</span><span>${entry.buyScore}/7</span></div>
         <div class="hd-item"><span>Sell score</span><span>${entry.sellScore}/7</span></div>
       </div>
@@ -681,6 +692,7 @@ function recordSignal() {
     buyScore: task?.buyScore ?? 0,
     sellScore: task?.sellScore ?? 0,
     reasons: task?.reasons ?? [],
+    result: "pending",
   });
   if (autoScan.history.length > autoScan.maxEntries) {
     autoScan.history.length = autoScan.maxEntries;
@@ -690,6 +702,38 @@ function recordSignal() {
 function clearSignalHistory() {
   autoScan.history = [];
   render();
+}
+
+function deleteHistoryEntry(id) {
+  autoScan.history = autoScan.history.filter(e => e.id !== id);
+  render();
+}
+
+async function verifySignals() {
+  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.entry != null);
+  if (pending.length === 0) return;
+  const pairs = [...new Set(pending.map(e => e.pair))];
+  const priceCache = {};
+  for (const pair of pairs) {
+    const [base, quote] = pair.split("/");
+    try {
+      const data = await fetchLivePrice(base, quote);
+      if (data) priceCache[pair] = data.price;
+    } catch {}
+  }
+  let changed = false;
+  for (const entry of pending) {
+    const current = priceCache[entry.pair];
+    if (current == null) continue;
+    const change = ((current - entry.entry) / entry.entry) * 100;
+    if (entry.direction === "BUY") {
+      entry.result = change > 0.3 ? "win" : change < -0.3 ? "loss" : "pending";
+    } else if (entry.direction === "SELL") {
+      entry.result = change < -0.3 ? "win" : change > 0.3 ? "loss" : "pending";
+    }
+    if (entry.result !== "pending") changed = true;
+  }
+  if (changed) render();
 }
 
 async function updateLivePrice() {
@@ -722,6 +766,7 @@ function startAutoScan() {
     await loadDataOnly();
     recordSignal();
     render();
+    await verifySignals();
     await updateLivePrice();
     if (livePrice.intervalId) clearInterval(livePrice.intervalId);
     livePrice.intervalId = setInterval(updateLivePrice, 30000);
@@ -730,6 +775,7 @@ function startAutoScan() {
     await loadDataOnly();
     recordSignal();
     render();
+    await verifySignals();
   }, 60000);
 }
 
@@ -790,6 +836,7 @@ async function load() {
   await loadDataOnly();
   recordSignal();
   render();
+  await verifySignals();
   if (autoScan.enabled) updateLivePrice();
 }
 
@@ -889,6 +936,10 @@ function setupEvents() {
       return;
     }
 
+    if (target.dataset.del) {
+      deleteHistoryEntry(Number(target.dataset.del));
+      return;
+    }
     if (target.id === "swap") {
       if (nonFiat.has(state.base)) return;
       [state.base, state.quote] = [state.quote, state.base];
