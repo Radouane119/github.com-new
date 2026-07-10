@@ -1146,6 +1146,56 @@ function renderLivePrice(el) {
   el.innerHTML = `${pair} <strong>${formatPrice(livePrice.price, pair)}</strong> <span style="color:${color};font-size:.7rem">${arrow}${change != null ? (change >= 0 ? "+" : "") + change.toFixed(2) + "%" : ""}</span>`;
 }
 
+let ws = null;
+function connectWS() {
+  const crypto = scanPairs.filter(p => nonFiat.has(p.split("/")[0]));
+  if (crypto.length === 0) return;
+  const streams = crypto.map(p => { const [b, q] = p.split("/"); return `${binanceSymbol(b, q).toLowerCase()}@ticker`; }).join("/");
+  try {
+    ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (!msg.data) return;
+        const sym = msg.data.s;
+        const price = Number(msg.data.c);
+        const change = Number(msg.data.P);
+        const pair = crypto.find(p => binanceSymbol(p.split("/")[0], p.split("/")[1]) === sym);
+        if (!pair) return;
+        if (multiScan.results[pair]) { multiScan.results[pair].price = price; multiScan.results[pair].change = change; }
+        const cards = document.querySelectorAll(".ov-card");
+        for (const card of cards) {
+          const pe = card.querySelector(".ov-pair");
+          if (!pe || pe.textContent !== pair) continue;
+          const ch = card.querySelector(".ov-meta")?.children;
+          if (ch && ch.length >= 2) {
+            ch[1].textContent = formatPrice(price, pair);
+            if (ch[2]) {
+              ch[2].textContent = (change >= 0 ? "+" : "") + change.toFixed(1) + "%";
+              ch[2].className = change >= 0 ? "chg-up" : "chg-down";
+            }
+          }
+          break;
+        }
+        document.querySelectorAll(".pos-row").forEach(row => {
+          if (row.classList.contains("closed")) return;
+          const pe = row.querySelector(".pos-pair");
+          if (!pe || pe.textContent !== pair) return;
+          const spans = row.querySelectorAll(".pos-meta span");
+          if (spans.length >= 2) spans[1].textContent = "Cur " + formatPrice(price, pair);
+          const pos = positions.find(p => !p.closedAt && p.pair === pair);
+          if (!pos) return;
+          const pnlVal = pos.direction === "BUY" ? price - pos.entry : pos.entry - price;
+          const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+          const pnlEl = row.querySelector(".pos-profit, .pos-loss");
+          if (pnlEl) { pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%"; pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss"; }
+        });
+      } catch {}
+    };
+    ws.onclose = () => { ws = null; setTimeout(connectWS, 5000); };
+  } catch {}
+}
+
 async function updateOverviewPrices() {
   const pairs = scanPairs;
   if (pairs.length === 0) return;
@@ -1194,26 +1244,23 @@ async function updateOverviewPrices() {
       }
     }
     document.querySelectorAll(".ov-card").forEach(card => {
-      const pairEl = card.querySelector(".ov-pair");
-      if (!pairEl) return;
-      const pair = pairEl.textContent;
+      const pair = card.querySelector(".ov-pair")?.textContent;
+      if (!pair) return;
       const d = multiScan.results[pair];
       if (!d || d.price == null) return;
-      const meta = card.querySelector(".ov-meta");
-      if (!meta) return;
-      const children = meta.children;
-      if (children.length >= 2) {
+      const children = card.querySelector(".ov-meta")?.children;
+      if (children && children.length >= 2) {
         children[1].textContent = formatPrice(d.price, pair);
         if (children[2] && d.change != null) {
-          children[2].className = d.change >= 0 ? "chg-up" : "chg-down";
           children[2].textContent = (d.change >= 0 ? "+" : "") + d.change.toFixed(1) + "%";
+          children[2].className = d.change >= 0 ? "chg-up" : "chg-down";
         }
       }
     });
-    document.querySelectorAll(".pos-row:not(.closed)").forEach(row => {
-      const pairEl = row.querySelector(".pos-pair");
-      if (!pairEl) return;
-      const pair = pairEl.textContent;
+    document.querySelectorAll(".pos-row").forEach(row => {
+      if (row.classList.contains("closed")) return;
+      const pair = row.querySelector(".pos-pair")?.textContent;
+      if (!pair) return;
       const d = multiScan.results[pair];
       if (!d || d.price == null) return;
       const spans = row.querySelectorAll(".pos-meta span");
@@ -1224,8 +1271,8 @@ async function updateOverviewPrices() {
       const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
       const pnlEl = row.querySelector(".pos-profit, .pos-loss");
       if (pnlEl) {
-        pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss";
         pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
+        pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss";
       }
     });
   } catch (e) { console.warn("livePrice update error:", e); }
@@ -1521,6 +1568,7 @@ loadHistory();
 loadPositions();
 setupEvents();
 load();
+connectWS();
 setInterval(updateOverviewPrices, 10000);
 setInterval(updateLivePrice, 15000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
