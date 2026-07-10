@@ -313,7 +313,7 @@ async function fetchFxRows(base, quote) {
   const start = new Date();
   start.setDate(start.getDate() - 300);
   const fmt = (date) => date.toISOString().slice(0, 10);
-  const url = `https://api.frankfurter.app/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`;
+  const url = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
@@ -363,7 +363,7 @@ async function fetchLivePrice(base, quote) {
       return { price: Number(d.lastPrice), change: Number(d.priceChangePercent) };
     }
     try {
-      const r = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${quote}`);
+      const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`);
       if (r.ok) { const d = await r.json(); return { price: d.rates[quote], change: null }; }
     } catch {}
     const r2 = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${base.toLowerCase()}.min.json`);
@@ -768,7 +768,7 @@ async function loadDataOnly() {
       state.source = `Binance ${names[state.base]}/${state.quote} daily prices`;
     } else {
       state.rows = await fetchFxRows(state.base, state.quote);
-      state.source = "Frankfurter daily ECB reference rates";
+      state.source = "Frankfurter.dev daily ECB reference rates";
     }
     if (state.rows.length < 80) throw new Error("Not enough history for strict signal mode.");
     state.status = "ready";
