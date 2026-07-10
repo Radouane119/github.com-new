@@ -136,6 +136,24 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .scan-button.active{background:#0f2a1a;border-color:#2ea043;color:#3fb950}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .no-select{-webkit-user-select:none;user-select:none}
+/* overview grid */
+.overview-section{margin-bottom:16px}
+.overview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.overview-head h3{font-size:1rem;font-weight:600}
+.overview-head .ov-progress{font-size:.72rem;color:#73808d}
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:8px}
+.ov-card{background:#141c26;border:1px solid #1f2a36;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px;border-left:3px solid #73808d;transition:opacity .3s}
+.ov-card.buy{border-left-color:#2ea043}
+.ov-card.sell{border-left-color:#da3633}
+.ov-card.wait{border-left-color:#b58cff}
+.ov-card.loading{opacity:.5}
+.ov-pair{font-size:.65rem;text-transform:uppercase;letter-spacing:.04em;color:#73808d}
+.ov-signal{font-size:.85rem;font-weight:700}
+.ov-card.buy .ov-signal{color:#3fb950}
+.ov-card.sell .ov-signal{color:#f85149}
+.ov-card.wait .ov-signal{color:#b58cff}
+.ov-meta{font-size:.68rem;color:#8c98a5;display:flex;justify-content:space-between}
+@media(max-width:640px){.overview-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}}
 @media(max-width:640px){
   #root{padding:12px 12px 32px}
   .topbar h1{font-size:1.15rem}
@@ -217,6 +235,19 @@ const livePrice = {
   prevClose: null,
   timestamp: null,
   intervalId: null,
+};
+
+const scanPairs = [
+  "EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CAD","NZD/USD","USD/CHF",
+  "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CHF",
+  "XAU/USD",
+  "BTC/USD","ETH/USD","SOL/USD","XRP/USD","ADA/USD","DOGE/USD","DOT/USD","LINK/USD","AVAX/USD",
+];
+
+const multiScan = {
+  results: {},
+  scanning: false,
+  progress: "",
 };
 
 const root = document.getElementById("root");
@@ -593,6 +624,15 @@ function render() {
           : ""
       }
 
+      <section class="overview-section">
+        <div class="overview-head">
+          <h3>Market Overview</h3>
+          <span class="ov-progress" id="ovProgress">${multiScan.progress}</span>
+          <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
+        </div>
+        <div class="overview-grid">${scanPairs.map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); return `<div class="ov-card ${cls}"><span class="ov-pair">${pair.replace("/","/")}</span><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span>${r.price ? `<span>${formatPrice(r.price, pair)}</span>` : ""}`}</div></div>`; }).join("")}</div>
+      </section>
+
       ${autoScan.history.length > 0 ? (() => { const s = calcStats(); return s.total > 0 ? `<div class="stats-bar"><div class="stat-item"><span>Signals</span><strong>${s.total}</strong></div><div class="stat-item"><span>Wins</span><strong class="stat-win">${s.wins}</strong></div><div class="stat-item"><span>Losses</span><strong class="stat-loss">${s.losses}</strong></div><div class="stat-item"><span>Win rate</span><strong style="color:${s.winRate >= 50 ? '#3fb950' : '#f85149'}">${s.winRate}%</strong></div>${s.streak > 0 ? `<div class="stat-item"><span>Streak</span><strong class="${s.streakType === 'win' ? 'stat-win' : 'stat-loss'}">${s.streak} ${s.streakType}${s.streak > 1 ? 's' : ''}</strong></div>` : ''}</div>` : "" })() : ""}
       <section class="history-section">
         <button class="history-toggle no-select" id="historyToggle">
@@ -610,7 +650,7 @@ function render() {
             ${autoScan.history.length === 0 ? '<div class="history-empty">No signals yet. Enable auto-scan or refresh to generate signals.</div>' : ""}
             ${autoScan.history.map((entry, idx) => renderHistoryEntry(entry, idx)).join("")}
           </div>
-          ${autoScan.history.length > 0 ? `<div class="history-actions"><button id="clearHistory">Clear history</button></div>` : ""}
+          ${autoScan.history.length > 0 ? `<div class="history-actions"><button id="exportCSV">Export CSV</button><button id="clearHistory">Clear history</button></div>` : ""}
         </div>
       </section>
     </main>
@@ -692,6 +732,26 @@ function updateScanUI() {
 
 function recordSignal() {
   const task = state.rows.length > 0 ? analyze(state.rows) : null;
+  const pair = `${state.base}/${state.quote}`;
+  const direction = task?.direction ?? "WAIT";
+  const lastForPair = autoScan.history.find(e => e.pair === pair);
+  if (lastForPair && lastForPair.direction === direction) {
+    Object.assign(lastForPair, {
+      timestamp: new Date(),
+      confidence: task?.confidence ?? 0,
+      risk: task?.risk ?? "No trade",
+      entry: task?.entry ?? null,
+      stop: task?.stop ?? null,
+      target: task?.target ?? null,
+      volatilityPct: task?.volatilityPct ?? 0,
+      buyScore: task?.buyScore ?? 0,
+      sellScore: task?.sellScore ?? 0,
+      reasons: task?.reasons ?? [],
+      result: "pending",
+    });
+    saveHistory();
+    return;
+  }
   autoScan.history.unshift({
     id: Date.now(),
     timestamp: new Date(),
@@ -728,6 +788,28 @@ function loadHistory() {
   } catch {}
 }
 
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.12);
+  } catch {}
+}
+
+function exportCSV() {
+  const rows = [["Time","Pair","Direction","Confidence","Risk","Entry","Stop","Target","Volatility","BuyScore","SellScore","Result"]];
+  for (const e of autoScan.history) {
+    rows.push([e.timestamp.toISOString(), e.pair, e.direction, e.confidence, e.risk, e.entry ?? "", e.stop ?? "", e.target ?? "", e.volatilityPct.toFixed(2), e.buyScore, e.sellScore, e.result]);
+  }
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "signal_history.csv";
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
+
 function clearSignalHistory() {
   autoScan.history = [];
   saveHistory();
@@ -741,6 +823,7 @@ function deleteHistoryEntry(id) {
 }
 
 function notifySignal(entry) {
+  playBeep();
   if (!("Notification" in window) || Notification.permission === "denied") return;
   if (Notification.permission === "granted") {
     new Notification(`${entry.direction} ${entry.pair}`, {
@@ -766,6 +849,42 @@ function calcStats() {
     else break;
   }
   return { total, wins, losses, winRate, streak, streakType };
+}
+
+async function scanPairForOverview(pair) {
+  const [base, quote] = pair.split("/");
+  try {
+    multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
+    render();
+    const rows = nonFiat.has(base) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
+    const analysis = rows.length >= 80 ? analyze(rows) : null;
+    let price = null;
+    try { const lp = await fetchLivePrice(base, quote); if (lp) price = lp.price; } catch {}
+    multiScan.results[pair] = {
+      loading: false, direction: analysis?.direction ?? "WAIT", confidence: analysis?.confidence ?? 0,
+      risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, entry: analysis?.entry,
+      stop: analysis?.stop, target: analysis?.target,
+    };
+  } catch {
+    multiScan.results[pair] = { loading: false, direction: "WAIT", confidence: 0, price: null };
+  }
+  render();
+}
+
+async function scanAllPairs() {
+  if (multiScan.scanning) return;
+  multiScan.scanning = true;
+  multiScan.results = {};
+  for (let i = 0; i < scanPairs.length; i++) {
+    if (!multiScan.scanning) break;
+    multiScan.progress = `${i + 1}/${scanPairs.length}`;
+    render();
+    await scanPairForOverview(scanPairs[i]);
+    await new Promise(r => setTimeout(r, 100));
+  }
+  multiScan.scanning = false;
+  multiScan.progress = "";
+  render();
 }
 
 async function verifySignals() {
@@ -1015,6 +1134,12 @@ function setupEvents() {
     }
     if (target.id === "autoScanToggle") {
       toggleAutoScan();
+    }
+    if (target.id === "scanAll") {
+      scanAllPairs();
+    }
+    if (target.id === "exportCSV") {
+      exportCSV();
     }
     if (target.id === "clearHistory") {
       clearSignalHistory();
