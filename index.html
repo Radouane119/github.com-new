@@ -56,7 +56,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .chart-panel .section-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px}
 .chart-panel .section-head span{font-size:.78rem;color:#5c6a7a}
 .chart-panel .section-head h2{font-size:1.1rem;font-weight:600}
-#priceChart{width:100%;height:430px;display:block;border-radius:6px}
+#priceChart{width:100%;height:460px;display:block;border-radius:6px}
 .idea-panel{background:#141c26;border-radius:12px;padding:18px;border:1px solid #1f2a36;display:flex;flex-direction:column;gap:16px}
 .section-head.compact h2{font-size:1rem;font-weight:600}
 .levels{display:flex;flex-direction:column;gap:4px}
@@ -174,7 +174,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .ov-card.buy .ov-signal{color:#3fb950}
 .ov-card.sell .ov-signal{color:#f85149}
 .ov-card.wait .ov-signal{color:#b58cff}
-.ov-meta{font-size:.68rem;color:#8c98a5;display:flex;justify-content:space-between}
+.ov-meta{font-size:.68rem;color:#8c98a5;display:flex;justify-content:space-between;gap:2px}
+.chg-up{color:#3fb950}
+.chg-down{color:#f85149}
 @media(max-width:640px){.overview-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}}
 @media(max-width:640px){
   #root{padding:12px 12px 32px}
@@ -500,6 +502,7 @@ async function fetchBinanceRows(base, quote) {
       high: Number(k[2]),
       low: Number(k[3]),
       close: Number(k[4]),
+      volume: Number(k[5]),
     }))
     .filter((row) => Number.isFinite(row.close))
     .slice(-430);
@@ -734,7 +737,7 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span>${r.price ? formatPrice(r.price, pair) : ""}</span>`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span>${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
@@ -971,12 +974,13 @@ async function scanPairForOverview(pair) {
     const analysis = rows.length >= 80 ? analyze(rows) : null;
     const task = analysis ? { direction: analysis.direction, confidence: analysis.confidence, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
     const isNew = addSignalToHistory(pair, task);
-    let price = null;
-    try { const lp = await fetchLivePrice(base, quote); if (lp) price = lp.price; } catch {}
+    let price = null, change = null;
+    try { const lp = await fetchLivePrice(base, quote); if (lp) { price = lp.price; change = lp.change; } } catch {}
+    if (change == null && rows.length >= 2) { change = ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100; }
     multiScan.results[pair] = {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: analysis?.confidence ?? 0,
-      risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, entry: analysis?.entry,
-      stop: analysis?.stop, target: analysis?.target,
+      risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
+      entry: analysis?.entry, stop: analysis?.stop, target: analysis?.target,
     };
     if (isNew && task && task.direction !== "WAIT") notifySignal({ direction: task.direction, pair, confidence: task.confidence, risk: task.risk, entry: task.entry });
   } catch {
@@ -1147,11 +1151,11 @@ function drawChart(canvas, rows, pair) {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const width = rect.width;
-  const height = rect.height || 430;
+  const height = rect.height || 460;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
   ctx.scale(dpr, dpr);
-  const pad = { left: 62, right: 18, top: 18, bottom: 34 };
+  const pad = { left: 62, right: 18, top: 18, bottom: 60 };
   const values = rows.flatMap((row) => [row.close, row.sma20, row.sma50, row.bUpper, row.bLower]).filter(Number.isFinite);
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -1160,6 +1164,24 @@ function drawChart(canvas, rows, pair) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#10171f";
   ctx.fillRect(0, 0, width, height);
+
+  const vols = rows.map(r => r.volume).filter(v => Number.isFinite(v) && v > 0);
+  const volMax = vols.length > 0 ? Math.max(...vols) : 1;
+  const volH = 28;
+  if (vols.length > 1) {
+    rows.forEach((row, i) => {
+      if (!Number.isFinite(row.volume) || row.volume <= 0) return;
+      const vw = Math.max(1, (width - pad.left - pad.right) / rows.length - 1);
+      const vx = x(i) - vw / 2;
+      const vh = (row.volume / volMax) * volH;
+      ctx.fillStyle = row.close >= row.open ? "#3fb950" : "#f85149";
+      ctx.fillRect(vx, height - pad.bottom - vh + 4, vw, vh);
+    });
+    ctx.fillStyle = "#5a6a7a";
+    ctx.font = "10px Inter, sans-serif";
+    ctx.fillText("Volume", pad.left + 2, height - pad.bottom + 24);
+  }
+
   ctx.strokeStyle = "#26313d";
   ctx.lineWidth = 1;
   for (let i = 0; i < 5; i++) {
