@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Forex & Gold Trading Ideas</title>
+<title>Forex, Crypto & Gold Trading Ideas</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
 <style>
@@ -28,6 +28,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 /* summary grid */
 .summary-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:12px;margin-bottom:24px}
 @media(max-width:720px){.summary-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.summary-grid{grid-template-columns:1fr}}
 .signal-panel{background:#141c26;border-radius:12px;padding:16px 20px;border:1px solid #1f2a36;border-left:4px solid #73808d}
 .signal-panel.buy{border-left-color:#2ea043}
 .signal-panel.sell{border-left-color:#da3633}
@@ -120,12 +121,40 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .auto-scan-status .dot.active.pulse{animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .no-select{-webkit-user-select:none;user-select:none}
+@media(max-width:640px){
+  #root{padding:12px 12px 32px}
+  .topbar h1{font-size:1.15rem}
+  .pair-controls{gap:6px;padding:6px 8px;flex-wrap:wrap}
+  .select-wrap select{font-size:.78rem;min-width:36px;padding:2px 14px 2px 2px}
+  .signal-row span{font-size:1.2rem}
+  .signal-panel{padding:12px 14px}
+  .metric{padding:12px 14px}
+  .metric strong{font-size:1.05rem}
+}
+@media(max-width:700px){
+  .history-header{display:none}
+  .history-summary{grid-template-columns:1fr auto;gap:2px 8px;padding:8px 12px}
+  .history-summary .h-time{grid-column:1}
+  .history-summary .h-pair{grid-column:1}
+  .history-summary .h-dir{grid-row:1;grid-column:2;text-align:right}
+  .history-summary .h-conf{grid-row:2;grid-column:2;text-align:right}
+  .history-summary .h-risk{grid-row:3;grid-column:2;text-align:right}
+  .history-summary .h-vol{display:none}
+  .history-summary .h-expand{grid-column:1;text-align:left;color:#5c6a7a}
+  .history-detail-grid{grid-template-columns:1fr}
+  .chart-panel{padding:10px}
+  #priceChart{height:280px}
+}
+@media(max-width:480px){
+  .pair-controls .icon-button{width:28px;height:28px;font-size:.85rem}
+  .auto-scan-status{font-size:.65rem}
+}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script>
-const currencies = ["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD"];
+const currencies = ["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD"];
 const names = {
   XAU: "Gold",
   BTC: "Bitcoin",
@@ -133,6 +162,10 @@ const names = {
   SOL: "Solana",
   XRP: "Ripple",
   ADA: "Cardano",
+  DOGE: "Dogecoin",
+  DOT: "Polkadot",
+  LINK: "Chainlink",
+  AVAX: "Avalanche",
   EUR: "Euro",
   USD: "US Dollar",
   GBP: "British Pound",
@@ -144,8 +177,8 @@ const names = {
   SGD: "Singapore Dollar",
 };
 
-const cryptoIds = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", XRP: "ripple", ADA: "cardano" };
-const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA"]);
+const cryptoIds = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", XRP: "ripple", ADA: "cardano", DOGE: "dogecoin", DOT: "polkadot", LINK: "chainlink", AVAX: "avalanche-2" };
+const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX"]);
 
 const state = {
   base: "EUR",
@@ -335,6 +368,10 @@ function fallbackStartPrice(base, quote) {
   if (base === "SOL") return 150;
   if (base === "XRP") return 0.50;
   if (base === "ADA") return 0.45;
+  if (base === "DOGE") return 0.12;
+  if (base === "DOT") return 7.00;
+  if (base === "LINK") return 15.00;
+  if (base === "AVAX") return 35.00;
   if (quote === "JPY") return 160;
   if (base === "GBP") return 1.27;
   if (base === "EUR") return 1.08;
@@ -457,7 +494,7 @@ function render() {
       <section class="topbar">
         <div>
           <p class="eyebrow">Low Risk Signal Desk</p>
-          <h1>Forex & Gold Trading Ideas</h1>
+          <h1>Forex, Crypto & Gold Trading Ideas</h1>
         </div>
         <div class="pair-controls">
           <label class="select-wrap"><span>${names[state.base] || state.base}</span><select id="base">${options(state.base, state.quote)}</select></label>
@@ -625,12 +662,17 @@ function clearSignalHistory() {
 function startAutoScan() {
   if (autoScan.intervalId) return;
   autoScan.enabled = true;
+  updateScanUI();
+  (async () => {
+    await loadDataOnly();
+    recordSignal();
+    render();
+  })();
   autoScan.intervalId = setInterval(async () => {
     await loadDataOnly();
     recordSignal();
     render();
   }, 60000);
-  updateScanUI();
 }
 
 function stopAutoScan() {
