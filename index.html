@@ -141,6 +141,27 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .overview-section{margin-bottom:16px}
 .overview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
 .overview-head h3{font-size:1rem;font-weight:600}
+.ov-star{background:none;border:none;color:#5c6a7a;cursor:pointer;font-size:.85rem;padding:0;line-height:1;font-family:inherit;transition:color .15s}
+.ov-star.active{color:#f0c35a}
+.ov-star:hover{color:#f0c35a}
+.ov-alert-btn{background:none;border:none;color:#5c6a7a;cursor:pointer;font-size:.72rem;padding:1px 4px;border-radius:3px;font-family:inherit;line-height:1}
+.ov-alert-btn:hover{background:#1f2a36;color:#e6edf3}
+.ov-card{align-items:stretch}
+.ov-card-top{display:flex;justify-content:space-between;align-items:center}
+/* alerts section */
+.alerts-section{margin-bottom:12px}
+.alerts-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.alerts-head h4{font-size:.85rem;font-weight:600}
+.alerts-grid{display:flex;flex-wrap:wrap;gap:6px}
+.alert-chip{display:flex;align-items:center;gap:6px;background:#141c26;border:1px solid #1f2a36;border-radius:6px;padding:4px 10px;font-size:.72rem;color:#8c98a5}
+.alert-chip strong{color:#f0f4f8}
+.alert-chip-rm{background:none;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;padding:0 2px;line-height:1;font-family:inherit}
+.alert-chip-rm:hover{color:#f85149}
+/* perf chart */
+.perf-section{margin-bottom:12px;background:#0e151e;border:1px solid #1f2a36;border-radius:10px;padding:10px 14px}
+.perf-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.perf-head h4{font-size:.8rem;font-weight:600;color:#e6edf3}
+.perf-head span{font-size:.68rem;color:#5c6a7a}
 .overview-head .ov-progress{font-size:.72rem;color:#73808d}
 .overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:8px}
 .ov-card{background:#141c26;border:1px solid #1f2a36;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px;border-left:3px solid #73808d;transition:opacity .3s}
@@ -273,6 +294,60 @@ function toggleScanPair(pair) {
   render();
 }
 
+let watchlist = [];
+let alerts = [];
+
+function loadWatchlist() {
+  try { const s = localStorage.getItem("watchlist"); if (s) { const p = JSON.parse(s); if (Array.isArray(p)) watchlist = p; } } catch {}
+}
+function saveWatchlist() { try { localStorage.setItem("watchlist", JSON.stringify(watchlist)); } catch {} }
+function toggleWatchlist(pair) {
+  const idx = watchlist.indexOf(pair);
+  if (idx >= 0) watchlist.splice(idx, 1); else watchlist.push(pair);
+  saveWatchlist(); render();
+}
+
+function loadAlerts() {
+  try { const s = localStorage.getItem("priceAlerts"); if (s) { const a = JSON.parse(s); if (Array.isArray(a)) alerts = a; } } catch {}
+}
+function saveAlerts() { try { localStorage.setItem("priceAlerts", JSON.stringify(alerts)); } catch {} }
+function setAlert(pair, price, dir) {
+  alerts.push({ id: Date.now(), pair, price: Number(price), dir: dir || "above", createdAt: Date.now() });
+  saveAlerts(); render();
+}
+function removeAlert(id) { alerts = alerts.filter(a => a.id !== id); saveAlerts(); render(); }
+
+async function checkAlerts() {
+  if (alerts.length === 0) return;
+  const pairs = [...new Set(alerts.map(a => a.pair))];
+  const cache = {};
+  for (const pair of pairs) {
+    const [base, quote] = pair.split("/");
+    try { const d = await fetchLivePrice(base, quote); if (d) cache[pair] = d.price; } catch {}
+  }
+  let changed = false;
+  for (const alert of [...alerts]) {
+    const current = cache[alert.pair];
+    if (current == null) continue;
+    const hit = alert.dir === "above" ? current >= alert.price : current <= alert.price;
+    if (hit) {
+      removeAlert(alert.id);
+      changed = true;
+      const dirLabel = alert.dir === "above" ? "above" : "below";
+      playBeep();
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(`Alert: ${alert.pair} hit $${formatPrice(alert.price, alert.pair)}`, {
+          body: `Price is now ${dirLabel} target: $${formatPrice(current, alert.pair)}`,
+          silent: true,
+        });
+      }
+    }
+  }
+  if (changed) render();
+}
+
+loadWatchlist();
+loadAlerts();
 loadScanConfig();
 
 const root = document.getElementById("root");
@@ -659,8 +734,12 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${scanPairs.map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); return `<div class="ov-card ${cls}"><span class="ov-pair">${pair}</span><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span>${r.price ? `<span>${formatPrice(r.price, pair)}</span>` : ""}`}</div></div>`; }).join("")}</div>
+        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span>${r.price ? formatPrice(r.price, pair) : ""}</span>`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
       </section>
+
+      ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
+
+      ${(() => { const perfData = (() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss").reverse(); if (sigs.length < 2) return null; let cum = 0; return sigs.map(s => { cum += s.result === "win" ? 1 : -1; return { date: s.timestamp, value: cum }; }); })(); if (!perfData) return ""; const vals = perfData.map(p => p.value); const mx = Math.max(...vals); const mn = Math.min(...vals); const rng = mx - mn || 1; const w = 240; const h = 48; const xSt = w / (vals.length - 1); const pts = vals.map((v, i) => `${i * xSt},${h - ((v - mn) / rng) * (h - 6) - 3}`).join(" "); const color = vals[vals.length - 1] >= vals[0] ? "#3fb950" : "#f85149"; return `<section class="perf-section"><div class="perf-head"><h4>Performance</h4><span>${vals[vals.length - 1] >= 0 ? "+" : ""}${vals[vals.length - 1]} pts</span></div><svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg></section>`; })()}
 
       ${autoScan.history.length > 0 ? (() => { const s = calcStats(); return s.total > 0 ? `<div class="stats-bar"><div class="stat-item"><span>Signals</span><strong>${s.total}</strong></div><div class="stat-item"><span>Wins</span><strong class="stat-win">${s.wins}</strong></div><div class="stat-item"><span>Losses</span><strong class="stat-loss">${s.losses}</strong></div><div class="stat-item"><span>Win rate</span><strong style="color:${s.winRate >= 50 ? '#3fb950' : '#f85149'}">${s.winRate}%</strong></div>${s.streak > 0 ? `<div class="stat-item"><span>Streak</span><strong class="${s.streakType === 'win' ? 'stat-win' : 'stat-loss'}">${s.streak} ${s.streakType}${s.streak > 1 ? 's' : ''}</strong></div>` : ''}</div>` : "" })() : ""}
       <section class="history-section">
@@ -986,6 +1065,7 @@ function startAutoScan() {
     recordSignal();
     render();
     await verifySignals();
+    await checkAlerts();
     await updateLivePrice();
     if (livePrice.intervalId) clearInterval(livePrice.intervalId);
     livePrice.intervalId = setInterval(updateLivePrice, 30000);
@@ -995,6 +1075,7 @@ function startAutoScan() {
     recordSignal();
     render();
     await verifySignals();
+    await checkAlerts();
   }, 60000);
 }
 
@@ -1056,6 +1137,7 @@ async function load() {
   recordSignal();
   render();
   await verifySignals();
+  await checkAlerts();
   if (autoScan.enabled) updateLivePrice();
 }
 
@@ -1160,6 +1242,21 @@ function setupEvents() {
 
     if (target.dataset.del) {
       deleteHistoryEntry(Number(target.dataset.del));
+      return;
+    }
+    if (target.dataset.star) {
+      toggleWatchlist(target.dataset.star);
+      return;
+    }
+    if (target.dataset.alert) {
+      const pair = target.dataset.alert;
+      const dir = confirm("Click OK for alert ABOVE price, Cancel for BELOW") ? "above" : "below";
+      const price = prompt(`Set price alert for ${pair} (${dir === "above" ? "↑ above" : "↓ below"}):`);
+      if (price && !isNaN(price)) setAlert(pair, price, dir);
+      return;
+    }
+    if (target.dataset.rmAlert) {
+      removeAlert(Number(target.dataset.rmAlert));
       return;
     }
     if (target.id === "swap") {
