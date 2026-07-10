@@ -529,7 +529,7 @@ function makeOhlc(date, close, previousClose) {
 async function fetchFxRows(base, quote) {
   const end = new Date();
   const start = new Date();
-  start.setDate(start.getDate() - 300);
+  start.setDate(start.getDate() - 180);
   const fmt = (date) => date.toISOString().slice(0, 10);
   const mid = new Date(start.getTime() + (end.getTime() - start.getTime()) / 2);
   const url1 = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(mid)}?from=${base}&to=${quote}`;
@@ -562,7 +562,7 @@ function binanceSymbol(base, quote) {
 
 async function fetchBinanceRows(base, quote) {
   const symbol = binanceSymbol(base, quote);
-  const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=500`);
+  const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=200`);
   if (!response.ok) throw new Error(`Live data unavailable for ${base}/${quote}.`);
   const data = await response.json();
   return data
@@ -574,8 +574,7 @@ async function fetchBinanceRows(base, quote) {
       close: Number(k[4]),
       volume: Number(k[5]),
     }))
-    .filter((row) => Number.isFinite(row.close))
-    .slice(-430);
+    .filter((row) => Number.isFinite(row.close));
 }
 
 async function fetchLivePrice(base, quote) {
@@ -1040,18 +1039,26 @@ function calcStats() {
   return { total, wins, losses, winRate, streak, streakType };
 }
 
+let renderPending = false;
+
+function scheduleRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => { renderPending = false; render(); });
+}
+
 async function scanPairForOverview(pair) {
   const [base, quote] = pair.split("/");
   try {
     multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
-    render();
+    scheduleRender();
     const rows = nonFiat.has(base) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
     const analysis = rows.length >= 80 ? analyze(rows) : null;
     const task = analysis ? { direction: analysis.direction, confidence: analysis.confidence, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
     const isNew = addSignalToHistory(pair, task);
-    let price = null, change = null;
-    try { const lp = await fetchLivePrice(base, quote); if (lp) { price = lp.price; change = lp.change; } } catch {}
-    if (change == null && rows.length >= 2) { change = ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100; }
+    const lastRow = rows.at(-1);
+    const price = lastRow ? lastRow.close : null;
+    const change = rows.length >= 2 ? ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100 : null;
     multiScan.results[pair] = {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: analysis?.confidence ?? 0,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
@@ -1061,7 +1068,7 @@ async function scanPairForOverview(pair) {
   } catch {
     multiScan.results[pair] = { loading: false, direction: "WAIT", confidence: 0, price: null };
   }
-  render();
+  scheduleRender();
 }
 
 async function scanAllPairs() {
@@ -1073,13 +1080,12 @@ async function scanAllPairs() {
   const fx = scanPairs.filter(p => !nonFiat.has(p.split("/")[0]));
   multiScan.progress = `0/${scanPairs.length}`;
   render();
-  if (crypto.length > 0) await Promise.all(crypto.map(p => scanPairForOverview(p)));
+  if (crypto.length > 0) { const limit = 3; for (let i = 0; i < crypto.length; i += limit) { multiScan.progress = `${i}/${scanPairs.length}`; scheduleRender(); await Promise.all(crypto.slice(i, i + limit).map(p => scanPairForOverview(p))); } }
   for (let i = 0; i < fx.length; i++) {
     if (!multiScan.scanning) break;
     multiScan.progress = `${crypto.length + i}/${scanPairs.length}`;
-    render();
+    scheduleRender();
     await scanPairForOverview(fx[i]);
-    await new Promise(r => setTimeout(r, 200));
   }
   multiScan.scanning = false;
   multiScan.progress = "";
