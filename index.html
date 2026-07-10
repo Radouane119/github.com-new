@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Forex, Crypto & Gold Trading Ideas</title>
+<link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
 <style>
@@ -237,18 +238,42 @@ const livePrice = {
   intervalId: null,
 };
 
-const scanPairs = [
+const allScanPairs = [
   "EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CAD","NZD/USD","USD/CHF",
   "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CHF",
   "XAU/USD",
   "BTC/USD","ETH/USD","SOL/USD","XRP/USD","ADA/USD","DOGE/USD","DOT/USD","LINK/USD","AVAX/USD",
 ];
 
+let scanPairs = [...allScanPairs];
+
 const multiScan = {
   results: {},
   scanning: false,
   progress: "",
+  configOpen: false,
 };
+
+function loadScanConfig() {
+  try {
+    const saved = localStorage.getItem("scanConfig");
+    if (saved) { const p = JSON.parse(saved); if (Array.isArray(p) && p.length > 0) scanPairs = p; }
+  } catch {}
+}
+
+function saveScanConfig() {
+  try { localStorage.setItem("scanConfig", JSON.stringify(scanPairs)); } catch {}
+}
+
+function toggleScanPair(pair) {
+  const idx = scanPairs.indexOf(pair);
+  if (idx >= 0) scanPairs.splice(idx, 1);
+  else scanPairs.push(pair);
+  saveScanConfig();
+  render();
+}
+
+loadScanConfig();
 
 const root = document.getElementById("root");
 
@@ -628,9 +653,13 @@ function render() {
         <div class="overview-head">
           <h3>Market Overview</h3>
           <span class="ov-progress" id="ovProgress">${multiScan.progress}</span>
-          <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
+          <div style="display:flex;gap:6px">
+            <button class="icon-button" id="toggleScanConfig" title="Configure pairs">⚙</button>
+            <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
+          </div>
         </div>
-        <div class="overview-grid">${scanPairs.map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); return `<div class="ov-card ${cls}"><span class="ov-pair">${pair.replace("/","/")}</span><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span>${r.price ? `<span>${formatPrice(r.price, pair)}</span>` : ""}`}</div></div>`; }).join("")}</div>
+        ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
+        <div class="overview-grid">${scanPairs.map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); return `<div class="ov-card ${cls}"><span class="ov-pair">${pair}</span><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span>${r.price ? `<span>${formatPrice(r.price, pair)}</span>` : ""}`}</div></div>`; }).join("")}</div>
       </section>
 
       ${autoScan.history.length > 0 ? (() => { const s = calcStats(); return s.total > 0 ? `<div class="stats-bar"><div class="stat-item"><span>Signals</span><strong>${s.total}</strong></div><div class="stat-item"><span>Wins</span><strong class="stat-win">${s.wins}</strong></div><div class="stat-item"><span>Losses</span><strong class="stat-loss">${s.losses}</strong></div><div class="stat-item"><span>Win rate</span><strong style="color:${s.winRate >= 50 ? '#3fb950' : '#f85149'}">${s.winRate}%</strong></div>${s.streak > 0 ? `<div class="stat-item"><span>Streak</span><strong class="${s.streakType === 'win' ? 'stat-win' : 'stat-loss'}">${s.streak} ${s.streakType}${s.streak > 1 ? 's' : ''}</strong></div>` : ''}</div>` : "" })() : ""}
@@ -881,12 +910,18 @@ async function scanAllPairs() {
   if (multiScan.scanning) return;
   multiScan.scanning = true;
   multiScan.results = {};
-  for (let i = 0; i < scanPairs.length; i++) {
+  render();
+  const crypto = scanPairs.filter(p => nonFiat.has(p.split("/")[0]));
+  const fx = scanPairs.filter(p => !nonFiat.has(p.split("/")[0]));
+  multiScan.progress = `0/${scanPairs.length}`;
+  render();
+  if (crypto.length > 0) await Promise.all(crypto.map(p => scanPairForOverview(p)));
+  for (let i = 0; i < fx.length; i++) {
     if (!multiScan.scanning) break;
-    multiScan.progress = `${i + 1}/${scanPairs.length}`;
+    multiScan.progress = `${crypto.length + i}/${scanPairs.length}`;
     render();
-    await scanPairForOverview(scanPairs[i]);
-    await new Promise(r => setTimeout(r, 100));
+    await scanPairForOverview(fx[i]);
+    await new Promise(r => setTimeout(r, 200));
   }
   multiScan.scanning = false;
   multiScan.progress = "";
@@ -1102,6 +1137,9 @@ function setupEvents() {
       state.quote = event.target.value;
       load();
     }
+    if (event.target.dataset.scanPair) {
+      toggleScanPair(event.target.dataset.scanPair);
+    }
   });
 
   root.addEventListener("click", (event) => {
@@ -1134,6 +1172,10 @@ function setupEvents() {
     }
     if (target.id === "autoScanToggle") {
       toggleAutoScan();
+    }
+    if (target.id === "toggleScanConfig") {
+      multiScan.configOpen = !multiScan.configOpen;
+      render();
     }
     if (target.id === "scanAll") {
       scanAllPairs();
@@ -1171,6 +1213,7 @@ function observeChartContainer() {
 loadHistory();
 setupEvents();
 load();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
 </html>
