@@ -789,10 +789,11 @@ function render() {
             <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
           </div>
         </div>
-        <div class="screenshot-panel" id="screenshotPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <label style="font-size:.72rem;color:#8c98a5">Upload a chart screenshot, click along the price line, then analyze</label>
-            <input type="file" id="screenshotFile" accept="image/*" style="font-size:.7rem;color:#8c98a5">
+        <div class="screenshot-panel" id="screenshotPanel" style="display:none;padding:12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <label for="screenshotFile" style="background:#1f2a36;border:1px solid #394757;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:.78rem;color:#e6edf3;font-weight:600">📷 Choose Image</label>
+            <input type="file" id="screenshotFile" accept="image/*" style="display:none">
+            <span style="font-size:.7rem;color:#73808d">Upload a chart screenshot, then click along the price line</span>
           </div>
           <canvas id="screenshotCanvas" style="width:100%;max-height:360px;border-radius:6px;background:#0a0f16;cursor:crosshair;display:none"></canvas>
           <div id="ssControls" style="display:none;flex-wrap:wrap;gap:6px;align-items:center">
@@ -1587,6 +1588,9 @@ function setupEvents() {
     }
     if (event.target.dataset.scanPair) {
       toggleScanPair(event.target.dataset.scanPair);
+    }
+    if (event.target.id === "screenshotFile") {
+      ssUpload(event.target.files[0]);
     }
   });
 
