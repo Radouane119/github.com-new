@@ -779,6 +779,7 @@ function render() {
           <button class="icon-button" id="refresh" title="Refresh analysis">↻</button>
           <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
           <button class="icon-button" id="settingsToggle" title="Settings">⚙</button>
+          <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot">📷</button>
         </div>
         <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}${!nonFiat.has(state.base) && tf !== "1d" ? " disabled" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
@@ -787,6 +788,21 @@ function render() {
             <input type="url" id="webhookInput" value="${webhookUrl}" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
             <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
           </div>
+        </div>
+        <div class="screenshot-panel" id="screenshotPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <label style="font-size:.72rem;color:#8c98a5">Upload a chart screenshot, click along the price line, then analyze</label>
+            <input type="file" id="screenshotFile" accept="image/*" style="font-size:.7rem;color:#8c98a5">
+          </div>
+          <canvas id="screenshotCanvas" style="width:100%;max-height:360px;border-radius:6px;background:#0a0f16;cursor:crosshair;display:none"></canvas>
+          <div id="ssControls" style="display:none;flex-wrap:wrap;gap:6px;align-items:center">
+            <label style="font-size:.65rem;color:#8c98a5">Min price <input type="number" id="ssMin" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"></label>
+            <label style="font-size:.65rem;color:#8c98a5">Max price <input type="number" id="ssMax" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"></label>
+            <button class="scan-button" id="ssAnalyze" style="font-size:.7rem">Analyze</button>
+            <button class="scan-button" id="ssClear" style="font-size:.7rem">Clear points</button>
+            <span id="ssCount" style="font-size:.65rem;color:#5c6a7a">0 points</span>
+          </div>
+          <div id="ssResult" style="display:none;padding:8px;background:#1a2533;border-radius:6px;font-size:.8rem;line-height:1.5"></div>
         </div>
       </section>
 
@@ -1487,6 +1503,71 @@ function redrawChart() {
   }
 }
 
+let ssPoints = [];
+let ssImg = null;
+
+function ssUpload(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      ssImg = img;
+      const canvas = document.getElementById("screenshotCanvas");
+      canvas.style.display = "block";
+      canvas.width = Math.min(img.width, 800);
+      canvas.height = Math.min(img.height, 400);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      document.getElementById("ssControls").style.display = "flex";
+      ssPoints = [];
+      document.getElementById("ssCount").textContent = "0 points";
+      canvas.onmousedown = (ev) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+        if (x < 0 || x > canvas.width || y < 0 || y > canvas.height) return;
+        ssPoints.push({ x, y });
+        document.getElementById("ssCount").textContent = ssPoints.length + " points";
+        const ctx2 = canvas.getContext("2d");
+        ctx2.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx2.fillStyle = "#3fb950";
+        ctx2.strokeStyle = "#3fb950";
+        ctx2.lineWidth = 1.5;
+        ctx2.beginPath();
+        ssPoints.forEach((p, i) => { ctx2.arc(p.x, p.y, 3, 0, Math.PI * 2); if (i > 0) { ctx2.beginPath(); ctx2.moveTo(ssPoints[i-1].x, ssPoints[i-1].y); ctx2.lineTo(p.x, p.y); ctx2.stroke(); ctx2.beginPath(); ctx2.arc(p.x, p.y, 3, 0, Math.PI * 2); } ctx2.fill(); });
+      };
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function ssAnalyze() {
+  const min = Number(document.getElementById("ssMin").value);
+  const max = Number(document.getElementById("ssMax").value);
+  if (!ssImg || ssPoints.length < 5 || !isFinite(min) || !isFinite(max) || max <= min) { return; }
+  const canvas = document.getElementById("screenshotCanvas");
+  const range = max - min;
+  const closes = ssPoints.map(p => max - (p.y / canvas.height) * range);
+  const rows = closes.map((c, i) => ({
+    date: new Date(Date.now() - (closes.length - 1 - i) * 86400000).toISOString().slice(0, 10),
+    open: i > 0 ? closes[i-1] : c * 0.999,
+    high: c * 1.002,
+    low: c * 0.998,
+    close: c,
+  }));
+  const analysis = rows.length >= 30 ? analyze(rows) : null;
+  const el = document.getElementById("ssResult");
+  if (!analysis) { el.innerHTML = "<span style='color:#f85149'>Need at least 30 points for analysis. Add more points along the chart line.</span>"; el.style.display = "block"; return; }
+  const cls = analysis.direction.toLowerCase();
+  const dirLabel = analysis.direction === "BUY" ? "🟢 BUY" : analysis.direction === "SELL" ? "🔴 SELL" : "⚪ WAIT";
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><strong style="color:${cls === 'buy' ? '#3fb950' : cls === 'sell' ? '#f85149' : '#b58cff'}">${dirLabel}</strong><span style="font-size:.7rem;color:#8c98a5">${analysis.confidence}% confidence</span></div>
+<div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.72rem;color:#8c98a5;margin-bottom:4px"><span>📈 Buy: ${analysis.buyScore}/7</span><span>📉 Sell: ${analysis.sellScore}/7</span><span>⚠ Risk: ${analysis.risk}</span><span>📊 Volatility: ${analysis.volatilityPct.toFixed(2)}%</span></div>
+<div style="font-size:.68rem;color:#73808d;line-height:1.4">${analysis.reasons.map(r => `<span style="color:${r.ok ? '#3fb950' : '#f85149'}">${r.ok ? '✓' : '✗'}</span> ${r.text}`).join("<br>")}</div>`;
+  el.style.display = "block";
+}
+
 function setupEvents() {
   root.addEventListener("input", (event) => {
     if (event.target.id === "webhookInput") {
@@ -1552,8 +1633,24 @@ function setupEvents() {
       return;
     }
     if (target.id === "settingsToggle") {
+      document.getElementById("screenshotPanel").style.display = "none";
       const panel = document.getElementById("settingsPanel");
       if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
+      return;
+    }
+    if (target.id === "screenshotToggle") {
+      document.getElementById("settingsPanel").style.display = "none";
+      const panel = document.getElementById("screenshotPanel");
+      if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
+      return;
+    }
+    if (target.id === "ssAnalyze") { ssAnalyze(); return; }
+    if (target.id === "ssClear") {
+      ssPoints = [];
+      document.getElementById("ssCount").textContent = "0 points";
+      document.getElementById("ssResult").style.display = "none";
+      const canvas = document.getElementById("screenshotCanvas");
+      if (ssImg) { const ctx = canvas.getContext("2d"); ctx.drawImage(ssImg, 0, 0, canvas.width, canvas.height); }
       return;
     }
     if (target.id === "testWebhook") {
