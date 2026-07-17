@@ -1147,7 +1147,7 @@ async function scanAllPairs() {
 }
 
 async function verifySignals() {
-  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.entry != null);
+  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.stop != null && e.target != null);
   if (pending.length === 0) return;
   const pairs = [...new Set(pending.map(e => e.pair))];
   const priceCache = {};
@@ -1158,15 +1158,17 @@ async function verifySignals() {
       if (data) priceCache[pair] = data.price;
     } catch {}
   }
+  const now = Date.now();
   let changed = false;
   for (const entry of pending) {
     const current = priceCache[entry.pair];
     if (current == null) continue;
-    const change = ((current - entry.entry) / entry.entry) * 100;
+    const age = now - (entry.id || now);
+    const stale = age > 7 * 24 * 60 * 60 * 1000;
     if (entry.direction === "BUY") {
-      entry.result = change > 0.3 ? "win" : change < -0.3 ? "loss" : "pending";
-    } else if (entry.direction === "SELL") {
-      entry.result = change < -0.3 ? "win" : change > 0.3 ? "loss" : "pending";
+      entry.result = current >= entry.target ? "win" : current <= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 > 0.3 ? "win" : "loss" : "pending";
+    } else {
+      entry.result = current <= entry.target ? "win" : current >= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 < -0.3 ? "win" : "loss" : "pending";
     }
     if (entry.result !== "pending") changed = true;
   }
