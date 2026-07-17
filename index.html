@@ -706,7 +706,10 @@ function analyze(rows) {
   const last = merged.at(-1);
   const prev = merged.at(-2);
   const volatilityPct = (last.atr / last.close) * 100;
-  const volatilityOk = volatilityPct < 1.5;
+  const recentVols = merged.slice(-30).filter(r => r.atr != null).map(r => (r.atr / r.close) * 100);
+  recentVols.sort((a,b) => a-b);
+  const medianVol = recentVols.length > 0 ? recentVols[Math.floor(recentVols.length / 2)] : 1.5;
+  const volatilityOk = volatilityPct < Math.max(medianVol * 2.5, 0.3);
   const trendUp = last.sma20 > last.sma50 && last.close > last.sma50;
   const trendDown = last.sma20 < last.sma50 && last.close < last.sma50;
   const longTrendUp = last.sma200 != null && last.close > last.sma200;
@@ -719,6 +722,9 @@ function analyze(rows) {
   const notExtendedShort = last.bLower == null || last.close > last.bLower;
   const priceRising = rows.length >= 5 && last.close > rows[rows.length - 5].close;
   const priceFalling = rows.length >= 5 && last.close < rows[rows.length - 5].close;
+  const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
+  const volSma = hasVolume ? sma(rows.map(r => r.volume), 20) : null;
+  const volSurge = hasVolume && volSma && last.volume > volSma.at(-1) * 1.3;
 
   const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, priceRising];
   const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, priceFalling];
@@ -726,7 +732,8 @@ function analyze(rows) {
   const sellScore = sellVotes.filter(Boolean).length;
   const direction = buyScore >= 5 && buyScore > sellScore ? "BUY" : sellScore >= 5 && sellScore > buyScore ? "SELL" : "WAIT";
   const score = Math.max(buyScore, sellScore);
-  const confidence = Math.round((score / 7) * 100);
+  const volBonus = volSurge ? 10 : 0;
+  const confidence = Math.min(100, Math.round((score / 7) * 100) + volBonus);
   const risk = direction === "WAIT" || confidence < 72 || !volatilityOk ? "No trade" : "Low";
   const stopDistance = Math.max(last.atr * 1.15, last.close * 0.004);
   const targetDistance = stopDistance * 2.0;
@@ -737,8 +744,9 @@ function analyze(rows) {
     { ok: trendUp || trendDown, text: trendUp ? "Short-term trend supports buying" : trendDown ? "Short-term trend supports selling" : "Trend is mixed" },
     { ok: momentumUp || momentumDown, text: momentumUp ? "MACD momentum confirms upside" : momentumDown ? "MACD momentum confirms downside" : "MACD momentum is not confirmed" },
     { ok: rsiBuyZone || rsiSellZone, text: `RSI is ${last.rsi.toFixed(0)}${last.rsi < 55 ? ", not overbought" : last.rsi > 45 ? ", not oversold" : ""}` },
-    { ok: volatilityOk, text: volatilityOk ? "Volatility is acceptable for low-risk mode" : "Volatility is too high for low-risk mode" },
+    { ok: volatilityOk, text: volatilityOk ? "Volatility is acceptable for low-risk mode" : `Volatility ${volatilityPct.toFixed(2)}% exceeds pair's normal range` },
     { ok: priceRising || priceFalling, text: priceRising ? "Price trending up over last 5 bars" : priceFalling ? "Price trending down over last 5 bars" : "Price direction unclear over last 5 bars" },
+    { ok: volSurge, text: volSurge ? "Above-average volume confirms the move" : "Volume does not confirm unusual activity" },
   ];
   return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, reasons, buyScore, sellScore, volatilityPct };
 }
@@ -840,7 +848,8 @@ function render() {
                   ${level("Target area", analysis.direction === "WAIT" ? "-" : formatPrice(analysis.target, pair))}
                 </div>
                 <div class="checks">${analysis.reasons.map((reason) => `<div class="check ${reason.ok ? "ok" : "bad"}"><span>${reason.ok ? "✓" : "!"}</span>${reason.text}</div>`).join("")}</div>
-                <div class="notice">Strict mode needs at least 6 of 7 confirmations. When the market is unclear, the app chooses WAIT.</div>
+                  <div style="display:flex;gap:10px;font-size:.68rem;color:#73808d;border-top:1px solid #1f2a36;padding-top:8px"><span>📈 Buy ${analysis.buyScore}/7</span><span>📉 Sell ${analysis.sellScore}/7</span><span>✅ Need 5</span></div>
+                <div class="notice">Needs at least 5 of 7 confirmations. When the market is unclear, the app chooses WAIT.</div>
               </aside>
             </section>`
           : ""
