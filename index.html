@@ -705,40 +705,40 @@ function analyze(rows) {
 
   const last = merged.at(-1);
   const prev = merged.at(-2);
-  const recent = merged.slice(-20);
   const volatilityPct = (last.atr / last.close) * 100;
-  const volatilityOk = volatilityPct < 1.35;
+  const volatilityOk = volatilityPct < 1.5;
   const trendUp = last.sma20 > last.sma50 && last.close > last.sma50;
   const trendDown = last.sma20 < last.sma50 && last.close < last.sma50;
   const longTrendUp = last.sma200 != null && last.close > last.sma200;
   const longTrendDown = last.sma200 != null && last.close < last.sma200;
   const momentumUp = last.macd > last.macdSignal && last.macdHist > prev.macdHist;
   const momentumDown = last.macd < last.macdSignal && last.macdHist < prev.macdHist;
-  const rsiBuyZone = last.rsi >= 42 && last.rsi <= 64;
-  const rsiSellZone = last.rsi >= 36 && last.rsi <= 58;
+  const rsiBuyZone = last.rsi < 55;
+  const rsiSellZone = last.rsi > 45;
   const notExtendedLong = last.bUpper == null || last.close < last.bUpper;
   const notExtendedShort = last.bLower == null || last.close > last.bLower;
-  const quietEnough = stdev(recent.map((row) => row.close)) / last.close < 0.018;
+  const priceRising = rows.length >= 5 && last.close > rows[rows.length - 5].close;
+  const priceFalling = rows.length >= 5 && last.close < rows[rows.length - 5].close;
 
-  const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, quietEnough];
-  const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, quietEnough];
+  const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, priceRising];
+  const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, priceFalling];
   const buyScore = buyVotes.filter(Boolean).length;
   const sellScore = sellVotes.filter(Boolean).length;
-  const direction = buyScore >= 6 && buyScore > sellScore ? "BUY" : sellScore >= 6 && sellScore > buyScore ? "SELL" : "WAIT";
+  const direction = buyScore >= 5 && buyScore > sellScore ? "BUY" : sellScore >= 5 && sellScore > buyScore ? "SELL" : "WAIT";
   const score = Math.max(buyScore, sellScore);
   const confidence = Math.round((score / 7) * 100);
-  const risk = direction === "WAIT" || confidence < 82 || !volatilityOk ? "No trade" : "Low";
+  const risk = direction === "WAIT" || confidence < 72 || !volatilityOk ? "No trade" : "Low";
   const stopDistance = Math.max(last.atr * 1.15, last.close * 0.004);
-  const targetDistance = stopDistance * 1.7;
+  const targetDistance = stopDistance * 2.0;
   const entry = last.close;
   const stop = direction === "BUY" ? entry - stopDistance : entry + stopDistance;
   const target = direction === "BUY" ? entry + targetDistance : entry - targetDistance;
   const reasons = [
     { ok: trendUp || trendDown, text: trendUp ? "Short-term trend supports buying" : trendDown ? "Short-term trend supports selling" : "Trend is mixed" },
     { ok: momentumUp || momentumDown, text: momentumUp ? "MACD momentum confirms upside" : momentumDown ? "MACD momentum confirms downside" : "MACD momentum is not confirmed" },
-    { ok: rsiBuyZone || rsiSellZone, text: `RSI is ${last.rsi.toFixed(0)}, away from dangerous extremes` },
+    { ok: rsiBuyZone || rsiSellZone, text: `RSI is ${last.rsi.toFixed(0)}${last.rsi < 55 ? ", not overbought" : last.rsi > 45 ? ", not oversold" : ""}` },
     { ok: volatilityOk, text: volatilityOk ? "Volatility is acceptable for low-risk mode" : "Volatility is too high for low-risk mode" },
-    { ok: quietEnough, text: quietEnough ? "Recent price action is controlled" : "Recent price action is choppy" },
+    { ok: priceRising || priceFalling, text: priceRising ? "Price trending up over last 5 bars" : priceFalling ? "Price trending down over last 5 bars" : "Price direction unclear over last 5 bars" },
   ];
   return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, reasons, buyScore, sellScore, volatilityPct };
 }
