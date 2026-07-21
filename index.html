@@ -725,6 +725,18 @@ function analyze(rows) {
   const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
   const volSma = hasVolume ? sma(rows.map(r => r.volume), 20) : null;
   const volSurge = hasVolume && volSma && last.volume > volSma.at(-1) * 1.3;
+  const recentCloses = closes.slice(-10);
+  const recentRsis = rsi14.slice(-10).filter(v => v != null);
+  const priceLowNow = Math.min(...recentCloses.slice(-5));
+  const priceLowPrev = Math.min(...recentCloses.slice(0, 5));
+  const priceHighNow = Math.max(...recentCloses.slice(-5));
+  const priceHighPrev = Math.max(...recentCloses.slice(0, 5));
+  const rsiLowNow = Math.min(...recentRsis.slice(-5));
+  const rsiLowPrev = Math.min(...recentRsis.slice(0, 5));
+  const rsiHighNow = Math.max(...recentRsis.slice(-5));
+  const rsiHighPrev = Math.max(...recentRsis.slice(0, 5));
+  const bullishDiv = priceLowNow < priceLowPrev && rsiLowNow > rsiLowPrev;
+  const bearishDiv = priceHighNow > priceHighPrev && rsiHighNow < rsiHighPrev;
 
   const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, priceRising];
   const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, priceFalling];
@@ -733,7 +745,8 @@ function analyze(rows) {
   const direction = buyScore >= 5 && buyScore > sellScore ? "BUY" : sellScore >= 5 && sellScore > buyScore ? "SELL" : "WAIT";
   const score = Math.max(buyScore, sellScore);
   const volBonus = volSurge ? 10 : 0;
-  const confidence = Math.min(100, Math.round((score / 7) * 100) + volBonus);
+  const divBonus = direction === "BUY" && bullishDiv ? 12 : direction === "SELL" && bearishDiv ? 12 : 0;
+  const confidence = Math.min(100, Math.round((score / 7) * 100) + volBonus + divBonus);
   const risk = direction === "WAIT" || confidence < 72 || !volatilityOk ? "No trade" : "Low";
   const stopDistance = Math.max(last.atr * 1.15, last.close * 0.004);
   const targetDistance = stopDistance * 2.0;
@@ -747,6 +760,7 @@ function analyze(rows) {
     { ok: volatilityOk, text: volatilityOk ? "Volatility is acceptable for low-risk mode" : `Volatility ${volatilityPct.toFixed(2)}% exceeds pair's normal range` },
     { ok: priceRising || priceFalling, text: priceRising ? "Price trending up over last 5 bars" : priceFalling ? "Price trending down over last 5 bars" : "Price direction unclear over last 5 bars" },
     { ok: volSurge, text: volSurge ? "Above-average volume confirms the move" : "Volume does not confirm unusual activity" },
+    { ok: bullishDiv || bearishDiv, text: bullishDiv ? "Bullish RSI divergence detected — momentum building" : bearishDiv ? "Bearish RSI divergence detected — momentum fading" : "No RSI divergence pattern" },
   ];
   return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, reasons, buyScore, sellScore, volatilityPct };
 }
@@ -1034,6 +1048,8 @@ function loadHistory() {
     if (saved) {
       autoScan.history = JSON.parse(saved);
       autoScan.history.forEach(e => e.timestamp = new Date(e.timestamp));
+      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      autoScan.history = autoScan.history.filter(e => e.result !== "pending" || (e.id || 0) > cutoff);
     }
   } catch {}
 }
@@ -1117,13 +1133,22 @@ async function scanPairForOverview(pair) {
     scheduleRender();
     const rows = nonFiat.has(base) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
     const analysis = rows.length >= 80 ? analyze(rows) : null;
-    const task = analysis ? { direction: analysis.direction, confidence: analysis.confidence, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
+    let mtfConf = 0;
+    if (analysis && analysis.direction !== "WAIT" && nonFiat.has(base)) {
+      try {
+        const rows4h = await fetchBinanceRows(base, quote, "4h");
+        const a4h = rows4h.length >= 80 ? analyze(rows4h) : null;
+        if (a4h) mtfConf = a4h.direction === analysis.direction ? 15 : a4h.direction !== "WAIT" ? -20 : 0;
+      } catch {}
+    }
+    const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
+    const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
     const isNew = addSignalToHistory(pair, task);
     const lastRow = rows.at(-1);
     const price = lastRow ? lastRow.close : null;
     const change = rows.length >= 2 ? ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100 : null;
     multiScan.results[pair] = {
-      loading: false, direction: analysis?.direction ?? "WAIT", confidence: analysis?.confidence ?? 0,
+      loading: false, direction: analysis?.direction ?? "WAIT", confidence: conf,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
       entry: analysis?.entry, stop: analysis?.stop, target: analysis?.target,
     };
@@ -1758,6 +1783,7 @@ loadWebhook();
 setupEvents();
 load();
 connectWS();
+startAutoScan();
 setInterval(updateOverviewPrices, 10000);
 setInterval(updateLivePrice, 15000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
