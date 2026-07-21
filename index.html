@@ -865,7 +865,7 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${(scanPairs.slice().sort((a,b) => { const wa = watchlist.includes(a); const wb = watchlist.includes(b); return wa === wb ? 0 : wa ? -1 : 1; })).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/7 📉${r.sellScore}/7</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button></div>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
@@ -1251,6 +1251,9 @@ function connectWS() {
           if (!pos) return;
           const pnlVal = pos.direction === "BUY" ? price - pos.entry : pos.entry - price;
           const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+          const hitStop = pos.direction === "BUY" ? price <= pos.stop : price >= pos.stop;
+          const hitTarget = pos.direction === "BUY" ? price >= pos.target : price <= pos.target;
+          if (hitStop || hitTarget) { closeTrade(pos.id, price); return; }
           const pnlEl = row.querySelector(".pos-profit, .pos-loss");
           if (pnlEl) { pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%"; pnlEl.className = pnlVal >= 0 ? "pos-profit" : "pos-loss"; }
         });
@@ -1335,8 +1338,12 @@ async function updateOverviewPrices() {
       if (spans.length >= 2) spans[1].textContent = "Cur " + formatPrice(d.price, pair);
       const pos = positions.find(p => !p.closedAt && p.pair === pair);
       if (!pos) return;
-      const pnlVal = pos.direction === "BUY" ? d.price - pos.entry : pos.entry - d.price;
+      const price = d.price;
+      const pnlVal = pos.direction === "BUY" ? price - pos.entry : pos.entry - price;
       const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+      const hitStop = pos.direction === "BUY" ? price <= pos.stop : price >= pos.stop;
+      const hitTarget = pos.direction === "BUY" ? price >= pos.target : price <= pos.target;
+      if (hitStop || hitTarget) { closeTrade(pos.id, price); return; }
       const pnlEl = row.querySelector(".pos-profit, .pos-loss");
       if (pnlEl) {
         pnlEl.textContent = (pnlVal >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
