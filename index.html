@@ -812,6 +812,10 @@ function render() {
             <input type="url" id="webhookInput" value="${webhookUrl}" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
             <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
           </div>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="scan-button" id="exportData" style="font-size:.7rem">⬇ Export data</button>
+            <label style="background:#1f2a36;border:1px solid #394757;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.7rem;color:#e6edf3">⬆ Import<input type="file" id="importFile" accept=".json" style="display:none"></label>
+          </div>
         </div>
         <div class="screenshot-panel" id="screenshotPanel" style="display:none;padding:12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:8px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -874,7 +878,7 @@ function render() {
       <section class="overview-section">
         <div class="overview-head">
           <h3>Market Overview</h3>
-          <span class="ov-progress" id="ovProgress">${multiScan.progress}</span>
+          <span class="ov-progress" id="ovProgress">${multiScan.progress}${autoScan.enabled ? ` · <span id="scanCountdown">${scanCountdown}s</span>` : ""}</span>
           <div style="display:flex;gap:6px">
             <button class="icon-button" id="toggleScanConfig" title="Configure pairs">⚙</button>
             <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
@@ -1065,6 +1069,32 @@ function playBeep() {
     osc.frequency.setValueAtTime(880, ctx.currentTime);
     osc.connect(ctx.destination);
     osc.start(); osc.stop(ctx.currentTime + 0.12);
+  } catch {}
+}
+
+function exportAllData() {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    history: autoScan.history,
+    positions: positions.map(p => ({ ...p, openedAt: p.openedAt.toISOString(), closedAt: p.closedAt ? p.closedAt.toISOString() : null })),
+    watchlist, alerts, scanPairs, webhookUrl,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "trading_dashboard_backup.json";
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
+
+function importAllData(json) {
+  try {
+    const data = JSON.parse(json);
+    if (!data.history || !data.positions) return;
+    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) }));
+    positions = data.positions.map(p => ({ ...p, openedAt: new Date(p.openedAt), closedAt: p.closedAt ? new Date(p.closedAt) : null }));
+    if (data.watchlist) watchlist = data.watchlist;
+    if (data.alerts) alerts = data.alerts;
+    if (data.scanPairs) { scanPairs = data.scanPairs; saveScanConfig(); }
+    if (data.webhookUrl != null) { webhookUrl = data.webhookUrl; saveWebhook(); }
+    saveHistory(); savePositions(); saveWatchlist(); saveAlerts(); render();
   } catch {}
 }
 
@@ -1381,9 +1411,13 @@ async function updateOverviewPrices() {
   } catch (e) { console.warn("livePrice update error:", e); }
 }
 
+let scanCountdown = 60;
+let scanCountdownId = null;
+
 function startAutoScan() {
   if (autoScan.intervalId) return;
   autoScan.enabled = true;
+  scanCountdown = 60;
   updateScanUI();
   (async () => {
     await loadDataOnly();
@@ -1395,7 +1429,10 @@ function startAutoScan() {
     if (livePrice.intervalId) clearInterval(livePrice.intervalId);
     livePrice.intervalId = setInterval(updateLivePrice, 30000);
   })();
+  if (scanCountdownId) clearInterval(scanCountdownId);
+  scanCountdownId = setInterval(() => { scanCountdown = Math.max(0, scanCountdown - 1); const el = document.getElementById("scanCountdown"); if (el) el.textContent = scanCountdown + "s"; }, 1000);
   autoScan.intervalId = setInterval(async () => {
+    scanCountdown = 60;
     await loadDataOnly();
     recordSignal();
     render();
@@ -1409,6 +1446,7 @@ function stopAutoScan() {
     clearInterval(autoScan.intervalId);
     autoScan.intervalId = null;
   }
+  if (scanCountdownId) { clearInterval(scanCountdownId); scanCountdownId = null; }
   if (livePrice.intervalId) {
     clearInterval(livePrice.intervalId);
     livePrice.intervalId = null;
@@ -1520,6 +1558,19 @@ function drawChart(canvas, rows, pair) {
   }
   drawLine(ctx, rows, x, y, "bUpper", "#394757", 1);
   drawLine(ctx, rows, x, y, "bLower", "#394757", 1);
+  const swingLevels = findSwingLevels(rows, 80);
+  swingLevels.forEach(level => {
+    const yy = y(level.price);
+    if (yy < pad.top || yy > height - pad.bottom) return;
+    ctx.strokeStyle = level.type === "support" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(width - pad.right, yy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = level.type === "support" ? "rgba(63,185,80,0.6)" : "rgba(248,81,73,0.6)";
+    ctx.font = "9px Inter, sans-serif";
+    ctx.fillText(level.type === "support" ? "S" : "R", width - pad.right - 12, yy - 3);
+  });
   drawLine(ctx, rows, x, y, "sma50", "#b58cff", 1.6);
   drawLine(ctx, rows, x, y, "sma20", "#f0c35a", 1.6);
   drawLine(ctx, rows, x, y, "close", "#8dd7ff", 2.6);
@@ -1543,6 +1594,28 @@ function drawLine(ctx, rows, x, y, key, color, width) {
     }
   });
   ctx.stroke();
+}
+
+function findSwingLevels(rows, lookback = 80) {
+  const levels = [];
+  const slice = rows.slice(-lookback);
+  for (let i = 2; i < slice.length - 2; i++) {
+    if (slice[i].high > slice[i-1].high && slice[i].high > slice[i-2].high &&
+        slice[i].high > slice[i+1].high && slice[i].high > slice[i+2].high) {
+      levels.push({ price: slice[i].high, type: "resistance" });
+    }
+    if (slice[i].low < slice[i-1].low && slice[i].low < slice[i-2].low &&
+        slice[i].low < slice[i+1].low && slice[i].low < slice[i+2].low) {
+      levels.push({ price: slice[i].low, type: "support" });
+    }
+  }
+  const grouped = [];
+  const threshold = (Math.max(...levels.map(l => l.price)) - Math.min(...levels.map(l => l.price))) * 0.02;
+  for (const level of levels) {
+    const close = grouped.find(g => Math.abs(g.price - level.price) / g.price < threshold);
+    if (close) { close.count++; close.price = (close.price + level.price) / 2; } else { grouped.push({ ...level, count: 1 }); }
+  }
+  return grouped.filter(g => g.count >= 2).sort((a,b) => a.price - b.price).slice(-6);
 }
 
 function redrawChart() {
@@ -1641,6 +1714,13 @@ function setupEvents() {
     if (event.target.id === "screenshotFile") {
       ssUpload(event.target.files[0]);
     }
+    if (event.target.id === "importFile") {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => { importAllData(e.target.result); };
+      reader.readAsText(file);
+    }
   });
 
   root.addEventListener("click", (event) => {
@@ -1721,6 +1801,7 @@ function setupEvents() {
       }
       return;
     }
+    if (target.id === "exportData") { exportAllData(); return; }
     if (target.dataset.trade) {
       const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
       if (entry && entry.direction !== "WAIT") {
