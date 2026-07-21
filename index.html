@@ -356,8 +356,8 @@ async function sendWebhook(entry) {
 }
 
 const allScanPairs = [
-  "EUR/USD","GBP/USD","USD/JPY","AUD/USD","USD/CAD","NZD/USD","USD/CHF",
-  "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CHF",
+  "EUR/USD","USD/EUR","GBP/USD","USD/GBP","USD/JPY","JPY/USD","AUD/USD","USD/AUD","USD/CAD","CAD/USD","NZD/USD","USD/NZD","USD/CHF","CHF/USD",
+  "EUR/GBP","GBP/EUR","EUR/JPY","JPY/EUR","GBP/JPY","JPY/GBP","EUR/AUD","AUD/EUR","EUR/CHF","CHF/EUR",
   "XAU/USD",
   "BTC/USD","ETH/USD","SOL/USD","XRP/USD","ADA/USD","DOGE/USD","DOT/USD","LINK/USD","AVAX/USD",
 ];
@@ -806,7 +806,7 @@ function render() {
           <button class="icon-button" id="soundToggle" title="Toggle sound (M)">${soundEnabled ? "🔊" : "🔇"}</button>
           <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱</span>
         </div>
-        <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}${!nonFiat.has(state.base) && !(binanceFiat.has(state.base) && state.quote === "USD") && tf !== "1d" ? " disabled" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
+        <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
           <label style="font-size:.72rem;color:#8c98a5">Webhook URL (Discord or Telegram)</label>
           <div style="display:flex;gap:6px">
@@ -1555,11 +1555,19 @@ async function loadDataOnly() {
   state.rows = [];
   state.source = "";
   try {
-    const useBinance = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
-    if (useBinance) {
+    const canUseBinance = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
+    if (canUseBinance && state.timeframe !== "1d") {
       const tfLabel = state.timeframe === "4h" ? "4-hour" : state.timeframe === "1h" ? "1-hour" : "daily";
       state.rows = await fetchBinanceRows(state.base, state.quote, state.timeframe);
       state.source = `Binance ${names[state.base]}/${state.quote} ${tfLabel} prices`;
+    } else if (canUseBinance && state.timeframe === "1d") {
+      try {
+        state.rows = await fetchBinanceRows(state.base, state.quote, "1d");
+        state.source = `Binance ${names[state.base]}/${state.quote} daily prices`;
+      } catch {
+        state.rows = await fetchFxRows(state.base, state.quote);
+        state.source = "Frankfurter.dev daily ECB reference rates";
+      }
     } else {
       state.timeframe = "1d";
       state.rows = await fetchFxRows(state.base, state.quote);
@@ -1843,8 +1851,10 @@ function setupEvents() {
       return;
     }
     if (target.dataset.tf) {
+      if (state.timeframe === target.dataset.tf) return;
       const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
       if (ok) { state.timeframe = target.dataset.tf; load(); }
+      else if (state.base !== state.quote) { loadDataOnly(); render(); }
       return;
     }
     if (target.id === "settingsToggle") {
