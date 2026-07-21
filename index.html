@@ -802,6 +802,8 @@ function render() {
           <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
           <button class="icon-button" id="settingsToggle" title="Settings">⚙</button>
           <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot">📷</button>
+          <button class="icon-button" id="soundToggle" title="Toggle sound (M)">${soundEnabled ? "🔊" : "🔇"}</button>
+          <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱</span>
         </div>
         <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}${!nonFiat.has(state.base) && tf !== "1d" ? " disabled" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
@@ -879,7 +881,7 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/7 📉${r.sellScore}/7</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button></div>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/7 📉${r.sellScore}/7</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
@@ -1055,6 +1057,7 @@ function loadHistory() {
 }
 
 function playBeep() {
+  if (!soundEnabled) return;
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
@@ -1694,6 +1697,12 @@ function setupEvents() {
       if (panel) panel.style.display = panel.style.display === "none" ? "flex" : "none";
       return;
     }
+    if (target.id === "soundToggle") {
+      soundEnabled = !soundEnabled;
+      target.textContent = soundEnabled ? "🔊" : "🔇";
+      if (soundEnabled) playBeep();
+      return;
+    }
     if (target.id === "ssAnalyze") { ssAnalyze(); return; }
     if (target.id === "ssClear") {
       ssPoints = [];
@@ -1716,6 +1725,14 @@ function setupEvents() {
       const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
       if (entry && entry.direction !== "WAIT") {
         openTrade(entry.pair, entry.direction, entry.entry, entry.stop, entry.target);
+      }
+      return;
+    }
+    if (target.dataset.tradeOv) {
+      const pair = target.dataset.tradeOv;
+      const r = multiScan.results[pair];
+      if (r && r.direction !== "WAIT" && r.entry != null) {
+        openTrade(pair, r.direction, r.entry, r.stop, r.target);
       }
       return;
     }
@@ -1776,6 +1793,18 @@ function observeChartContainer() {
   const container = document.getElementById("chartContainer");
   if (container) resizeObserver.observe(container);
 }
+
+let soundEnabled = true;
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "r" || e.key === "R") { load(); return; }
+  if (e.key === "s" || e.key === "S") { toggleAutoScan(); return; }
+  if (e.key === "m" || e.key === "M") { soundEnabled = !soundEnabled; playBeep(); return; }
+  if (e.key === "1") { if (nonFiat.has(state.base)) { state.timeframe = "1d"; load(); } return; }
+  if (e.key === "4") { if (nonFiat.has(state.base)) { state.timeframe = "4h"; load(); } return; }
+  if (e.key === "h" || e.key === "H") { if (nonFiat.has(state.base)) { state.timeframe = "1h"; load(); } return; }
+});
 
 loadHistory();
 loadPositions();
