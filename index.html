@@ -806,7 +806,7 @@ function render() {
           <button class="icon-button" id="soundToggle" title="Toggle sound (M)">${soundEnabled ? "🔊" : "🔇"}</button>
           <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱</span>
         </div>
-        <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
+        <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}" onclick="switchTF('${tf}')">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
           <label style="font-size:.72rem;color:#8c98a5">Webhook URL (Discord or Telegram)</label>
           <div style="display:flex;gap:6px">
@@ -1547,6 +1547,13 @@ function toggleAutoScan() {
   } else {
     startAutoScan();
   }
+}
+
+function switchTF(tf) {
+  const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
+  if (state.timeframe === tf) return;
+  state.timeframe = tf;
+  if (ok) load(); else { loadDataOnly(); render(); }
 }
 
 async function loadDataOnly() {
