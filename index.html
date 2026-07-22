@@ -237,6 +237,38 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .tf-btn.active{background:#1a2533;border-color:#394757;color:#e6edf3}
 .tf-btn.disabled{opacity:.35;cursor:not-allowed}
 .tf-btn:not(.disabled):hover{border-color:#394757}
+.toggle{position:relative;display:inline-block;width:36px;height:20px;cursor:pointer}
+.toggle input{display:none}
+.toggle-track{position:absolute;inset:0;background:#1f2a36;border-radius:10px;transition:.3s}
+.toggle input:checked~.toggle-track{background:#3fb950}
+.toggle-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#e6edf3;border-radius:50%;transition:.3s}
+.toggle input:checked~.toggle-knob{left:18px}
+.cond-row{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#0e151e;border-radius:6px}
+.cond-info{display:flex;flex-direction:column;gap:2px}
+.cond-title{font-size:.78rem;font-weight:600;color:#e6edf3}
+.cond-desc{font-size:.65rem;color:#5c6a7a}
+.cond-controls{display:flex;align-items:center;gap:8px}
+@media(max-width:768px){
+  .workspace{grid-template-columns:1fr !important}
+  .summary-grid{grid-template-columns:1fr !important}
+  .topbar{padding:10px 0}
+  .topbar h1{font-size:1.15rem}
+  .eyebrow{font-size:.6rem}
+  .overview-grid{grid-template-columns:1fr 1fr !important}
+  .pair-controls{flex-wrap:wrap;gap:6px;padding:6px 8px}
+  .stats-bar{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .tf-btn{min-height:36px;font-size:.72rem;padding:6px 14px}
+  .pos-meta{flex-direction:column}
+  .settings-panel{width:100% !important}
+  .signal-panel{width:100%}
+  #root{padding:12px 12px 32px}
+  .topbar h1{font-size:1.1rem}
+  .select-wrap select{font-size:.78rem;min-width:36px;padding:2px 14px 2px 2px}
+  .signal-row span{font-size:1.2rem}
+  .signal-panel{padding:12px 14px}
+  .metric{padding:12px 14px}
+  .metric strong{font-size:1.05rem}
+}
 </style>
 </head>
 <body>
@@ -286,6 +318,36 @@ const autoScan = {
   maxEntries: 50,
 };
 
+const alertConditions = {
+  mtf_alignment: { type: "mtf_alignment", enabled: false, threshold: 0, lastFired: 0 },
+  pattern_trend: { type: "pattern_trend", enabled: false, threshold: 0, lastFired: 0 },
+  high_confidence: { type: "high_confidence", enabled: false, threshold: 85, lastFired: 0 },
+  volume_surge: { type: "volume_surge", enabled: false, threshold: 1.5, lastFired: 0 },
+  lastTestResult: "",
+};
+
+let alertHistory = [];
+let strategyName = "";
+
+function loadAlertHistory() {
+  try { const s = localStorage.getItem("alertHistory"); if (s) alertHistory = JSON.parse(s); } catch {}
+}
+function saveAlertHistory() {
+  try { localStorage.setItem("alertHistory", JSON.stringify(alertHistory)); } catch {}
+}
+function pushAlertHistory(pair, type, message) {
+  alertHistory.unshift({ timestamp: new Date().toISOString(), pair, type, message });
+  if (alertHistory.length > 100) alertHistory.length = 100;
+  saveAlertHistory();
+}
+
+function loadStrategyName() {
+  try { const s = localStorage.getItem("strategyName"); if (s) strategyName = s; } catch {}
+}
+function saveStrategyName() {
+  try { localStorage.setItem("strategyName", strategyName); } catch {}
+}
+
 let positions = [];
 
 function loadPositions() {
@@ -303,7 +365,7 @@ function savePositions() {
 }
 
 function openTrade(pair, direction, entry, stop, target) {
-  positions.push({ id: Date.now(), pair, direction, entry, stop, target, openedAt: new Date(), closedAt: null, exitPrice: null, pnl: null, pnlPct: null });
+  positions.push({ id: Date.now(), pair, direction, entry, stop, target, openedAt: new Date(), closedAt: null, exitPrice: null, pnl: null, pnlPct: null, originalStop: stop, trailingStop: false, highWater: null, lowWater: null });
   savePositions();
   render();
 }
@@ -322,6 +384,41 @@ function closeTrade(id, exitPrice) {
   recordDailyPnl(pnlCurrency);
   savePositions();
   render();
+}
+
+function updateTrailingStop(pos, price) {
+  if (pos.originalStop == null) {
+    pos.originalStop = pos.stop;
+    pos.trailingStop = false;
+    pos.highWater = pos.entry;
+    pos.lowWater = pos.entry;
+  }
+  const isBuy = pos.direction === "BUY";
+  const risk = Math.abs(pos.entry - pos.originalStop);
+  if (risk <= 0) return;
+  if (isBuy) {
+    pos.highWater = Math.max(pos.highWater || pos.entry, price);
+    const favorDist = price - pos.entry;
+    if (favorDist >= risk * 3) {
+      const atrVal = pos.atr || risk;
+      const newStop = pos.highWater - 2 * atrVal;
+      if (newStop > pos.stop) { pos.stop = newStop; pos.trailingStop = true; }
+    } else if (favorDist >= risk * 1.5) {
+      const newStop = pos.entry + risk * 0.1;
+      if (newStop > pos.stop) { pos.stop = newStop; pos.trailingStop = true; }
+    }
+  } else {
+    pos.lowWater = Math.min(pos.lowWater || pos.entry, price);
+    const favorDist = pos.entry - price;
+    if (favorDist >= risk * 3) {
+      const atrVal = pos.atr || risk;
+      const newStop = pos.lowWater + 2 * atrVal;
+      if (newStop < pos.stop) { pos.stop = newStop; pos.trailingStop = true; }
+    } else if (favorDist >= risk * 1.5) {
+      const newStop = pos.entry - risk * 0.1;
+      if (newStop < pos.stop) { pos.stop = newStop; pos.trailingStop = true; }
+    }
+  }
 }
 
 function deletePosition(id) {
@@ -353,11 +450,23 @@ function loadRiskConfig() {
     const s = localStorage.getItem("riskConfig");
     if (s) return JSON.parse(s);
   } catch {}
-  return { balance: 10000, riskPct: 1, maxPos: 5, dailyLimit: 5 };
+  return { balance: 10000, startingBalance: 10000, riskPct: 1, maxPos: 5, dailyLimit: 5 };
 }
 
 function saveRiskConfig(cfg) {
   try { localStorage.setItem("riskConfig", JSON.stringify(cfg)); } catch {}
+}
+
+function loadStrategyConfig() {
+  try {
+    const s = localStorage.getItem("strategyConfig");
+    if (s) return JSON.parse(s);
+  } catch {}
+  return { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 };
+}
+
+function saveStrategyConfig(cfg) {
+  try { localStorage.setItem("strategyConfig", JSON.stringify(cfg)); } catch {}
 }
 
 function recordDailyPnl(amount) {
@@ -406,6 +515,64 @@ function loadScanConfig() {
 
 function saveScanConfig() {
   try { localStorage.setItem("scanConfig", JSON.stringify(scanPairs)); } catch {}
+}
+
+function loadAlertConditions() {
+  try {
+    const s = localStorage.getItem("alertConditions");
+    if (s) { const saved = JSON.parse(s); Object.keys(saved).forEach(k => { if (alertConditions[k]) Object.assign(alertConditions[k], saved[k]); }); }
+  } catch {}
+}
+
+function saveAlertConditions() {
+  try { localStorage.setItem("alertConditions", JSON.stringify(alertConditions)); } catch {}
+}
+
+function evaluateAlertConditions(testMode = false) {
+  const now = Date.now();
+  const cooldown = 30 * 60 * 1000;
+  const analysis = analyze(state.rows, loadStrategyConfig());
+  if (!analysis) return [];
+  const mtf = state.mtf;
+  const rows = state.rows;
+  const fired = [];
+  Object.values(alertConditions).forEach(cond => {
+    if (!cond.enabled) return;
+    if (!testMode && now - (cond.lastFired || 0) < cooldown) return;
+    let fire = false;
+    if (cond.type === "mtf_alignment") {
+      const dirs = ["1d", "4h", "1h"].map(tf => mtf[tf]?.direction).filter(d => d);
+      dirs.push(analysis.direction);
+      if (dirs.length >= 3) { const allBuy = dirs.every(d => d === "BUY"); const allSell = dirs.every(d => d === "SELL"); fire = allBuy || allSell; }
+    }
+    if (cond.type === "pattern_trend") {
+      const hasBullishPattern = analysis.reasons.some(r => r.ok && (r.text.includes("engulfing") || r.text.includes("hammer")));
+      const hasBearishPattern = analysis.reasons.some(r => r.ok && (r.text.includes("engulfing") || r.text.includes("shooting star")));
+      const trendConfirmsBuy = analysis.direction === "BUY" && analysis.buyScore > analysis.sellScore;
+      const trendConfirmsSell = analysis.direction === "SELL" && analysis.sellScore > analysis.buyScore;
+      fire = (hasBullishPattern && trendConfirmsBuy) || (hasBearishPattern && trendConfirmsSell);
+    }
+    if (cond.type === "high_confidence") {
+      fire = analysis.confidence >= (cond.threshold || 85);
+    }
+    if (cond.type === "volume_surge") {
+      const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
+      if (hasVolume) {
+        const volSma = sma(rows.map(r => r.volume), 20);
+        const lastVol = rows.at(-1).volume;
+        const lastSma = volSma.at(-1);
+        fire = lastVol > lastSma * (cond.threshold || 1.5);
+      }
+    }
+    if (fire) {
+      cond.lastFired = now;
+      fired.push(cond.type);
+      notifySignal({ direction: analysis.direction, pair: `${state.base}/${state.quote}`, confidence: analysis.confidence, risk: analysis.risk, entry: analysis.entry });
+      pushAlertHistory(`${state.base}/${state.quote}`, cond.type, `${cond.type.replace(/_/g, " ")} triggered on ${state.base}/${state.quote} — ${analysis.direction} (${analysis.confidence}%)`);
+    }
+  });
+  if (fired.length > 0) saveAlertConditions();
+  return fired;
 }
 
 function toggleScanPair(pair) {
@@ -706,8 +873,51 @@ function generateFallbackRows(base, quote) {
   return rows;
 }
 
-function analyze(rows) {
+function detectRegime(rows) {
+  if (rows.length < 30) return { type: "ranging", adx: 0 };
+  const period = 14;
+  const len = rows.length;
+  const tr = [];
+  const plusDM = [];
+  const minusDM = [];
+  for (let i = 1; i < len; i++) {
+    tr.push(Math.max(
+      rows[i].high - rows[i].low,
+      Math.abs(rows[i].high - rows[i - 1].close),
+      Math.abs(rows[i].low - rows[i - 1].close)
+    ));
+    const upMove = rows[i].high - rows[i - 1].high;
+    const downMove = rows[i - 1].low - rows[i].low;
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+  if (tr.length < period * 2) return { type: "ranging", adx: 0 };
+  const smoothedTR = ema(tr, period);
+  const smoothedPlusDM = ema(plusDM, period);
+  const smoothedMinusDM = ema(minusDM, period);
+  const dxValues = [];
+  for (let i = 0; i < tr.length; i++) {
+    if (smoothedTR[i] == null || smoothedTR[i] === 0 || smoothedPlusDM[i] == null || smoothedMinusDM[i] == null) continue;
+    const plusDI = (smoothedPlusDM[i] / smoothedTR[i]) * 100;
+    const minusDI = (smoothedMinusDM[i] / smoothedTR[i]) * 100;
+    const sum = plusDI + minusDI;
+    dxValues.push(sum === 0 ? 0 : Math.abs(plusDI - minusDI) / sum * 100);
+  }
+  if (dxValues.length < period) return { type: "ranging", adx: 0 };
+  const adxArr = ema(dxValues, period);
+  const adx = adxArr[adxArr.length - 1] || 0;
+  return { type: adx > 25 ? "trending" : "ranging", adx: Math.round(adx * 10) / 10 };
+}
+
+function analyze(rows, cfg) {
   if (rows.length < 80) return null;
+  const threshold = cfg?.threshold ?? 5;
+  const rrRatio = cfg?.riskRewardRatio ?? 2.0;
+  const volumeMultiplier = cfg?.volumeMultiplier ?? 1.3;
+  const volMedianMultiplier = cfg?.volatilityMedianMultiplier ?? 2.5;
+  const rsiBuyThreshold = cfg?.rsiBuyThreshold ?? 55;
+  const rsiSellThreshold = cfg?.rsiSellThreshold ?? 45;
+  const regime = detectRegime(rows);
   const closes = rows.map((row) => row.close);
   const sma20 = sma(closes, 20);
   const sma50 = sma(closes, 50);
@@ -736,22 +946,22 @@ function analyze(rows) {
   const recentVols = merged.slice(-30).filter(r => r.atr != null).map(r => (r.atr / r.close) * 100);
   recentVols.sort((a,b) => a-b);
   const medianVol = recentVols.length > 0 ? recentVols[Math.floor(recentVols.length / 2)] : 1.5;
-  const volatilityOk = volatilityPct < Math.max(medianVol * 2.5, 0.3);
+  const volatilityOk = volatilityPct < Math.max(medianVol * volMedianMultiplier, 0.3);
   const trendUp = last.sma20 > last.sma50 && last.close > last.sma50;
   const trendDown = last.sma20 < last.sma50 && last.close < last.sma50;
   const longTrendUp = last.sma200 != null && last.close > last.sma200;
   const longTrendDown = last.sma200 != null && last.close < last.sma200;
   const momentumUp = last.macd > last.macdSignal && last.macdHist > prev.macdHist;
   const momentumDown = last.macd < last.macdSignal && last.macdHist < prev.macdHist;
-  const rsiBuyZone = last.rsi < 55;
-  const rsiSellZone = last.rsi > 45;
+  const rsiBuyZone = last.rsi < rsiBuyThreshold;
+  const rsiSellZone = last.rsi > rsiSellThreshold;
   const notExtendedLong = last.bUpper == null || last.close < last.bUpper;
   const notExtendedShort = last.bLower == null || last.close > last.bLower;
   const priceRising = rows.length >= 5 && last.close > rows[rows.length - 5].close;
   const priceFalling = rows.length >= 5 && last.close < rows[rows.length - 5].close;
   const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
   const volSma = hasVolume ? sma(rows.map(r => r.volume), 20) : null;
-  const volSurge = hasVolume && volSma && last.volume > volSma.at(-1) * 1.3;
+  const volSurge = hasVolume && volSma && last.volume > volSma.at(-1) * volumeMultiplier;
   const recentCloses = closes.slice(-10);
   const recentRsis = rsi14.slice(-10).filter(v => v != null);
   const priceLowNow = Math.min(...recentCloses.slice(-5));
@@ -785,22 +995,23 @@ function analyze(rows) {
   const patternSellBonus = (bearishEngulfing ? 1 : 0) + (shootingStar ? 1 : 0) + (isDoji ? 0.5 : 0);
   const buyScore = buyVotes.filter(Boolean).length + patternBuyBonus;
   const sellScore = sellVotes.filter(Boolean).length + patternSellBonus;
-  const direction = buyScore >= 5 && buyScore > sellScore ? "BUY" : sellScore >= 5 && sellScore > buyScore ? "SELL" : "WAIT";
+  const direction = buyScore >= threshold && buyScore > sellScore ? "BUY" : sellScore >= threshold && sellScore > buyScore ? "SELL" : "WAIT";
   const score = Math.max(buyScore, sellScore);
   const volBonus = volSurge ? 10 : 0;
   const divBonus = direction === "BUY" && bullishDiv ? 12 : direction === "SELL" && bearishDiv ? 12 : 0;
   const confidence = Math.min(100, Math.round((score / 7) * 100) + volBonus + divBonus);
   const risk = direction === "WAIT" || confidence < 72 || !volatilityOk ? "No trade" : "Low";
   const stopDistance = Math.max(last.atr * 1.15, last.close * 0.004);
-  const targetDistance = stopDistance * 2.0;
+  const targetDistance = stopDistance * rrRatio;
   const entry = last.close;
   const stop = direction === "BUY" ? entry - stopDistance : entry + stopDistance;
   const target = direction === "BUY" ? entry + targetDistance : entry - targetDistance;
   const reasons = [
     { ok: trendUp || trendDown, text: trendUp ? "Short-term trend supports buying" : trendDown ? "Short-term trend supports selling" : "Trend is mixed" },
     { ok: momentumUp || momentumDown, text: momentumUp ? "MACD momentum confirms upside" : momentumDown ? "MACD momentum confirms downside" : "MACD momentum is not confirmed" },
-    { ok: rsiBuyZone || rsiSellZone, text: `RSI is ${last.rsi.toFixed(0)}${last.rsi < 55 ? ", not overbought" : last.rsi > 45 ? ", not oversold" : ""}` },
+    { ok: rsiBuyZone || rsiSellZone, text: `RSI is ${last.rsi.toFixed(0)}${last.rsi < rsiBuyThreshold ? ", not overbought" : last.rsi > rsiSellThreshold ? ", not oversold" : ""}` },
     { ok: volatilityOk, text: volatilityOk ? "Volatility is acceptable for low-risk mode" : `Volatility ${volatilityPct.toFixed(2)}% exceeds pair's normal range` },
+    { ok: regime.type === "trending", text: regime.type === "trending" ? `Market regime trending (ADX ${regime.adx})` : `Market regime ranging (ADX ${regime.adx})` },
     { ok: priceRising || priceFalling, text: priceRising ? "Price trending up over last 5 bars" : priceFalling ? "Price trending down over last 5 bars" : "Price direction unclear over last 5 bars" },
     { ok: volSurge, text: volSurge ? "Above-average volume confirms the move" : "Volume does not confirm unusual activity" },
     { ok: bullishDiv || bearishDiv, text: bullishDiv ? "Bullish RSI divergence detected — momentum building" : bearishDiv ? "Bearish RSI divergence detected — momentum fading" : "No RSI divergence pattern" },
@@ -810,7 +1021,7 @@ function analyze(rows) {
     ...(hammer ? [{ ok: true, text: "Hammer pattern — potential reversal up" }] : []),
     ...(shootingStar ? [{ ok: true, text: "Shooting star — potential reversal down" }] : []),
   ];
-  return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, reasons, buyScore, sellScore, volatilityPct };
+  return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, reasons, buyScore, sellScore, volatilityPct, regime };
 }
 
 function formatPrice(value, pair) {
@@ -832,7 +1043,7 @@ function options(selected, exclude, disableNonFiat = false) {
 
 function render() {
   const pair = `${state.base}/${state.quote}`;
-  const analysis = analyze(state.rows);
+  const analysis = analyze(state.rows, loadStrategyConfig());
   const signalClass = analysis ? analysis.direction.toLowerCase() : "wait";
   const headlineSignal = state.status === "error" ? "DATA ERROR" : state.status === "ready" && analysis ? analysis.direction : "LOADING";
   root.innerHTML = `
@@ -863,6 +1074,16 @@ function render() {
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="scan-button" id="exportData" style="font-size:.7rem">⬇ Export data</button>
             <label style="background:#1f2a36;border:1px solid #394757;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.7rem;color:#e6edf3">⬆ Import<input type="file" id="importFile" accept=".json" style="display:none"></label>
+          </div>
+          <div style="border-top:1px solid #1f2a36;padding-top:6px;margin-top:4px">
+            <label style="font-size:.72rem;color:#8c98a5">Strategy Name</label>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="strategyNameInput" value="${strategyName}" placeholder="My Strategy" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+            </div>
+            <div style="display:flex;gap:6px;margin-top:4px">
+              <button class="scan-button" id="exportStrategy" style="font-size:.7rem">⬇ Export Strategy</button>
+              <label style="background:#1f2a36;border:1px solid #394757;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.7rem;color:#e6edf3">⬆ Import Strategy<input type="file" id="importStrategyFile" accept=".json" style="display:none"></label>
+            </div>
           </div>
         </div>
         <div class="screenshot-panel" id="screenshotPanel" style="display:none;padding:12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:8px">
@@ -949,9 +1170,14 @@ function render() {
 
       ${(() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss"); if (sigs.length < 3) return ""; const byPair = {}; sigs.forEach(e => { if (!byPair[e.pair]) byPair[e.pair] = { wins: 0, losses: 0, rrSumAll: 0, rrSumWins: 0, rrCount: 0 }; const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : null; if (e.result === "win") { byPair[e.pair].wins++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumWins += rr; byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } else { byPair[e.pair].losses++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } }); const pairRows = Object.entries(byPair).map(([pair, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); const avgRR = v.rrCount > 0 ? (v.rrSumAll / v.rrCount).toFixed(1) : "-"; const pf = v.losses > 0 ? (v.rrSumWins / v.losses).toFixed(2) : (v.wins > 0 ? "∞" : "0"); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:52px;text-transform:uppercase">${pair.split("/")[0]}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:28px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:36px;text-align:right;color:#8c98a5" title="Avg R:R">RR ${avgRR}</span><span style="width:36px;text-align:right;color:#5c6a7a" title="Profit Factor">PF ${pf}</span><span style="width:32px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); const months = {}; sigs.forEach(e => { const m = e.timestamp.toISOString().slice(0, 7); if (!months[m]) months[m] = { wins: 0, losses: 0 }; months[m][e.result === "win" ? "wins" : "losses"]++; }); const monthRows = Object.entries(months).sort((a,b) => a[0].localeCompare(b[0])).map(([m, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:48px">${m.slice(5)}/${m.slice(2,4)}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:30px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:40px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); return `<section class="dashboard-section"><button class="history-toggle no-select" id="dashToggle"><div class="history-toggle-left"><h3>Signal Quality Dashboard</h3></div><span class="arrow">▾</span></button><div class="history-body" id="dashBody"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:8px 0">${pairRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Win rate by pair</p>${pairRows}</div>` : ""}${monthRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Monthly win rate</p>${monthRows}</div>` : ""}</div></div></section>`; })()}
 
-      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const posSize = stopDist > 0 ? Math.round((balance * riskPct / 100) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Position Size</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}</div></div></div></div></section>`; })()}
+      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const startingBalance = rc.startingBalance ?? balance; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const realizedPnl = positions.filter(p => p.closedAt).reduce((s, p) => s + (p.pnlCurrency || 0), 0); const unrealizedPnl = positions.filter(p => !p.closedAt).reduce((s, p) => { const cp = getPosPrice(p); const diff = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (diff / p.entry) * 100 : 0; return s + pnlPct / 100 * balance; }, 0); const equity = startingBalance + realizedPnl + unrealizedPnl; const posSize = stopDist > 0 ? Math.round((equity * riskPct / 100) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Starting Balance<input type="number" id="rmStartingBalance" value="${startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 0;font-size:.72rem;color:#8c98a5">Equity: <strong style="color:#f0f4f8">$${equity.toFixed(2)}</strong> <span style="font-size:.65rem;color:#5c6a7a">(starting: $${startingBalance.toLocaleString()}, realized: <span style="color:${realizedPnl >= 0 ? '#3fb950' : '#f85149'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</span>, unrealized: <span style="color:${unrealizedPnl >= 0 ? '#3fb950' : '#f85149'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</span>)</span></div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Position Size</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}</div></div></div></div></section>`; })()}
 
+      ${renderAlertConditions()}
+      ${renderPerformanceSummary()}
+      ${renderAlertLog()}
+      ${renderStrategyConfig()}
       ${renderBacktest()}
+      ${renderComparison()}
       <section class="history-section">
         <button class="history-toggle no-select" id="historyToggle">
           <div class="history-toggle-left">
@@ -1090,7 +1316,7 @@ function addSignalToHistory(pair, task) {
 }
 
 function recordSignal() {
-  const task = state.rows.length > 0 ? analyze(state.rows) : null;
+  const task = state.rows.length > 0 ? analyze(state.rows, loadStrategyConfig()) : null;
   const dir = task?.direction ?? "WAIT";
   const isNew = addSignalToHistory(`${state.base}/${state.quote}`, task);
   if (isNew && dir !== "WAIT") notifySignal({ direction: dir, pair: `${state.base}/${state.quote}`, confidence: task.confidence, risk: task.risk, entry: task.entry });
@@ -1167,6 +1393,80 @@ function clearSignalHistory() {
   render();
 }
 
+function exportStrategy() {
+  const data = {
+    strategyName: strategyName,
+    strategyConfig: loadStrategyConfig(),
+    scanPairs: [...scanPairs],
+    exportedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (strategyName || "strategy") + ".json";
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
+
+function importStrategy(json) {
+  try {
+    const data = JSON.parse(json);
+    if (!data.strategyConfig) { alert("Invalid strategy file: missing strategyConfig"); return; }
+    if (!confirm(`Import strategy "${data.strategyName || "Unnamed"}"?\nThis will overwrite your current strategy config and scan pairs.`)) return;
+    saveStrategyConfig(data.strategyConfig);
+    if (data.scanPairs && Array.isArray(data.scanPairs)) { scanPairs = data.scanPairs; saveScanConfig(); }
+    if (data.strategyName) { strategyName = data.strategyName; saveStrategyName(); }
+    render();
+  } catch { alert("Failed to parse strategy file"); }
+}
+
+function renderAlertLog() {
+  const entries = alertHistory;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="alertLogToggle"><div class="history-toggle-left"><h3>Alert Log</h3><span class="history-count">${entries.length}</span></div><span class="arrow">▾</span></button><div class="history-body" id="alertLogBody"><div class="history-scroll" style="max-height:300px">${entries.length === 0 ? '<div class="history-empty">No alerts triggered yet.</div>' : entries.map(e => { const d = new Date(e.timestamp); return `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-bottom:1px solid #0e151e;font-size:.72rem"><span style="color:#5c6a7a;white-space:nowrap;font-variant-numeric:tabular-nums">${d.toLocaleString()}</span><span style="color:#8c98a5;font-weight:600;white-space:nowrap">${e.pair}</span><span style="color:#b58cff;white-space:nowrap">${e.type.replace(/_/g, " ")}</span><span style="color:#8c98a5;flex:1">${e.message}</span></div>`; }).join("")}</div>${entries.length > 0 ? `<div class="history-actions"><button id="clearAlertLog">Clear log</button></div>` : ""}</div></section>`;
+}
+
+function renderPerformanceSummary() {
+  const hist = autoScan.history.filter(e => e.direction !== "WAIT");
+  const resolved = hist.filter(e => e.result === "win" || e.result === "loss");
+  const closed = positions.filter(p => p.closedAt);
+  const open = positions.filter(p => !p.closedAt);
+  const totalResolved = resolved.length;
+  const wins = resolved.filter(e => e.result === "win").length;
+  const losses = resolved.filter(e => e.result === "loss").length;
+  const overallWinRate = totalResolved > 0 ? Math.round((wins / totalResolved) * 100) : 0;
+  const totalPnl = closed.reduce((s, p) => s + (p.pnlCurrency || 0), 0);
+  let bestTrade = null, worstTrade = null;
+  if (resolved.length > 0) {
+    bestTrade = resolved.reduce((b, e) => {
+      const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 0;
+      return !b || (e.result === "win" && rr > b.rr) ? { pair: e.pair, rr, result: e.result } : b;
+    }, null);
+    worstTrade = resolved.reduce((w, e) => {
+      const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 0;
+      return !w || (e.result === "loss" && rr > w.rr) ? { pair: e.pair, rr, result: e.result } : w;
+    }, null);
+    if (bestTrade && bestTrade.result !== "win") bestTrade = resolved.filter(e => e.result === "win").map(e => ({ pair: e.pair, rr: e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 0 })).sort((a, b) => b.rr - a.rr)[0] || null;
+    if (worstTrade && worstTrade.result !== "loss") worstTrade = resolved.filter(e => e.result === "loss").map(e => ({ pair: e.pair, rr: e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 0 })).sort((a, b) => b.rr - a.rr)[0] || null;
+  }
+  const totalSignals = hist.length;
+  let avgDuration = null;
+  if (closed.length > 0) {
+    const durations = closed.map(p => (new Date(p.closedAt) - new Date(p.openedAt)) / 3600000).filter(d => d > 0);
+    if (durations.length > 0) avgDuration = durations.reduce((s, d) => s + d, 0) / durations.length;
+  }
+  let winStreak = 0, lossStreak = 0, maxWinStreak = 0, maxLossStreak = 0;
+  for (const e of resolved) {
+    if (e.result === "win") { winStreak++; lossStreak = 0; if (winStreak > maxWinStreak) maxWinStreak = winStreak; }
+    else { lossStreak++; winStreak = 0; if (lossStreak > maxLossStreak) maxLossStreak = lossStreak; }
+  }
+  let totalRRWon = 0, totalRRLost = 0;
+  resolved.forEach(e => {
+    const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 0;
+    if (e.result === "win") totalRRWon += rr; else totalRRLost += rr;
+  });
+  const fmtDur = avgDuration != null ? avgDuration < 24 ? avgDuration.toFixed(1) + "h" : (avgDuration / 24).toFixed(1) + "d" : "-";
+  const fmtBest = bestTrade ? bestTrade.pair + " (+" + bestTrade.rr.toFixed(1) + "R)" : "-";
+  const fmtWorst = worstTrade ? worstTrade.pair + " (-" + worstTrade.rr.toFixed(1) + "R)" : "-";
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="perfSumToggle"><div class="history-toggle-left"><h3>Performance Summary</h3></div><span class="arrow">▾</span></button><div class="history-body" id="perfSumBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;text-align:center"><div><div style="font-size:1rem;font-weight:700;color:${overallWinRate >= 50 ? '#3fb950' : '#f85149'}">${overallWinRate}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div><div style="font-size:1rem;font-weight:700;color:${totalPnl >= 0 ? '#3fb950' : '#f85149'}">${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</div><div style="font-size:.6rem;color:#5c6a7a">Total P/L</div></div><div><div style="font-size:1rem;font-weight:700;color:#3fb950">${fmtBest}</div><div style="font-size:.6rem;color:#5c6a7a">Best Trade</div></div><div><div style="font-size:1rem;font-weight:700;color:#f85149">${fmtWorst}</div><div style="font-size:.6rem;color:#5c6a7a">Worst Trade</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${totalSignals}</div><div style="font-size:.6rem;color:#5c6a7a">Total Signals</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${open.length}</div><div style="font-size:.6rem;color:#5c6a7a">Open Positions</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${fmtDur}</div><div style="font-size:.6rem;color:#5c6a7a">Avg Duration</div></div><div><div style="font-size:1rem;font-weight:700;color:#3fb950">${maxWinStreak}</div><div style="font-size:.6rem;color:#5c6a7a">Win Streak</div></div><div><div style="font-size:1rem;font-weight:700;color:#f85149">${maxLossStreak}</div><div style="font-size:.6rem;color:#5c6a7a">Loss Streak</div></div><div><div style="font-size:1rem;font-weight:700;color:#3fb950">+${totalRRWon.toFixed(1)}R</div><div style="font-size:.6rem;color:#5c6a7a">R Won</div></div><div><div style="font-size:1rem;font-weight:700;color:#f85149">-${totalRRLost.toFixed(1)}R</div><div style="font-size:.6rem;color:#5c6a7a">R Lost</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${wins}W / ${losses}L</div><div style="font-size:.6rem;color:#5c6a7a">Record</div></div></div></div></section>`;
+}
+
 function deleteHistoryEntry(id) {
   autoScan.history = autoScan.history.filter(e => e.id !== id);
   saveHistory();
@@ -1204,17 +1504,55 @@ function calcStats() {
 }
 
 let renderPending = false;
-const backtest = { results: null, running: false, progress: "" };
+const backtest = { results: null, running: false, progress: "", comparison: null, comparing: false, multiPairMode: false, multiPairSelected: [], multiResults: null, multiRunning: false, multiProgress: "" };
+
+function saveBacktestMulti() {
+  try { localStorage.setItem("backtestMulti", JSON.stringify({ multiPairMode: backtest.multiPairMode, multiPairSelected: backtest.multiPairSelected })); } catch {}
+}
+
+function loadBacktestMulti() {
+  try {
+    const s = localStorage.getItem("backtestMulti");
+    if (s) { const d = JSON.parse(s); backtest.multiPairMode = d.multiPairMode || false; backtest.multiPairSelected = d.multiPairSelected || []; }
+  } catch {}
+}
+
+function renderAlertConditions() {
+  const c = alertConditions;
+  function tog(key) {
+    return `<label class="toggle"><input type="checkbox" data-cond-toggle="${key}" ${c[key].enabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label>`;
+  }
+  function thresh(key, min, max, step) {
+    return `<input type="number" data-cond-threshold="${key}" value="${c[key].threshold}" min="${min}" max="${max}" step="${step}" style="width:52px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem;text-align:center">`;
+  }
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="alertCondToggle"><div class="history-toggle-left"><h3>Alert Conditions</h3></div><span class="arrow">▾</span></button><div class="history-body" id="alertCondBody"><div style="padding:12px;display:flex;flex-direction:column;gap:8px">
+    <div class="cond-row"><div class="cond-info"><span class="cond-title">MTF Alignment</span><span class="cond-desc">All 3 timeframes agree on BUY or SELL</span></div><div class="cond-controls">${tog("mtf_alignment")}</div></div>
+    <div class="cond-row"><div class="cond-info"><span class="cond-title">Pattern + Trend</span><span class="cond-desc">Candlestick pattern confirms trend vote</span></div><div class="cond-controls">${tog("pattern_trend")}</div></div>
+    <div class="cond-row"><div class="cond-info"><span class="cond-title">High Confidence</span><span class="cond-desc">Confidence exceeds threshold</span></div><div class="cond-controls">${thresh("high_confidence", 50, 100, 1)}${tog("high_confidence")}</div></div>
+    <div class="cond-row"><div class="cond-info"><span class="cond-title">Volume Surge</span><span class="cond-desc">Volume > SMA × multiplier</span></div><div class="cond-controls">${thresh("volume_surge", 1.0, 5.0, 0.1)}${tog("volume_surge")}</div></div>
+    <div style="padding-top:4px;display:flex;align-items:center;gap:8px"><button class="scan-button" id="testAlertCond">Test</button>${c.lastTestResult ? `<span style="font-size:.7rem;color:#8c98a5">${c.lastTestResult}</span>` : ""}</div>
+  </div></div></section>`;
+}
+
+function renderStrategyConfig() {
+  const cfg = loadStrategyConfig();
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="stratToggle"><div class="history-toggle-left"><h3>Strategy Config</h3></div><span class="arrow">▾</span></button><div class="history-body" id="stratBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Threshold (votes)<input type="number" id="stratThreshold" value="${cfg.threshold}" min="3" max="7" step="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk/Reward ratio<input type="number" id="stratRR" value="${cfg.riskRewardRatio}" min="1.0" max="5.0" step="0.1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Volume multiplier<input type="number" id="stratVolMult" value="${cfg.volumeMultiplier}" min="1.0" max="3.0" step="0.1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Volatility median mult.<input type="number" id="stratVolMedian" value="${cfg.volatilityMedianMultiplier}" min="1.0" max="5.0" step="0.1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">RSI buy threshold<input type="number" id="stratRSIBuy" value="${cfg.rsiBuyThreshold}" min="30" max="70" step="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">RSI sell threshold<input type="number" id="stratRSISell" value="${cfg.rsiSellThreshold}" min="30" max="70" step="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:0 12px 12px"><button id="resetStratConfig" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:6px;font-size:.72rem;cursor:pointer;font-family:inherit">Reset to defaults</button></div></div></section>`;
+}
 
 function renderBacktest() {
-  if (!backtest.results && !backtest.running) {
-    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="padding:12px;font-size:.72rem;color:#8c98a5;text-align:center">Click <strong>Run Backtest</strong> to evaluate this strategy on historical data.</div><div style="padding:0 12px 12px"><button id="runBacktest" style="width:100%;padding:10px;background:#3fb950;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Run Backtest</button></div></div></section>`;
+  if (!backtest.results && !backtest.running && !backtest.comparing && !backtest.multiResults && !backtest.multiRunning) {
+    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="padding:12px;font-size:.72rem;color:#8c98a5;text-align:center">Click <strong>Run Backtest</strong> to evaluate this strategy on historical data.</div><div style="padding:0 12px 12px;display:flex;gap:8px"><button id="runBacktest" style="flex:1;padding:10px;background:#3fb950;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Run Backtest</button><button id="compareBacktest" style="flex:1;padding:10px;background:#8dd7ff;color:#0b1117;border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Compare Strategies</button></div><div style="padding:0 12px 8px"><div class="cond-row"><div class="cond-info"><span class="cond-title">Multi-Pair Mode</span><span class="cond-desc">Backtest across multiple pairs</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="mpModeToggle" ${backtest.multiPairMode ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div></div>${backtest.multiPairMode ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px">${allScanPairs.map(p => { const on = backtest.multiPairSelected.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-mp-pair="${p}" style="accent-color:#b58cff">${p}</label>`; }).join("")}<div style="width:100%;display:flex;gap:6px;margin-top:4px"><button id="mpSelectAll" style="padding:4px 10px;background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;border-radius:6px;font-size:.68rem;cursor:pointer;font-family:inherit">Select All</button><button id="mpClearAll" style="padding:4px 10px;background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;border-radius:6px;font-size:.68rem;cursor:pointer;font-family:inherit">Clear All</button></div></div><div style="padding:0 12px 12px"><button id="runMultiBacktest" style="width:100%;padding:10px;background:#b58cff;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Run Multi-Pair Backtest</button></div>` : ""}</div></section>`;
   }
-  if (backtest.running) {
-    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="padding:12px;text-align:center;color:#8c98a5;font-size:.72rem">Running backtest... ${backtest.progress}</div></div></section>`;
+  if (backtest.running || backtest.comparing) {
+    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="padding:12px;text-align:center;color:#8c98a5;font-size:.72rem">${backtest.comparing ? "Running comparison..." : "Running backtest..."} ${backtest.progress}</div></div></section>`;
+  }
+  if (backtest.multiRunning) {
+    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="padding:12px;text-align:center;color:#8c98a5;font-size:.72rem">Running multi-pair backtest... ${backtest.multiProgress}</div></div></section>`;
   }
   const r = backtest.results;
-  if (!r || r.trades.length === 0) return "";
+  if ((!r || r.trades.length === 0) && !backtest.multiResults) return "";
+  let singleResult = "";
+  if (r && r.trades.length > 0) {
   const wins = r.trades.filter(t => t.result === "win").length;
   const losses = r.trades.filter(t => t.result === "loss").length;
   const pending = r.trades.filter(t => t.result === "pending").length;
@@ -1223,26 +1561,67 @@ function renderBacktest() {
   const avgWin = wins > 0 ? r.trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
   const avgLoss = losses > 0 ? r.trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses : 0;
   const profitFactor = losses > 0 ? Math.abs(r.trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / r.trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0)) : wins > 0 ? "∞" : 0;
-  let cum = 0; let maxDd = 0; let peak = 0;
-  r.trades.forEach(t => { cum += t.pnlPct; if (cum > peak) peak = cum; const dd = peak - cum; if (dd > maxDd) maxDd = dd; });
   let eqCum = 0;
   const eqVals = r.trades.map(t => { eqCum += t.pnlPct; return eqCum; });
+  const cum = eqVals.length > 0 ? eqVals[eqVals.length - 1] : 0;
+  const eqPeaks = [];
+  let runPeak = -Infinity;
+  eqVals.forEach(v => { if (v > runPeak) runPeak = v; eqPeaks.push(runPeak); });
+  const ddSeries = eqVals.map((v, i) => eqPeaks[i] - v);
+  const maxDdPct = Math.max(...ddSeries, 0);
+  let maxDdDur = 0, ddDur = 0;
+  for (let i = 0; i < eqVals.length; i++) { if (eqVals[i] < eqPeaks[i]) { ddDur++; if (ddDur > maxDdDur) maxDdDur = ddDur; } else ddDur = 0; }
   const eqMax = Math.max(...eqVals, 0);
   const eqMin = Math.min(...eqVals, 0);
   const eqRng = eqMax - eqMin || 1;
   const eqW = 480;
-  const eqH = 64;
+  const eqH = 80;
+  const ddChartH = 36;
   const eqXs = eqVals.length > 1 ? eqW / (eqVals.length - 1) : eqW;
-  const eqPts = eqVals.map((v, i) => `${i * eqXs},${eqH - ((v - eqMin) / eqRng) * (eqH - 8) - 4}`).join(" ");
-  const eqColor = eqVals[eqVals.length - 1] >= 0 ? "#3fb950" : "#f85149";
-  const eqZeroY = eqH - ((0 - eqMin) / eqRng) * (eqH - 8) - 4;
-  const eqCurve = `<svg width="100%" height="${eqH}" viewBox="0 0 ${eqW} ${eqH}" preserveAspectRatio="none" style="display:block;border-radius:4px;background:#0b1117"><line x1="0" y1="${eqZeroY}" x2="${eqW}" y2="${eqZeroY}" stroke="#26313d" stroke-width="0.5" stroke-dasharray="3,3"/><polyline points="${eqPts}" fill="none" stroke="${eqColor}" stroke-width="1.5"/></svg>`;
+  const eqY = (v) => eqH - ((v - eqMin) / eqRng) * (eqH - 8) - 4;
+  const eqX = (i) => i * eqXs;
+  const eqZeroY = eqY(0);
+  const peakLinePts = eqPeaks.map((v, i) => `${eqX(i)},${eqY(v)}`).join(" ");
+  const ddPolyFwd = eqPeaks.map((v, i) => `${eqX(i)},${eqY(v)}`).join(" ");
+  const ddPolyBwd = [...eqVals].reverse().map((v, i) => `${eqX(eqVals.length - 1 - i)},${eqY(v)}`).join(" ");
+  const eqSegs = [];
+  for (let i = 0; i < eqVals.length; i++) {
+    const segColor = i > 0 ? (eqVals[i] >= eqVals[i - 1] ? "#3fb950" : "#f85149") : (eqVals[i] >= 0 ? "#3fb950" : "#f85149");
+    if (i > 0) eqSegs.push(`<line x1="${eqX(i - 1)}" y1="${eqY(eqVals[i - 1])}" x2="${eqX(i)}" y2="${eqY(eqVals[i])}" stroke="${segColor}" stroke-width="1.5"/>`);
+    eqSegs.push(`<circle cx="${eqX(i)}" cy="${eqY(eqVals[i])}" r="1.5" fill="${segColor}"/>`);
+  }
+  const eqCurve = `<svg width="100%" height="${eqH}" viewBox="0 0 ${eqW} ${eqH}" preserveAspectRatio="none" style="display:block;border-radius:4px;background:#0b1117"><polygon points="${ddPolyFwd} ${ddPolyBwd}" fill="rgba(248,81,73,0.12)"/><polyline points="${peakLinePts}" fill="none" stroke="#26313d" stroke-width="0.5" stroke-dasharray="3,3"/><line x1="0" y1="${eqZeroY}" x2="${eqW}" y2="${eqZeroY}" stroke="#26313d" stroke-width="0.5" stroke-dasharray="3,3"/>${eqSegs.join("")}</svg>`;
+  const ddMax = Math.max(...ddSeries, 0.1);
+  const ddY = (v) => ddChartH - (v / ddMax) * (ddChartH - 4) - 2;
+  const ddX = (i) => i * eqXs;
+  const ddPts = ddSeries.map((v, i) => `${ddX(i)},${ddY(v)}`).join(" ");
+  const ddFillPts = ddSeries.map((v, i) => `${ddX(i)},${ddY(v)}`).join(" ") + ` ${ddX(ddSeries.length - 1)},${ddChartH} ${ddX(0)},${ddChartH}`;
+  const ddChart = `<svg width="100%" height="${ddChartH}" viewBox="0 0 ${eqW} ${ddChartH}" preserveAspectRatio="none" style="display:block;border-radius:4px;background:#0b1117"><polygon points="${ddFillPts}" fill="rgba(248,81,73,0.2)"/><polyline points="${ddPts}" fill="none" stroke="#f85149" stroke-width="1"/></svg>`;
   const tradeRows = r.trades.slice(-50).reverse().map((t, i) => {
     const cls = t.direction.toLowerCase();
     const rCls = t.result === "win" ? "stat-win" : t.result === "loss" ? "stat-loss" : "";
     return `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:2px 0;border-bottom:1px solid #0e151e"><span style="width:14px;font-size:.55rem">${r.trades.length - i}</span><span style="width:56px;text-transform:uppercase">${t.date}</span><span style="width:32px;font-weight:600;color:${t.direction === 'BUY' ? '#3fb950' : '#f85149'}">${t.direction}</span><span style="width:44px;text-align:right;font-variant-numeric:tabular-nums">${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(1)}%</span><span style="flex:1;height:4px;background:#1f2a36;border-radius:2px;overflow:hidden"><div style="width:${Math.min(Math.abs(t.pnlPct) * 5, 100)}%;height:100%;background:${t.pnlPct >= 0 ? '#3fb950' : '#f85149'};border-radius:2px"></div></span><span style="width:30px;text-align:right;font-size:.58rem;color:${t.result === 'win' ? '#3fb950' : t.result === 'loss' ? '#f85149' : '#73808d'}">${t.result === 'win' ? 'W' : t.result === 'loss' ? 'L' : '?'}</span></div>`;
   }).join("");
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDd.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div>${eqCurve}</div><div style="padding:8px 12px"><button id="runBacktest" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
+  singleResult = `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD (${maxDdDur}t)</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div>${eqCurve}</div><div style="padding:0 12px 4px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Drawdown</div>${ddChart}</div><div style="padding:8px 12px"><button id="runBacktest" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
+}
+  }
+  let multiResult = "";
+  if (backtest.multiResults) {
+    const mr = backtest.multiResults;
+    const pairs = Object.keys(mr);
+    const totalSignals = pairs.reduce((s, p) => s + mr[p].signals, 0);
+    const allWins = pairs.reduce((s, p) => s + mr[p].wins, 0);
+    const allLosses = pairs.reduce((s, p) => s + mr[p].losses, 0);
+    const overallWr = totalSignals > 0 ? Math.round((allWins / totalSignals) * 100) : 0;
+    let bestPair = "", bestWr = -1, worstPair = "", worstWr = 101;
+    pairs.forEach(p => { if (mr[p].signals > 0 && mr[p].winRate > bestWr) { bestWr = mr[p].winRate; bestPair = p; } if (mr[p].signals > 0 && mr[p].winRate < worstWr) { worstWr = mr[p].winRate; worstPair = p; } });
+    const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid #0e151e"><span style="width:64px;font-weight:600;color:#e6edf3">${p}</span><span style="width:40px;text-align:right;color:#8c98a5">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? '#3fb950' : '#f85149'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:#8c98a5">${d.avgRR}</span><span style="width:40px;text-align:right;color:#8c98a5">${d.profitFactor}</span><span style="width:48px;text-align:right;color:#f85149">${d.maxDD}</span></div>`; }).join("");
+    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${totalSignals}</div><div style="font-size:.6rem;color:#5c6a7a">Total Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? '#3fb950' : '#f85149'}">${overallWr}%</div><div style="font-size:.6rem;color:#5c6a7a">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">${bestPair}</div><div style="font-size:.6rem;color:#5c6a7a">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${worstPair}</div><div style="font-size:.6rem;color:#5c6a7a">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${pairs.length}</div><div style="font-size:.6rem;color:#5c6a7a">Pairs Tested</div></div></div><div style="padding:0 12px 4px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:#5c6a7a;font-weight:600;border-bottom:1px solid #1f2a36"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Sigs</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div>`;
+  }
+  if (!singleResult && !multiResult) return "";
+  const mpPairs = allScanPairs;
+  const mpCheckboxes = backtest.multiPairMode ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:8px">${mpPairs.map(p => { const on = backtest.multiPairSelected.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-mp-pair="${p}" style="accent-color:#b58cff">${p}</label>`; }).join("")}<div style="width:100%;display:flex;gap:6px;margin-top:4px"><button id="mpSelectAll" style="padding:4px 10px;background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;border-radius:6px;font-size:.68rem;cursor:pointer;font-family:inherit">Select All</button><button id="mpClearAll" style="padding:4px 10px;background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;border-radius:6px;font-size:.68rem;cursor:pointer;font-family:inherit">Clear All</button></div></div>` : "";
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody">${singleResult}${multiResult}<div style="padding:0 12px 8px"><div class="cond-row"><div class="cond-info"><span class="cond-title">Multi-Pair Mode</span><span class="cond-desc">Backtest across multiple pairs</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="mpModeToggle" ${backtest.multiPairMode ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div></div>${mpCheckboxes}${backtest.multiPairMode ? `<div style="padding:0 12px 12px"><button id="runMultiBacktest" style="width:100%;padding:10px;background:#b58cff;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Run Multi-Pair Backtest</button></div>` : ""}<div style="padding:8px 12px;display:flex;gap:8px"><button id="runBacktest" style="flex:1;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
 }
 
 async function runBacktestImpl() {
@@ -1254,12 +1633,13 @@ async function runBacktestImpl() {
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
     if (rows.length < 120) { backtest.running = false; render(); return; }
+    const cfg = loadStrategyConfig();
     const trades = [];
     for (let i = 100; i < rows.length; i++) {
       backtest.progress = `${i - 99}/${rows.length - 100}`;
       if (i % 50 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
       const slice = rows.slice(0, i + 1);
-      const analysis = analyze(slice);
+      const analysis = analyze(slice, cfg);
       if (!analysis || analysis.direction === "WAIT") continue;
       const entry = analysis.entry || slice[i].close;
       const stop = analysis.stop;
@@ -1296,6 +1676,148 @@ async function runBacktestImpl() {
   render();
 }
 
+async function runCompareBacktestImpl() {
+  if (backtest.running || backtest.comparing) return;
+  backtest.comparing = true;
+  backtest.comparison = null;
+  backtest.progress = "";
+  render();
+  try {
+    const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
+    if (rows.length < 120) { backtest.comparing = false; render(); return; }
+    const defaultCfg = { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 };
+    const customCfg = loadStrategyConfig();
+    function runCfg(cfg) {
+      const trades = [];
+      for (let i = 100; i < rows.length; i++) {
+        const slice = rows.slice(0, i + 1);
+        const a = analyze(slice, cfg);
+        if (!a || a.direction === "WAIT") continue;
+        const entry = a.entry || slice[i].close;
+        const stop = a.stop;
+        const target = a.target;
+        if (stop == null || target == null) continue;
+        const isBuy = a.direction === "BUY";
+        const riskPct = isBuy ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
+        const rewardPct = isBuy ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
+        let result = "pending";
+        let pnlPct = 0;
+        for (let j = i + 1; j < rows.length; j++) {
+          const bar = rows[j];
+          if (isBuy) {
+            if (bar.high >= target) { result = "win"; pnlPct = rewardPct; break; }
+            if (bar.low <= stop) { result = "loss"; pnlPct = -riskPct; break; }
+          } else {
+            if (bar.low <= target) { result = "win"; pnlPct = rewardPct; break; }
+            if (bar.high >= stop) { result = "loss"; pnlPct = -riskPct; break; }
+          }
+        }
+        if (result === "pending") pnlPct = 0;
+        trades.push({ result, pnlPct });
+      }
+      return trades;
+    }
+    backtest.progress = "Default config...";
+    render();
+    await new Promise(r => setTimeout(r, 0));
+    const defTrades = runCfg(defaultCfg);
+    backtest.progress = "Custom config...";
+    render();
+    await new Promise(r => setTimeout(r, 0));
+    const cstTrades = runCfg(customCfg);
+    function metrics(trades) {
+      const total = trades.length;
+      const wins = trades.filter(t => t.result === "win");
+      const losses = trades.filter(t => t.result === "loss");
+      const wr = total > 0 ? Math.round((wins.length / total) * 100) : 0;
+      const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnlPct, 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length) : 0;
+      const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
+      const pf = losses.length > 0 ? (Math.abs(wins.reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins.length > 0 ? "∞" : "0");
+      let eq = 0;
+      let peak = -Infinity;
+      let maxDD = 0;
+      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
+      return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+    }
+    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades) };
+  } catch {}
+  backtest.comparing = false;
+  render();
+}
+
+function renderComparison() {
+  if (!backtest.comparison) return "";
+  const d = backtest.comparison.default;
+  const c = backtest.comparison.custom;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem"><div style="color:#5c6a7a;font-weight:600;padding:4px 0">Metric</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Default</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Custom</div><div style="color:#8c98a5;padding:4px 0">Signals</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.signals}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.signals}</div><div style="color:#8c98a5;padding:4px 0">Win Rate</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.winRate}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.winRate}</div><div style="color:#8c98a5;padding:4px 0">Avg R:R</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.avgRR}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.avgRR}</div><div style="color:#8c98a5;padding:4px 0">Profit Factor</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.profitFactor}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.profitFactor}</div><div style="color:#8c98a5;padding:4px 0">Max DD</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.maxDD}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.maxDD}</div></div></div></section>`;
+}
+
+async function runMultiPairBacktest() {
+  if (backtest.multiRunning) return;
+  const selected = [...backtest.multiPairSelected];
+  if (selected.length === 0) return;
+  backtest.multiRunning = true;
+  backtest.multiResults = null;
+  backtest.multiProgress = "";
+  render();
+  const results = {};
+  const cfg = loadStrategyConfig();
+  for (let i = 0; i < selected.length; i++) {
+    const pair = selected[i];
+    backtest.multiProgress = `${i + 1}/${selected.length} (${pair})`;
+    if (i % 3 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
+    try {
+      const [base, quote] = pair.split("/");
+      const rows = await fetchBinanceRows(base, quote, "1d", 1000);
+      if (rows.length < 120) { results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" }; continue; }
+      const trades = [];
+      for (let j = 100; j < rows.length; j++) {
+        const slice = rows.slice(0, j + 1);
+        const analysis = analyze(slice, cfg);
+        if (!analysis || analysis.direction === "WAIT") continue;
+        const entry = analysis.entry || slice[j].close;
+        const stop = analysis.stop;
+        const target = analysis.target;
+        if (stop == null || target == null) continue;
+        const isBuy = analysis.direction === "BUY";
+        const riskPct = isBuy ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
+        const rewardPct = isBuy ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
+        let result = "pending";
+        let pnlPct = 0;
+        for (let k = j + 1; k < rows.length; k++) {
+          const bar = rows[k];
+          if (isBuy) {
+            if (bar.high >= target) { result = "win"; pnlPct = rewardPct; break; }
+            if (bar.low <= stop) { result = "loss"; pnlPct = -riskPct; break; }
+          } else {
+            if (bar.low <= target) { result = "win"; pnlPct = rewardPct; break; }
+            if (bar.high >= stop) { result = "loss"; pnlPct = -riskPct; break; }
+          }
+        }
+        if (result === "pending") pnlPct = 0;
+        trades.push({ result, pnlPct });
+      }
+      const wins = trades.filter(t => t.result === "win").length;
+      const losses = trades.filter(t => t.result === "loss").length;
+      const total = trades.length;
+      const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
+      const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
+      const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
+      const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
+      const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
+      let eq = 0, peak = -Infinity, maxDD = 0;
+      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
+      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+    } catch {
+      results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" };
+    }
+  }
+  backtest.multiResults = results;
+  backtest.multiRunning = false;
+  render();
+}
+
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
@@ -1308,12 +1830,13 @@ async function scanPairForOverview(pair) {
     multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
     scheduleRender();
     const rows = (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
-    const analysis = rows.length >= 80 ? analyze(rows) : null;
+    const cfg = loadStrategyConfig();
+    const analysis = rows.length >= 80 ? analyze(rows, cfg) : null;
     let mtfConf = 0;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
       try {
         const rows4h = await fetchBinanceRows(base, quote, "4h");
-        const a4h = rows4h.length >= 80 ? analyze(rows4h) : null;
+        const a4h = rows4h.length >= 80 ? analyze(rows4h, cfg) : null;
         if (a4h) mtfConf = a4h.direction === analysis.direction ? 15 : a4h.direction !== "WAIT" ? -20 : 0;
       } catch {}
     }
@@ -1452,6 +1975,8 @@ function connectWS() {
           if (!pos) return;
           const pnlVal = pos.direction === "BUY" ? price - pos.entry : pos.entry - price;
           const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+          updateTrailingStop(pos, price);
+          savePositions();
           const hitStop = pos.direction === "BUY" ? price <= pos.stop : price >= pos.stop;
           const hitTarget = pos.direction === "BUY" ? price >= pos.target : price <= pos.target;
           if (hitStop || hitTarget) { closeTrade(pos.id, price); return; }
@@ -1544,6 +2069,8 @@ async function updateOverviewPrices() {
       const price = d.price;
       const pnlVal = pos.direction === "BUY" ? price - pos.entry : pos.entry - price;
       const pnlPct = pos.entry ? (pnlVal / pos.entry) * 100 : 0;
+      updateTrailingStop(pos, price);
+      savePositions();
       const hitStop = pos.direction === "BUY" ? price <= pos.stop : price >= pos.stop;
       const hitTarget = pos.direction === "BUY" ? price >= pos.target : price <= pos.target;
       if (hitStop || hitTarget) { closeTrade(pos.id, price); return; }
@@ -1567,6 +2094,7 @@ function startAutoScan() {
   (async () => {
     await loadDataOnly();
     recordSignal();
+    evaluateAlertConditions();
     render();
     await verifySignals();
     await checkAlerts();
@@ -1580,6 +2108,7 @@ function startAutoScan() {
     scanCountdown = 60;
     await loadDataOnly();
     recordSignal();
+    evaluateAlertConditions();
     render();
     await verifySignals();
     await checkAlerts();
@@ -1665,10 +2194,11 @@ async function load() {
   if (canMTF) {
     const tfs = ["1d", "4h", "1h"].filter(tf => tf !== state.timeframe);
     for (const tf of tfs) {
-      try { const rows = await fetchBinanceRows(state.base, state.quote, tf); if (rows.length >= 80) state.mtf[tf] = analyze(rows); } catch {}
+      try { const rows = await fetchBinanceRows(state.base, state.quote, tf); if (rows.length >= 80)       state.mtf[tf] = analyze(rows, loadStrategyConfig()); } catch {}
     }
   }
   recordSignal();
+  evaluateAlertConditions();
   render();
   await verifySignals();
   await checkAlerts();
@@ -1815,7 +2345,7 @@ function findSwingLevels(rows, lookback = 80) {
 
 function redrawChart() {
   const canvas = document.getElementById("priceChart");
-  const analysis = state.rows.length > 0 ? analyze(state.rows) : null;
+  const analysis = state.rows.length > 0 ? analyze(state.rows, loadStrategyConfig()) : null;
   if (canvas && analysis) {
     drawChart(canvas, analysis.chartRows, `${state.base}/${state.quote}`);
   }
@@ -1892,14 +2422,42 @@ function setupEvents() {
       webhookUrl = event.target.value;
       saveWebhook();
     }
-    if (event.target.id === "rmBalance" || event.target.id === "rmRisk" || event.target.id === "rmMaxPos" || event.target.id === "rmDailyLimit") {
+    if (event.target.id === "strategyNameInput") {
+      strategyName = event.target.value;
+      saveStrategyName();
+    }
+    if (event.target.id === "rmBalance" || event.target.id === "rmRisk" || event.target.id === "rmMaxPos" || event.target.id === "rmDailyLimit" || event.target.id === "rmStartingBalance") {
       const cfg = loadRiskConfig();
       if (event.target.id === "rmBalance") cfg.balance = Number(event.target.value) || 10000;
+      if (event.target.id === "rmStartingBalance") cfg.startingBalance = Number(event.target.value) || 10000;
       if (event.target.id === "rmRisk") cfg.riskPct = Number(event.target.value) || 1;
       if (event.target.id === "rmMaxPos") cfg.maxPos = Number(event.target.value) || 5;
       if (event.target.id === "rmDailyLimit") cfg.dailyLimit = Number(event.target.value) || 5;
       saveRiskConfig(cfg);
       render();
+    }
+    if (event.target.id === "stratThreshold" || event.target.id === "stratRR" || event.target.id === "stratVolMult" || event.target.id === "stratVolMedian" || event.target.id === "stratRSIBuy" || event.target.id === "stratRSISell") {
+      const cfg = loadStrategyConfig();
+      if (event.target.id === "stratThreshold") cfg.threshold = Math.min(7, Math.max(3, Number(event.target.value) || 5));
+      if (event.target.id === "stratRR") cfg.riskRewardRatio = Math.min(5, Math.max(1, Number(event.target.value) || 2));
+      if (event.target.id === "stratVolMult") cfg.volumeMultiplier = Math.min(3, Math.max(1, Number(event.target.value) || 1.3));
+      if (event.target.id === "stratVolMedian") cfg.volatilityMedianMultiplier = Math.min(5, Math.max(1, Number(event.target.value) || 2.5));
+      if (event.target.id === "stratRSIBuy") cfg.rsiBuyThreshold = Math.min(70, Math.max(30, Number(event.target.value) || 55));
+      if (event.target.id === "stratRSISell") cfg.rsiSellThreshold = Math.min(70, Math.max(30, Number(event.target.value) || 45));
+      saveStrategyConfig(cfg);
+      render();
+    }
+    if (event.target.dataset.condToggle) {
+      const key = event.target.dataset.condToggle;
+      alertConditions[key].enabled = event.target.checked;
+      saveAlertConditions();
+      return;
+    }
+    if (event.target.dataset.condThreshold) {
+      const key = event.target.dataset.condThreshold;
+      alertConditions[key].threshold = Number(event.target.value) || 0;
+      saveAlertConditions();
+      return;
     }
     if (event.target.dataset.notePos) {
       try {
@@ -1922,6 +2480,21 @@ function setupEvents() {
     if (event.target.dataset.scanPair) {
       toggleScanPair(event.target.dataset.scanPair);
     }
+    if (event.target.id === "mpModeToggle") {
+      backtest.multiPairMode = event.target.checked;
+      saveBacktestMulti();
+      render();
+      return;
+    }
+    if (event.target.dataset.mpPair) {
+      const pair = event.target.dataset.mpPair;
+      const idx = backtest.multiPairSelected.indexOf(pair);
+      if (idx >= 0) backtest.multiPairSelected.splice(idx, 1);
+      else backtest.multiPairSelected.push(pair);
+      saveBacktestMulti();
+      render();
+      return;
+    }
     if (event.target.id === "screenshotFile") {
       ssUpload(event.target.files[0]);
     }
@@ -1930,6 +2503,13 @@ function setupEvents() {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => { importAllData(e.target.result); };
+      reader.readAsText(file);
+    }
+    if (event.target.id === "importStrategyFile") {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => { importStrategy(e.target.result); };
       reader.readAsText(file);
     }
   });
@@ -2013,6 +2593,7 @@ function setupEvents() {
       return;
     }
     if (target.id === "exportData") { exportAllData(); return; }
+    if (target.id === "exportStrategy") { exportStrategy(); return; }
     if (target.dataset.trade) {
       const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
       if (entry && entry.direction !== "WAIT") {
@@ -2063,6 +2644,10 @@ function setupEvents() {
       clearSignalHistory();
     }
     if (target.id === "runBacktest") { runBacktestImpl(); return; }
+    if (target.id === "compareBacktest") { runCompareBacktestImpl(); return; }
+    if (target.id === "runMultiBacktest") { runMultiPairBacktest(); return; }
+    if (target.id === "mpSelectAll") { backtest.multiPairSelected = [...allScanPairs]; saveBacktestMulti(); render(); return; }
+    if (target.id === "mpClearAll") { backtest.multiPairSelected = []; saveBacktestMulti(); render(); return; }
     if (target.id === "backtestToggle") {
       const body = document.getElementById("backtestBody");
       const toggle = document.getElementById(target.id);
@@ -2071,6 +2656,54 @@ function setupEvents() {
     }
     if (target.id === "riskToggle") {
       const body = document.getElementById("riskBody");
+      const toggle = document.getElementById(target.id);
+      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
+      return;
+    }
+    if (target.id === "stratToggle") {
+      const body = document.getElementById("stratBody");
+      const toggle = document.getElementById(target.id);
+      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
+      return;
+    }
+    if (target.id === "resetStratConfig") {
+      saveStrategyConfig({ threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 });
+      render();
+      return;
+    }
+    if (target.id === "alertCondToggle") {
+      const body = document.getElementById("alertCondBody");
+      const toggle = document.getElementById(target.id);
+      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
+      return;
+    }
+    if (target.id === "testAlertCond") {
+      const fired = evaluateAlertConditions(true);
+      alertConditions.lastTestResult = fired.length > 0 ? `${fired.join(", ")} triggered` : "No conditions triggered";
+      saveAlertConditions();
+      render();
+      return;
+    }
+    if (target.id === "alertLogToggle") {
+      const body = document.getElementById("alertLogBody");
+      const toggle = document.getElementById(target.id);
+      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
+      return;
+    }
+    if (target.id === "clearAlertLog") {
+      alertHistory = [];
+      saveAlertHistory();
+      render();
+      return;
+    }
+    if (target.id === "perfSumToggle") {
+      const body = document.getElementById("perfSumBody");
+      const toggle = document.getElementById(target.id);
+      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
+      return;
+    }
+    if (target.id === "compToggle") {
+      const body = document.getElementById("compBody");
       const toggle = document.getElementById(target.id);
       if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
       return;
@@ -2114,6 +2747,10 @@ document.addEventListener("keydown", (e) => {
 loadHistory();
 loadPositions();
 loadWebhook();
+loadAlertConditions();
+loadBacktestMulti();
+loadAlertHistory();
+loadStrategyName();
 setupEvents();
 load();
 connectWS();
