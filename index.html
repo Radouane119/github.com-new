@@ -269,6 +269,16 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
   .metric{padding:12px 14px}
   .metric strong{font-size:1.05rem}
 }
+.corr-cell{width:48px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:600;border-radius:3px;color:#e6edf3}
+.replay-bar{display:flex;gap:6px;align-items:center;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px}
+.replay-bar button{background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.7rem;font-family:inherit}
+.replay-bar button:hover{background:#2a384a;color:#e6edf3}
+.replay-bar button.active{background:#1a3a2a;border-color:#2ea043;color:#3fb950}
+.paper-trade{border-left:3px solid #8dd7ff}
+.paper-trade .pos-dir{color:#8dd7ff;background:rgba(141,215,255,.12)}
+.opt-row{display:flex;align-items:center;gap:8px;font-size:.68rem;padding:4px 0;border-bottom:1px solid #0e151e}
+.opt-row span{flex:1;color:#8c98a5}
+.opt-best{background:#1a3a2a;border-radius:4px;padding:4px 8px}
 </style>
 </head>
 <body>
@@ -328,6 +338,27 @@ const alertConditions = {
 
 let alertHistory = [];
 let strategyName = "";
+let ichimokuOverlay = false;
+let fibOverlay = false;
+let macdHistVote = false;
+let kellyEnabled = false;
+
+const paperState = { balance: 10000, startingBalance: 10000, trades: [], openPositions: [], equityCurve: [] };
+const replayState = { active: false, pair: "", rows: [], currentBar: 100, trades: [], speed: 500, intervalId: null, direction: null, confidence: 0 };
+const mcState = { results: null, running: false, progress: "" };
+const wfState = { results: null, running: false, progress: "" };
+const optimizerState = { results: null, running: false, progress: "" };
+const scheduleState = { enabled: false, intervalId: null, lastSent: null };
+const corrData = { matrix: null, pairs: [], running: false };
+
+function loadOverlayPrefs() {
+  try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; } } catch {}
+}
+function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled })); } catch {} }
+function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
+function savePaperState() { try { localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); } catch {} }
+function loadScheduleState() { try { const s = localStorage.getItem("scheduleState"); if (s) { const d = JSON.parse(s); scheduleState.enabled = !!d.enabled; scheduleState.lastSent = d.lastSent ? new Date(d.lastSent) : null; } } catch {} }
+function saveScheduleState() { try { localStorage.setItem("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null })); } catch {} }
 
 function loadAlertHistory() {
   try { const s = localStorage.getItem("alertHistory"); if (s) alertHistory = JSON.parse(s); } catch {}
@@ -909,6 +940,373 @@ function detectRegime(rows) {
   return { type: adx > 25 ? "trending" : "ranging", adx: Math.round(adx * 10) / 10 };
 }
 
+function computeIchimoku(rows) {
+  const len = rows.length;
+  const tenkan = Array(len).fill(null);
+  const kijun = Array(len).fill(null);
+  const senkouA = Array(len).fill(null);
+  const senkouB = Array(len).fill(null);
+  const chikou = Array(len).fill(null);
+  for (let i = 0; i < len; i++) {
+    if (i >= 8) {
+      let hi = -Infinity, lo = Infinity;
+      for (let j = i - 8; j <= i; j++) { hi = Math.max(hi, rows[j].high); lo = Math.min(lo, rows[j].low); }
+      tenkan[i] = (hi + lo) / 2;
+    }
+    if (i >= 25) {
+      let hi = -Infinity, lo = Infinity;
+      for (let j = i - 25; j <= i; j++) { hi = Math.max(hi, rows[j].high); lo = Math.min(lo, rows[j].low); }
+      kijun[i] = (hi + lo) / 2;
+    }
+    if (i >= 25) {
+      let hi = -Infinity, lo = Infinity;
+      for (let j = i - 52; j <= i; j++) { if (j >= 0) { hi = Math.max(hi, rows[j].high); lo = Math.min(lo, rows[j].low); } }
+      senkouB[i] = (hi + lo) / 2;
+    }
+    if (tenkan[i] != null && kijun[i] != null) senkouA[i] = (tenkan[i] + kijun[i]) / 2;
+    chikou[i] = rows[i].close;
+  }
+  return { tenkan, kijun, senkouA, senkouB, chikou };
+}
+
+function findFibLevels(rows, lookback) {
+  const slice = rows.slice(-lookback);
+  let hi = -Infinity, lo = Infinity, hiIdx = 0, loIdx = 0;
+  slice.forEach((r, i) => { if (r.high > hi) { hi = r.high; hiIdx = i; } if (r.low < lo) { lo = r.low; loIdx = i; } });
+  const range = hi - lo;
+  if (range <= 0) return [];
+  const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
+  const isFibUp = loIdx < hiIdx;
+  return levels.map(pct => ({ pct, price: isFibUp ? lo + range * pct : hi - range * pct, label: (pct * 100).toFixed(1) + "%" }));
+}
+
+function ichimokuCloudColor(senkouA, senkouB) {
+  if (senkouA == null || senkouB == null) return "rgba(100,140,180,0.08)";
+  return senkouA > senkouB ? "rgba(63,185,80,0.12)" : "rgba(248,81,73,0.12)";
+}
+
+function pearsonCorrelation(x, y) {
+  const n = Math.min(x.length, y.length);
+  if (n < 10) return 0;
+  const xs = x.slice(-n), ys = y.slice(-n);
+  const mx = xs.reduce((s,v) => s+v, 0) / n;
+  const my = ys.reduce((s,v) => s+v, 0) / n;
+  let num = 0, dx = 0, dy = 0;
+  for (let i = 0; i < n; i++) { const a = xs[i] - mx, b = ys[i] - my; num += a*b; dx += a*a; dy += b*b; }
+  return dx > 0 && dy > 0 ? num / Math.sqrt(dx * dy) : 0;
+}
+
+function corrColor(v) {
+  if (v >= 0.7) return "#2ea043";
+  if (v >= 0.3) return "#3fb950";
+  if (v >= -0.3) return "#73808d";
+  if (v >= -0.7) return "#da7733";
+  return "#da3633";
+}
+
+async function computeCorrelationMatrix() {
+  corrData.running = true;
+  corrData.matrix = null;
+  const pairs = scanPairs.slice(0, 10);
+  corrData.pairs = pairs;
+  const returns = {};
+  for (const pair of pairs) {
+    const [base, quote] = pair.split("/");
+    try {
+      const rows = (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) ? await fetchBinanceRows(base, quote, "1d", 90) : await fetchFxRows(base, quote);
+      if (rows.length >= 30) {
+        returns[pair] = rows.slice(-60).map((r, i, arr) => i > 0 ? (r.close - arr[i-1].close) / arr[i-1].close : 0).slice(1);
+      }
+    } catch {}
+  }
+  const matrix = pairs.map(p1 => pairs.map(p2 => {
+    if (!returns[p1] || !returns[p2]) return 0;
+    return pearsonCorrelation(returns[p1], returns[p2]);
+  }));
+  corrData.matrix = matrix;
+  corrData.running = false;
+  render();
+}
+
+function kellyFraction(winRate, avgWin, avgLoss) {
+  if (avgWin <= 0 || avgLoss <= 0) return 0;
+  const b = avgWin / avgLoss;
+  const kelly = (winRate * b - (1 - winRate)) / b;
+  return Math.max(0, Math.min(kelly * 0.5, 0.25));
+}
+
+function runMonteCarlo(trades, iterations) {
+  if (trades.length < 5) return null;
+  const wins = trades.filter(t => t.result === "win");
+  const losses = trades.filter(t => t.result === "loss");
+  if (wins.length === 0 && losses.length === 0) return null;
+  const pnls = trades.map(t => t.pnlPct);
+  const n = pnls.length;
+  const results = [];
+  for (let iter = 0; iter < iterations; iter++) {
+    const shuffled = [...pnls];
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    let eq = 0, peak = 0, maxDD = 0;
+    const curve = [0];
+    for (const pnl of shuffled) { eq += pnl; curve.push(eq); if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; }
+    results.push({ curve, finalEq: eq, maxDD });
+  }
+  results.sort((a, b) => a.finalEq - b.finalEq);
+  const pct = (p) => results[Math.floor(p * results.length)]?.finalEq || 0;
+  const ddPct = (p) => results[Math.floor(p * results.length)]?.maxDD || 0;
+  const medianCurve = results[Math.floor(0.5 * results.length)]?.curve || [0];
+  return {
+    p5: pct(0.05), p25: pct(0.25), p50: pct(0.5), p75: pct(0.75), p95: pct(0.95),
+    medianDD: ddPct(0.5), worstDD: ddPct(0.95),
+    medianCurve,
+  };
+}
+
+async function runWalkForward() {
+  if (wfState.running) return;
+  wfState.running = true;
+  wfState.results = null;
+  wfState.progress = "";
+  render();
+  try {
+    const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
+    if (rows.length < 300) { wfState.running = false; render(); return; }
+    const paramGrid = [
+      { threshold: 4 }, { threshold: 5 }, { threshold: 6 },
+      { riskRewardRatio: 1.5 }, { riskRewardRatio: 2.0 }, { riskRewardRatio: 2.5 },
+      { volumeMultiplier: 1.1 }, { volumeMultiplier: 1.3 }, { volumeMultiplier: 1.5 },
+    ];
+    const windowSize = 200;
+    const testSize = 50;
+    const segments = Math.floor((rows.length - windowSize) / testSize);
+    const wfResults = [];
+    for (let seg = 0; seg < segments; seg++) {
+      wfState.progress = `${seg + 1}/${segments}`;
+      if (seg % 3 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
+      const trainStart = seg * testSize;
+      const trainEnd = trainStart + windowSize;
+      const testEnd = Math.min(trainEnd + testSize, rows.length);
+      if (testEnd > rows.length) break;
+      const trainData = rows.slice(trainStart, trainEnd);
+      const testData = rows.slice(trainEnd, testEnd);
+      let bestCfg = loadStrategyConfig();
+      let bestScore = -Infinity;
+      for (const overrides of paramGrid) {
+        const cfg = { ...loadStrategyConfig(), ...overrides };
+        const trades = [];
+        for (let i = 80; i < trainData.length; i++) {
+          const a = analyze(trainData.slice(0, i + 1), cfg);
+          if (!a || a.direction === "WAIT") continue;
+          const entry = a.entry;
+          const isBuy = a.direction === "BUY";
+          const riskPct = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
+          const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
+          let result = "pending", pnlPct = 0;
+          for (let j = i + 1; j < trainData.length; j++) {
+            if (isBuy) { if (trainData[j].high >= a.target) { result = "win"; pnlPct = rewardPct; break; } if (trainData[j].low <= a.stop) { result = "loss"; pnlPct = -riskPct; break; } }
+            else { if (trainData[j].low <= a.target) { result = "win"; pnlPct = rewardPct; break; } if (trainData[j].high >= a.stop) { result = "loss"; pnlPct = -riskPct; break; } }
+          }
+          if (result !== "pending") trades.push({ result, pnlPct });
+        }
+        const w = trades.filter(t => t.result === "win").length;
+        const l = trades.filter(t => t.result === "loss").length;
+        const score = trades.length > 0 ? (w / trades.length) * 100 + (trades.reduce((s,t) => s + t.pnlPct, 0) * 0.5) : 0;
+        if (score > bestScore) { bestScore = score; bestCfg = cfg; }
+      }
+      const testTrades = [];
+      for (let i = 80; i < testData.length; i++) {
+        const a = analyze(testData.slice(0, i + 1), bestCfg);
+        if (!a || a.direction === "WAIT") continue;
+        const entry = a.entry;
+        const isBuy = a.direction === "BUY";
+        const riskPct = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
+        const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
+        let result = "pending", pnlPct = 0;
+        for (let j = i + 1; j < testData.length; j++) {
+          if (isBuy) { if (testData[j].high >= a.target) { result = "win"; pnlPct = rewardPct; break; } if (testData[j].low <= a.stop) { result = "loss"; pnlPct = -riskPct; break; } }
+          else { if (testData[j].low <= a.target) { result = "win"; pnlPct = rewardPct; break; } if (testData[j].high >= a.stop) { result = "loss"; pnlPct = -riskPct; break; } }
+        }
+        if (result !== "pending") testTrades.push({ result, pnlPct });
+      }
+      const tw = testTrades.filter(t => t.result === "win").length;
+      const tl = testTrades.filter(t => t.result === "loss").length;
+      wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: trainData.length > 0 ? Math.round((tw / Math.max(tw + tl, 1)) * 100) : 0, testWR: testTrades.length > 0 ? Math.round((tw / testTrades.length) * 100) : 0, testTrades: testTrades.length, testPnL: testTrades.reduce((s, t) => s + t.pnlPct, 0) });
+    }
+    const totalTestTrades = wfResults.reduce((s, r) => s + r.testTrades, 0);
+    const avgTestWR = totalTestTrades > 0 ? Math.round(wfResults.reduce((s, r) => s + r.testWR, 0) / Math.max(wfResults.length, 1)) : 0;
+    const totalTestPnL = wfResults.reduce((s, r) => s + r.testPnL, 0);
+    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL };
+  } catch {}
+  wfState.running = false;
+  render();
+}
+
+async function runStrategyOptimizer() {
+  if (optimizerState.running) return;
+  optimizerState.running = true;
+  optimizerState.results = null;
+  optimizerState.progress = "";
+  render();
+  try {
+    const rows = await fetchBinanceRows(state.base, state.quote, "1d", 800);
+    if (rows.length < 200) { optimizerState.running = false; render(); return; }
+    const thresholds = [4, 5, 6];
+    const rrs = [1.5, 2.0, 2.5, 3.0];
+    const volMults = [1.1, 1.3, 1.5];
+    const combinations = [];
+    for (const t of thresholds) for (const r of rrs) for (const v of volMults) combinations.push({ threshold: t, riskRewardRatio: r, volumeMultiplier: v, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 });
+    const total = combinations.length;
+    const results = [];
+    for (let i = 0; i < total; i++) {
+      optimizerState.progress = `${i + 1}/${total}`;
+      if (i % 5 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
+      const cfg = combinations[i];
+      const trades = [];
+      for (let j = 80; j < rows.length; j++) {
+        const a = analyze(rows.slice(0, j + 1), cfg);
+        if (!a || a.direction === "WAIT") continue;
+        const entry = a.entry;
+        const isBuy = a.direction === "BUY";
+        const riskPctVal = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
+        const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
+        let result = "pending", pnlPct = 0;
+        for (let k = j + 1; k < rows.length; k++) {
+          if (isBuy) { if (rows[k].high >= a.target) { result = "win"; pnlPct = rewardPct; break; } if (rows[k].low <= a.stop) { result = "loss"; pnlPct = -riskPctVal; break; } }
+          else { if (rows[k].low <= a.target) { result = "win"; pnlPct = rewardPct; break; } if (rows[k].high >= a.stop) { result = "loss"; pnlPct = -riskPctVal; break; } }
+        }
+        if (result !== "pending") trades.push({ result, pnlPct });
+      }
+      const wins = trades.filter(t => t.result === "win").length;
+      const losses = trades.filter(t => t.result === "loss").length;
+      const totalT = trades.length;
+      const wr = totalT > 0 ? Math.round((wins / totalT) * 100) : 0;
+      const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
+      const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
+      const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
+      let eq = 0, peak = -Infinity, maxDD = 0;
+      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
+      results.push({ cfg: { threshold: cfg.threshold, riskRewardRatio: cfg.riskRewardRatio, volumeMultiplier: cfg.volumeMultiplier }, signals: totalT, winRate: wr, pnl: eq, maxDD: maxDD.toFixed(1) + "%", pf });
+    }
+    results.sort((a, b) => b.pnl - a.pnl);
+    optimizerState.results = results;
+  } catch {}
+  optimizerState.running = false;
+  render();
+}
+
+function sendScheduledReport() {
+  if (!webhookUrl) return;
+  const hist = autoScan.history.filter(e => e.direction !== "WAIT");
+  const resolved = hist.filter(e => e.result === "win" || e.result === "loss");
+  const wins = resolved.filter(e => e.result === "win").length;
+  const losses = resolved.filter(e => e.result === "loss").length;
+  const wr = resolved.length > 0 ? Math.round((wins / resolved.length) * 100) : 0;
+  const closed = positions.filter(p => p.closedAt);
+  const totalPnl = closed.reduce((s, p) => s + (p.pnlCurrency || 0), 0);
+  const open = positions.filter(p => !p.closedAt);
+  const msg = `📊 *${strategyName || "Trading"} Performance Report*\n\nWin Rate: ${wr}% (${wins}W/${losses}L)\nTotal Signals: ${hist.length}\nTotal P/L: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}\nOpen Positions: ${open.length}\nTimestamp: ${new Date().toLocaleString()}`;
+  fetch(webhookUrl + (webhookUrl.includes("?") ? "&" : "?") + "parse_mode=Markdown&text=" + encodeURIComponent(msg)).catch(() => {});
+  scheduleState.lastSent = new Date();
+  saveScheduleState();
+}
+
+function startSchedule() {
+  if (scheduleState.intervalId) return;
+  scheduleState.enabled = true;
+  scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000);
+  saveScheduleState();
+}
+
+function stopSchedule() {
+  if (scheduleState.intervalId) { clearInterval(scheduleState.intervalId); scheduleState.intervalId = null; }
+  scheduleState.enabled = false;
+  saveScheduleState();
+}
+
+function startReplay(pair) {
+  if (replayState.intervalId) { clearInterval(replayState.intervalId); replayState.intervalId = null; }
+  const [base, quote] = pair.split("/");
+  replayState.pair = pair;
+  replayState.trades = [];
+  replayState.direction = null;
+  replayState.confidence = 0;
+  fetchBinanceRows(base, quote, "1d", 500).then(rows => {
+    if (rows.length < 120) return;
+    replayState.rows = rows;
+    replayState.currentBar = 120;
+    replayState.active = true;
+    advanceReplay();
+    render();
+  });
+}
+
+function advanceReplay() {
+  const { rows, currentBar } = replayState;
+  if (currentBar >= rows.length) { stopReplay(); return; }
+  const slice = rows.slice(0, currentBar + 1);
+  const cfg = loadStrategyConfig();
+  const analysis = slice.length >= 80 ? analyze(slice, cfg) : null;
+  replayState.direction = analysis?.direction || "WAIT";
+  replayState.confidence = analysis?.confidence || 0;
+  if (analysis && analysis.direction !== "WAIT") {
+    const lastPrice = rows[currentBar].close;
+    const isBuy = analysis.direction === "BUY";
+    let result = null;
+    for (let j = currentBar + 1; j < Math.min(currentBar + 30, rows.length); j++) {
+      if (isBuy) { if (rows[j].high >= analysis.target) { result = "win"; break; } if (rows[j].low <= analysis.stop) { result = "loss"; break; } }
+      else { if (rows[j].low <= analysis.target) { result = "win"; break; } if (rows[j].high >= analysis.stop) { result = "loss"; break; } }
+    }
+    replayState.trades.push({ bar: currentBar, date: rows[currentBar].date, direction: analysis.direction, confidence: analysis.confidence, entry: analysis.entry, stop: analysis.stop, target: analysis.target, result: result || "pending" });
+  }
+}
+
+function stopReplay() {
+  if (replayState.intervalId) { clearInterval(replayState.intervalId); replayState.intervalId = null; }
+  replayState.active = false;
+}
+
+function stepReplay() {
+  if (!replayState.active) return;
+  replayState.currentBar++;
+  advanceReplay();
+  render();
+}
+
+function toggleReplayPlay() {
+  if (replayState.intervalId) { clearInterval(replayState.intervalId); replayState.intervalId = null; render(); return; }
+  replayState.intervalId = setInterval(() => { if (replayState.currentBar >= replayState.rows.length) { stopReplay(); render(); return; } replayState.currentBar++; advanceReplay(); render(); }, replayState.speed);
+  render();
+}
+
+function addPaperTrade(direction, pair, entry, stop, target) {
+  paperState.openPositions.push({ id: Date.now(), pair, direction, entry, stop, target, time: new Date(), exitPrice: null, pnlPct: 0 });
+  savePaperState();
+}
+
+function closePaperTrade(id, exitPrice) {
+  const pos = paperState.openPositions.find(p => p.id === id);
+  if (!pos) return;
+  pos.exitPrice = exitPrice;
+  pos.pnlPct = pos.direction === "BUY" ? ((exitPrice - pos.entry) / pos.entry) * 100 : ((pos.entry - exitPrice) / pos.entry) * 100;
+  pos.closedTime = new Date();
+  paperState.balance += paperState.balance * (pos.pnlPct / 100);
+  paperState.trades.push({ ...pos });
+  paperState.openPositions = paperState.openPositions.filter(p => p.id !== id);
+  paperState.equityCurve.push({ time: new Date(), balance: paperState.balance });
+  savePaperState();
+}
+
+function autoCheckPaperPositions() {
+  for (const pos of [...paperState.openPositions]) {
+    const r = multiScan.results[pos.pair];
+    if (!r || !r.price) continue;
+    const price = r.price;
+    const hitStop = pos.direction === "BUY" ? price <= pos.stop : price >= pos.stop;
+    const hitTarget = pos.direction === "BUY" ? price >= pos.target : price <= pos.target;
+    if (hitStop || hitTarget) closePaperTrade(pos.id, price);
+  }
+}
+
 function analyze(rows, cfg) {
   if (rows.length < 80) return null;
   const threshold = cfg?.threshold ?? 5;
@@ -989,8 +1387,8 @@ function analyze(rows, cfg) {
   const hammer = currLowerWick > 2 * currBody && currUpperWick < currBody && currBody > 0;
   const shootingStar = currUpperWick > 2 * currBody && currLowerWick < currBody && currBody > 0;
 
-  const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, priceRising];
-  const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, priceFalling];
+  const buyVotes = [trendUp, longTrendUp, momentumUp, rsiBuyZone, notExtendedLong, volatilityOk, priceRising, ...(macdHistVote ? [last.macdHist > 0 && last.macdHist > prev.macdHist] : [])];
+  const sellVotes = [trendDown, longTrendDown, momentumDown, rsiSellZone, notExtendedShort, volatilityOk, priceFalling, ...(macdHistVote ? [last.macdHist < 0 && last.macdHist < prev.macdHist] : [])];
   const patternBuyBonus = (bullishEngulfing ? 1 : 0) + (hammer ? 1 : 0) + (isDoji ? 0.5 : 0);
   const patternSellBonus = (bearishEngulfing ? 1 : 0) + (shootingStar ? 1 : 0) + (isDoji ? 0.5 : 0);
   const buyScore = buyVotes.filter(Boolean).length + patternBuyBonus;
@@ -1127,6 +1525,11 @@ function render() {
                   <div><p class="eyebrow">${pair}</p><h2>Price, trend and volatility</h2></div>
                   <span>${analysis.last.date}</span>
                 </div>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+                  <button onclick="ichimokuOverlay=!ichimokuOverlay;saveOverlayPrefs();render()" style="background:${ichimokuOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${ichimokuOverlay?'#2ea043':'#2a3848'};color:${ichimokuOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">☁ Ichimoku</button>
+                  <button onclick="fibOverlay=!fibOverlay;saveOverlayPrefs();render()" style="background:${fibOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${fibOverlay?'#2ea043':'#2a3848'};color:${fibOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 Fibonacci</button>
+                  <button onclick="macdHistVote=!macdHistVote;saveOverlayPrefs();render()" style="background:${macdHistVote?'#1a3a2a':'#1f2a36'};border:1px solid ${macdHistVote?'#2ea043':'#2a3848'};color:${macdHistVote?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 MACD+Hist</button>
+                </div>
                 <div id="chartContainer"><canvas id="priceChart"></canvas></div>
               </div>
               <aside class="idea-panel">
@@ -1137,7 +1540,7 @@ function render() {
                   ${level("Target area", analysis.direction === "WAIT" ? "-" : formatPrice(analysis.target, pair))}
                 </div>
                 <div class="checks">${analysis.reasons.map((reason) => `<div class="check ${reason.ok ? "ok" : "bad"}"><span>${reason.ok ? "✓" : "!"}</span>${reason.text}</div>`).join("")}</div>
-                  <div style="display:flex;gap:10px;font-size:.68rem;color:#73808d;border-top:1px solid #1f2a36;padding-top:8px"><span>📈 Buy ${analysis.buyScore}/7</span><span>📉 Sell ${analysis.sellScore}/7</span><span>✅ Need 5</span></div>
+                  <div style="display:flex;gap:10px;font-size:.68rem;color:#73808d;border-top:1px solid #1f2a36;padding-top:8px"><span>📈 Buy ${analysis.buyScore}/${macdHistVote?8:7}</span><span>📉 Sell ${analysis.sellScore}/${macdHistVote?8:7}</span><span>✅ Need ${loadStrategyConfig().threshold}</span></div>
                 ${(() => { const mtf = state.mtf; const entries = Object.entries(mtf); if (entries.length === 0) return ""; return `<div style="border-top:1px solid #1f2a36;padding-top:8px"><div style="font-size:.65rem;color:#5c6a7a;margin-bottom:4px">Multi-timeframe</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:.62rem">${entries.map(([tf, a]) => `<div style="padding:4px;background:#0e151e;border-radius:4px;text-align:center"><div style="color:#5c6a7a">${tf}</div><div style="font-weight:600;color:${a.direction === 'BUY' ? '#3fb950' : a.direction === 'SELL' ? '#f85149' : '#b58cff'}">${a.direction}</div><div style="color:#8c98a5">${a.confidence}%</div><div style="font-size:.55rem;color:#5c6a7a">${a.buyScore}/${a.sellScore}</div></div>`).join("")}</div></div>`; })()}
                 <div class="notice">Needs at least 5 of 7 confirmations. When the market is unclear, the app chooses WAIT.</div>
               </aside>
@@ -1155,7 +1558,7 @@ function render() {
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/7 📉${r.sellScore}/7</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
@@ -1170,7 +1573,7 @@ function render() {
 
       ${(() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss"); if (sigs.length < 3) return ""; const byPair = {}; sigs.forEach(e => { if (!byPair[e.pair]) byPair[e.pair] = { wins: 0, losses: 0, rrSumAll: 0, rrSumWins: 0, rrCount: 0 }; const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : null; if (e.result === "win") { byPair[e.pair].wins++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumWins += rr; byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } else { byPair[e.pair].losses++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } }); const pairRows = Object.entries(byPair).map(([pair, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); const avgRR = v.rrCount > 0 ? (v.rrSumAll / v.rrCount).toFixed(1) : "-"; const pf = v.losses > 0 ? (v.rrSumWins / v.losses).toFixed(2) : (v.wins > 0 ? "∞" : "0"); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:52px;text-transform:uppercase">${pair.split("/")[0]}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:28px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:36px;text-align:right;color:#8c98a5" title="Avg R:R">RR ${avgRR}</span><span style="width:36px;text-align:right;color:#5c6a7a" title="Profit Factor">PF ${pf}</span><span style="width:32px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); const months = {}; sigs.forEach(e => { const m = e.timestamp.toISOString().slice(0, 7); if (!months[m]) months[m] = { wins: 0, losses: 0 }; months[m][e.result === "win" ? "wins" : "losses"]++; }); const monthRows = Object.entries(months).sort((a,b) => a[0].localeCompare(b[0])).map(([m, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:48px">${m.slice(5)}/${m.slice(2,4)}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:30px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:40px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); return `<section class="dashboard-section"><button class="history-toggle no-select" id="dashToggle"><div class="history-toggle-left"><h3>Signal Quality Dashboard</h3></div><span class="arrow">▾</span></button><div class="history-body" id="dashBody"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:8px 0">${pairRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Win rate by pair</p>${pairRows}</div>` : ""}${monthRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Monthly win rate</p>${monthRows}</div>` : ""}</div></div></section>`; })()}
 
-      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const startingBalance = rc.startingBalance ?? balance; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const realizedPnl = positions.filter(p => p.closedAt).reduce((s, p) => s + (p.pnlCurrency || 0), 0); const unrealizedPnl = positions.filter(p => !p.closedAt).reduce((s, p) => { const cp = getPosPrice(p); const diff = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (diff / p.entry) * 100 : 0; return s + pnlPct / 100 * balance; }, 0); const equity = startingBalance + realizedPnl + unrealizedPnl; const posSize = stopDist > 0 ? Math.round((equity * riskPct / 100) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Starting Balance<input type="number" id="rmStartingBalance" value="${startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 0;font-size:.72rem;color:#8c98a5">Equity: <strong style="color:#f0f4f8">$${equity.toFixed(2)}</strong> <span style="font-size:.65rem;color:#5c6a7a">(starting: $${startingBalance.toLocaleString()}, realized: <span style="color:${realizedPnl >= 0 ? '#3fb950' : '#f85149'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</span>, unrealized: <span style="color:${unrealizedPnl >= 0 ? '#3fb950' : '#f85149'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</span>)</span></div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Position Size</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}</div></div></div></div></section>`; })()}
+      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const startingBalance = rc.startingBalance ?? balance; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const realizedPnl = positions.filter(p => p.closedAt).reduce((s, p) => s + (p.pnlCurrency || 0), 0); const unrealizedPnl = positions.filter(p => !p.closedAt).reduce((s, p) => { const cp = getPosPrice(p); const diff = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (diff / p.entry) * 100 : 0; return s + pnlPct / 100 * balance; }, 0); const equity = startingBalance + realizedPnl + unrealizedPnl; const posSize = stopDist > 0 ? Math.round((equity * riskPct / 100) / stopDist) : 0; const hist = autoScan.history.filter(e => e.direction !== "WAIT" && (e.result === "win" || e.result === "loss")); const histWins = hist.filter(e => e.result === "win").length; const histWR = hist.length > 0 ? histWins / hist.length : 0.5; const histAvgW = hist.filter(e => e.result === "win").length > 0 ? hist.filter(e => e.result === "win").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 2; return s + rr; }, 0) / hist.filter(e => e.result === "win").length : 2; const histAvgL = hist.filter(e => e.result === "loss").length > 0 ? hist.filter(e => e.result === "loss").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 1; return s + rr; }, 0) / hist.filter(e => e.result === "loss").length : 1; const kellyFrac = kellyFraction(histWR, histAvgW, histAvgL); const kellySize = stopDist > 0 ? Math.round((equity * kellyFrac) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Starting Balance<input type="number" id="rmStartingBalance" value="${startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 0;font-size:.72rem;color:#8c98a5">Equity: <strong style="color:#f0f4f8">$${equity.toFixed(2)}</strong> <span style="font-size:.65rem;color:#5c6a7a">(starting: $${startingBalance.toLocaleString()}, realized: <span style="color:${realizedPnl >= 0 ? '#3fb950' : '#f85149'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</span>, unrealized: <span style="color:${unrealizedPnl >= 0 ? '#3fb950' : '#f85149'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</span>)</span></div><div style="padding:4px 12px 8px;display:flex;align-items:center;gap:8px;font-size:.72rem"><span style="color:#8c98a5">Kelly Sizing</span><label class="toggle"><input type="checkbox" id="kellyToggle" ${kellyEnabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label>${kellyEnabled && kellyFrac > 0 ? `<span style="color:#b58cff;font-size:.65rem">Fraction: ${(kellyFrac * 100).toFixed(1)}% \u2192 ${kellySize.toLocaleString()} units</span>` : ""}</div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">${kellyEnabled ? "Position Size (Kelly)" : "Position Size (Fixed)"}</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}</div></div></div></div></section>`; })()}
 
       ${renderAlertConditions()}
       ${renderPerformanceSummary()}
@@ -1178,6 +1581,13 @@ function render() {
       ${renderStrategyConfig()}
       ${renderBacktest()}
       ${renderComparison()}
+      ${renderCorrelationMatrix()}
+      ${renderPaperTrading()}
+      ${renderTradeReplay()}
+      ${renderMonteCarlo()}
+      ${renderWalkForward()}
+      ${renderStrategyOptimizer()}
+      ${renderScheduledReports()}
       <section class="history-section">
         <button class="history-toggle no-select" id="historyToggle">
           <div class="history-toggle-left">
@@ -1753,6 +2163,54 @@ function renderComparison() {
   return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem"><div style="color:#5c6a7a;font-weight:600;padding:4px 0">Metric</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Default</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Custom</div><div style="color:#8c98a5;padding:4px 0">Signals</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.signals}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.signals}</div><div style="color:#8c98a5;padding:4px 0">Win Rate</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.winRate}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.winRate}</div><div style="color:#8c98a5;padding:4px 0">Avg R:R</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.avgRR}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.avgRR}</div><div style="color:#8c98a5;padding:4px 0">Profit Factor</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.profitFactor}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.profitFactor}</div><div style="color:#8c98a5;padding:4px 0">Max DD</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.maxDD}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.maxDD}</div></div></div></section>`;
 }
 
+function renderCorrelationMatrix() {
+  const isRunning = corrData.running;
+  const hasData = corrData.matrix && corrData.pairs.length > 0;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="corrToggle"><div class="history-toggle-left"><h3>Correlation Matrix</h3>${hasData ? `<span class="history-count">${corrData.pairs.length} pairs</span>` : ''}</div><span class="arrow">▾</span></button><div class="history-body${hasData ? ' open' : ''}" id="corrBody"><div style="padding:12px">${isRunning ? '<div style="text-align:center;color:#8c98a5;font-size:.72rem">Computing correlations...</div>' : ''}${hasData ? (() => { const pairs = corrData.pairs; const m = corrData.matrix; return `<div style="overflow-x:auto"><table style="border-collapse:collapse;margin:0 auto"><tr><td></td>${pairs.map(p => `<td style="padding:2px 4px;font-size:.55rem;color:#8c98a5;text-align:center;writing-mode:vertical-lr;transform:rotate(180deg);height:50px">${p}</td>`).join("")}</tr>${pairs.map((p1, i) => `<tr><td style="padding:2px 6px;font-size:.6rem;color:#8c98a5;white-space:nowrap">${p1}</td>${pairs.map((p2, j) => { const v = m[i][j]; const bg = i === j ? '#1f2a36' : corrColor(v); return `<td class="corr-cell" style="background:${bg}33;border:1px solid ${bg}22" title="${p1} ↔ ${p2}: ${v.toFixed(2)}">${i === j ? "1.0" : v.toFixed(2)}</td>`; }).join("")}</tr>`).join("")}</table></div><div style="display:flex;gap:8px;justify-content:center;margin-top:8px;font-size:.6rem;color:#5c6a7a"><span>🟢 Strong +</span><span>🟡 Weak +</span><span>⚪ Neutral</span><span>🟠 Weak -</span><span>🔴 Strong -</span></div>` : '<div style="text-align:center;color:#5c6a7a;font-size:.72rem">Run a scan first to compute correlations between pairs.</div>'}</div>${!isRunning ? `<div style="padding:0 12px 12px"><button id="runCorr" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">${hasData ? 'Recompute' : 'Compute Correlations'}</button></div>` : ''}</div></section>`;
+}
+
+function renderPaperTrading() {
+  const p = paperState;
+  const totalPnl = p.balance - p.startingBalance;
+  const pnlPct = p.startingBalance > 0 ? (totalPnl / p.startingBalance * 100) : 0;
+  const wins = p.trades.filter(t => t.pnlPct > 0).length;
+  const losses = p.trades.filter(t => t.pnlPct <= 0).length;
+  const wr = p.trades.length > 0 ? Math.round((wins / p.trades.length) * 100) : 0;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="paperToggle"><div class="history-toggle-left"><h3>Paper Trading</h3><span class="history-count" style="background:${totalPnl>=0?'#1a3a2a':'#3a1a1a'};color:${totalPnl>=0?'#3fb950':'#f85149'}">虚拟$${Math.round(p.balance)}</span></div><span class="arrow">▾</span></button><div class="history-body" id="paperBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;text-align:center"><div><div style="font-size:1rem;font-weight:700;color:${totalPnl>=0?'#3fb950':'#f85149'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(0)}</div><div style="font-size:.6rem;color:#5c6a7a">P/L</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.trades.length}</div><div style="font-size:.6rem;color:#5c6a7a">Trades</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.openPositions.length}</div><div style="font-size:.6rem;color:#5c6a7a">Open</div></div></div><div style="padding:0 12px"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5;font-size:.72rem">Starting Balance<input type="number" id="paperBalance" value="${p.startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div>${p.openPositions.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Open Paper Trades:</div>${p.openPositions.map(pos => { const r = multiScan.results[pos.pair]; const price = r?.price || pos.entry; const pnl = pos.direction === "BUY" ? ((price - pos.entry) / pos.entry * 100) : ((pos.entry - price) / pos.entry * 100); return `<div class="pos-row paper-trade" style="margin:4px 12px"><div class="pos-top"><span class="pos-pair">${pos.pair}</span><span class="pos-dir">${pos.direction}</span><span class="${pnl>=0?'pos-profit':'pos-loss'}">${pnl>=0?'+':''}${pnl.toFixed(2)}%</span><button class="pos-btn" data-close-paper="${pos.id}">Close</button></div><div class="pos-meta"><span>Entry ${formatPrice(pos.entry, pos.pair)}</span><span>Stop ${formatPrice(pos.stop, pos.pair)}</span><span>Target ${formatPrice(pos.target, pos.pair)}</span></div></div>`; }).join('')}` : ''}${p.trades.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Recent Paper Trades:</div><div style="max-height:150px;overflow-y:auto;padding:0 12px">${p.trades.slice(-10).reverse().map(t => `<div style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid #0e151e;font-size:.65rem"><span style="color:#5c6a7a">${t.date || ''}</span><span style="color:#8c98a5;font-weight:600">${t.pair}</span><span style="color:${t.direction==='BUY'?'#3fb950':'#f85149'};font-weight:700">${t.direction}</span><span style="color:${t.pnlPct>=0?'#3fb950':'#f85149'};margin-left:auto">${t.pnlPct>=0?'+':''}${t.pnlPct.toFixed(2)}%</span></div>`).join('')}</div>` : ''}</div><div style="padding:8px 12px;display:flex;gap:6px"><button id="paperReset" style="flex:1;padding:6px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:6px;font-size:.72rem;cursor:pointer">Reset</button></div></div></section>`;
+}
+
+function renderTradeReplay() {
+  if (!replayState.active) {
+    return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="replayToggle"><div class="history-toggle-left"><h3>Trade Replay</h3></div><span class="arrow">▾</span></button><div class="history-body" id="replayBody"><div style="padding:12px;text-align:center"><div style="font-size:.72rem;color:#8c98a5;margin-bottom:8px">Step through historical bars to see how signals develop in real time.</div><button id="startReplay" style="padding:8px 20px;background:#8dd7ff;color:#0b1117;border:none;border-radius:8px;font-weight:600;font-size:.78rem;cursor:pointer">Start Replay (${state.base}/${state.quote})</button></div></div></section>`;
+  }
+  const rs = replayState;
+  const progress = rs.rows.length > 120 ? Math.round(((rs.currentBar - 120) / (rs.rows.length - 120)) * 100) : 0;
+  const currentDate = rs.rows[rs.currentBar]?.date || '';
+  const lastPrice = rs.rows[rs.currentBar]?.close;
+  const dirColor = rs.direction === "BUY" ? '#3fb950' : rs.direction === "SELL" ? '#f85149' : '#b58cff';
+  return `<section class="dashboard-section"><div style="background:#141c26;border:1px solid #1f2a36;border-radius:10px;padding:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="font-size:.95rem;font-weight:600">Trade Replay</h3><button id="stopReplay" style="background:none;border:1px solid #da3633;color:#f85149;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:.68rem;font-family:inherit">Stop</button></div><div class="replay-bar"><button id="replayStep">Step →</button><button id="replayPlay" class="${rs.intervalId ? 'active' : ''}">${rs.intervalId ? '⏸ Pause' : '▶ Play'}</button><span style="font-size:.68rem;color:#8c98a5;margin-left:auto">${currentDate} | Bar ${rs.currentBar}/${rs.rows.length} | ${progress}%</span></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;padding:8px 0;text-align:center"><div><div style="font-size:.85rem;font-weight:700;color:${dirColor}">${rs.direction}</div><div style="font-size:.55rem;color:#5c6a7a">Signal</div></div><div><div style="font-size:.85rem;font-weight:700;color:#f0f4f8">${rs.confidence}%</div><div style="font-size:.55rem;color:#5c6a7a">Confidence</div></div><div><div style="font-size:.85rem;font-weight:700;color:#8dd7ff">${lastPrice ? formatPrice(lastPrice, rs.pair) : '-'}</div><div style="font-size:.55rem;color:#5c6a7a">Price</div></div><div><div style="font-size:.85rem;font-weight:700;color:#f0f4f8">${rs.trades.length}</div><div style="font-size:.55rem;color:#5c6a7a">Signals Found</div></div></div><div style="max-height:150px;overflow-y:auto;border-top:1px solid #1f2a36;padding-top:4px">${rs.trades.slice(-20).reverse().map(t => `<div style="display:flex;gap:6px;align-items:center;padding:2px 0;font-size:.62rem;border-bottom:1px solid #0e151e"><span style="color:#5c6a7a;width:60px">${t.date}</span><span style="color:${t.direction==='BUY'?'#3fb950':'#f85149'};font-weight:700;width:32px">${t.direction}</span><span style="color:#8c98a5;width:24px">${t.confidence}%</span><span style="color:${t.result==='win'?'#3fb950':t.result==='loss'?'#f85149':'#73808d'};margin-left:auto">${t.result==='win'?'✓ Win':t.result==='loss'?'✗ Loss':'○ Pending'}</span></div>`).join('')}</div></div></section>`;
+}
+
+function renderMonteCarlo() {
+  const hasTrades = backtest.results && backtest.results.trades.length >= 5;
+  const r = mcState.results;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="mcToggle"><div class="history-toggle-left"><h3>Monte Carlo Simulation</h3></div><span class="arrow">▾</span></button><div class="history-body" id="mcBody"><div style="padding:12px">${mcState.running ? '<div style="text-align:center;color:#8c98a5;font-size:.72rem">Running simulation... ' + mcState.progress + '</div>' : r ? (() => { const eqVals = r.medianCurve; const eqMax = Math.max(...eqVals, 0.1); const eqMin = Math.min(...eqVals, 0); const eqRng = eqMax - eqMin || 1; const w = 460, h = 60; const xs = eqVals.length > 1 ? w / (eqVals.length - 1) : w; const yFn = v => h - ((v - eqMin) / eqRng) * (h - 6) - 3; const pts = eqVals.map((v, i) => `${i * xs},${yFn(v)}`).join(" "); return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;text-align:center;margin-bottom:8px"><div><div style="font-size:.85rem;font-weight:700;color:#f85149">${r.p5.toFixed(1)}%</div><div style="font-size:.55rem;color:#5c6a7a">5th %ile</div></div><div><div style="font-size:.85rem;font-weight:700;color:#b58cff">${r.p50.toFixed(1)}%</div><div style="font-size:.55rem;color:#5c6a7a">Median</div></div><div><div style="font-size:.85rem;font-weight:700;color:#3fb950">${r.p95.toFixed(1)}%</div><div style="font-size:.55rem;color:#5c6a7a">95th %ile</div></div><div><div style="font-size:.85rem;font-weight:700;color:#f85149">${r.worstDD.toFixed(1)}%</div><div style="font-size:.55rem;color:#5c6a7a">Worst DD</div></div></div><svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;background:#0b1117;border-radius:4px"><polyline points="${pts}" fill="none" stroke="#b58cff" stroke-width="1.5"/></svg><div style="font-size:.6rem;color:#5c6a7a;margin-top:4px;text-align:center">Median equity curve across 1,000 random trade orderings</div>` })() : hasTrades ? '<div style="text-align:center;color:#8c98a5;font-size:.72rem">Run a backtest first, then click below to simulate.</div>' : '<div style="text-align:center;color:#5c6a7a;font-size:.72rem">Run a backtest with at least 5 trades to enable Monte Carlo simulation.</div>'}</div>${!mcState.running ? `<div style="padding:0 12px 12px"><button id="runMC" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer" ${!hasTrades ? 'disabled' : ''}>Run 1,000 Simulations</button></div>` : ''}</div></section>`;
+}
+
+function renderWalkForward() {
+  const r = wfState.results;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="wfToggle"><div class="history-toggle-left"><h3>Walk-Forward Analysis</h3></div><span class="arrow">▾</span></button><div class="history-body" id="wfBody"><div style="padding:12px">${wfState.running ? `<div style="text-align:center;color:#8c98a5;font-size:.72rem">Running walk-forward analysis... ${wfState.progress}</div>` : r ? (() => { const segRows = r.segments.map(s => `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:3px 0;border-bottom:1px solid #0e151e"><span style="width:24px;color:#5c6a7a">#${s.segment}</span><span style="flex:1;color:#8c98a5">${s.testRange}</span><span style="width:28px;text-align:right;color:#f0f4f8">${s.testTrades}</span><span style="width:36px;text-align:right;color:${s.testWR>=50?'#3fb950':'#f85149'}">${s.testWR}%</span><span style="width:44px;text-align:right;color:${s.testPnL>=0?'#3fb950':'#f85149'}">${s.testPnL>=0?'+':''}${s.testPnL.toFixed(1)}%</span></div>`).join(""); return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;margin-bottom:8px"><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${r.segments.length}</div><div style="font-size:.6rem;color:#5c6a7a">Segments</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.avgTestWR>=50?'#3fb950':'#f85149'}">${r.avgTestWR}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Test WR</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.totalTestPnL>=0?'#3fb950':'#f85149'}">${r.totalTestPnL>=0?'+':''}${r.totalTestPnL.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Total Test P/L</div></div></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding-top:4px">${segRows}</div>` })() : '<div style="text-align:center;color:#5c6a7a;font-size:.72rem">Splits data into rolling windows. Optimizes on training data, validates on unseen test data.</div>'}</div>${!wfState.running ? `<div style="padding:0 12px 12px"><button id="runWF" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Run Walk-Forward Analysis</button></div>` : ''}</div></section>`;
+}
+
+function renderStrategyOptimizer() {
+  const r = optimizerState.results;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="optToggle"><div class="history-toggle-left"><h3>Strategy Optimizer</h3></div><span class="arrow">▾</span></button><div class="history-body" id="optBody"><div style="padding:12px">${optimizerState.running ? `<div style="text-align:center;color:#8c98a5;font-size:.72rem">Optimizing parameters... ${optimizerState.progress}</div>` : r ? (() => { const top5 = r.slice(0, 5); return `<div style="text-align:center;color:#8c98a5;font-size:.72rem;margin-bottom:8px">Tested ${r.length} combinations</div><div style="max-height:250px;overflow-y:auto"><div style="display:flex;align-items:center;gap:4px;font-size:.62rem;padding:3px 4px;color:#5c6a7a;font-weight:600;border-bottom:1px solid #1f2a36"><span style="width:20px">#</span><span style="width:32px">Thr</span><span style="width:32px">RR</span><span style="width:32px">Vol</span><span style="width:32px;text-align:right">Sigs</span><span style="width:36px;text-align:right">WR%</span><span style="width:44px;text-align:right">P/L</span><span style="width:44px;text-align:right">MaxDD</span></div>${r.map((o, i) => `<div class="opt-row${i === 0 ? ' opt-best' : ''}"><span style="width:20px;color:${i===0?'#3fb950':'#5c6a7a'};font-weight:700">${i + 1}</span><span style="width:32px">${o.cfg.threshold}</span><span style="width:32px">${o.cfg.riskRewardRatio}</span><span style="width:32px">${o.cfg.volumeMultiplier}</span><span style="width:32px;text-align:right">${o.signals}</span><span style="width:36px;text-align:right;color:${o.winRate>=50?'#3fb950':'#f85149'}">${o.winRate}%</span><span style="width:44px;text-align:right;color:${o.pnl>=0?'#3fb950':'#f85149'}">${o.pnl>=0?'+':''}${o.pnl.toFixed(1)}%</span><span style="width:44px;text-align:right;color:#f85149">${o.maxDD}</span></div>`).join("")}</div>${top5.length > 0 ? `<div style="margin-top:8px;padding:8px;background:#0e151e;border-radius:6px"><div style="font-size:.65rem;color:#5c6a7a;margin-bottom:4px">Best parameters: Threshold=${top5[0].cfg.threshold}, R:R=${top5[0].cfg.riskRewardRatio}, Vol=${top5[0].cfg.volumeMultiplier}</div><button id="applyOptimal" style="padding:6px 12px;background:#2ea043;color:#fff;border:none;border-radius:6px;font-size:.72rem;cursor:pointer;font-family:inherit">Apply Best Parameters</button></div>` : ''}`)() : '<div style="text-align:center;color:#5c6a7a;font-size:.72rem">Brute-force search through parameter combinations to find the most profitable settings.</div>'}</div>${!optimizerState.running ? `<div style="padding:0 12px 12px"><button id="runOpt" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Run Optimizer</button></div>` : ''}</div></section>`;
+}
+
+function renderScheduledReports() {
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="schedToggle"><div class="history-toggle-left"><h3>Scheduled Reports</h3></div><span class="arrow">▾</span></button><div class="history-body" id="schedBody"><div style="padding:12px"><div class="cond-row"><div class="cond-info"><span class="cond-title">Auto-Report to Webhook</span><span class="cond-desc">Send performance summary every 6 hours</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="schedToggleInput" ${scheduleState.enabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div>${scheduleState.lastSent ? `<div style="font-size:.65rem;color:#5c6a7a;margin-top:6px">Last sent: ${scheduleState.lastSent.toLocaleString()}</div>` : ''}<div style="font-size:.65rem;color:#5c6a7a;margin-top:4px">Requires webhook URL to be configured in Settings.</div></div></div></section>`;
+}
+
 async function runMultiPairBacktest() {
   if (backtest.multiRunning) return;
   const selected = [...backtest.multiPairSelected];
@@ -2270,6 +2728,43 @@ function drawChart(canvas, rows, pair) {
     ctx.font = "9px Inter, sans-serif";
     ctx.fillText(level.type === "support" ? "S" : "R", width - pad.right - 12, yy - 3);
   });
+  if (fibOverlay) {
+    const fibs = findFibLevels(rows, Math.min(rows.length, 120));
+    fibs.forEach(fib => {
+      const yy = y(fib.price);
+      if (yy < pad.top || yy > height - pad.bottom) return;
+      ctx.strokeStyle = "rgba(181,140,255,0.4)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(width - pad.right, yy); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(181,140,255,0.7)";
+      ctx.font = "8px Inter, sans-serif";
+      ctx.fillText("FIB " + fib.label, pad.left + 2, yy - 3);
+    });
+  }
+  if (ichimokuOverlay && rows.length >= 78) {
+    const ichi = computeIchimoku(rows);
+    const cloudColors = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (ichi.senkouA[i] != null && ichi.senkouB[i] != null) {
+        cloudColors.push(ichi.senkouA[i] > ichi.senkouB[i] ? "rgba(63,185,80,0.1)" : "rgba(248,81,73,0.1)");
+      } else cloudColors.push(null);
+    }
+    for (let i = 1; i < rows.length; i++) {
+      if (cloudColors[i] && cloudColors[i - 1]) {
+        const cx0 = x(i - 1), cx1 = x(i);
+        const aA0 = y(ichi.senkouA[i - 1]), aA1 = y(ichi.senkouA[i]);
+        const aB0 = y(ichi.senkouB[i - 1]), aB1 = y(ichi.senkouB[i]);
+        ctx.fillStyle = cloudColors[i];
+        ctx.beginPath();
+        ctx.moveTo(cx0, aA0); ctx.lineTo(cx1, aA1); ctx.lineTo(cx1, aB1); ctx.lineTo(cx0, aB0);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    drawLine(ctx, rows.map((r, i) => ({...r, tenkan: ichi.tenkan[i]})), x, (v) => y(v), "tenkan", "rgba(240,195,90,0.6)", 1);
+    drawLine(ctx, rows.map((r, i) => ({...r, kijun: ichi.kijun[i]})), x, (v) => y(v), "kijun", "rgba(141,215,255,0.6)", 1);
+  }
   drawLine(ctx, rows, x, y, "sma50", "#b58cff", 1.6);
   drawLine(ctx, rows, x, y, "sma20", "#f0c35a", 1.6);
   for (let i = 1; i < rows.length; i++) {
@@ -2466,8 +2961,24 @@ function setupEvents() {
         localStorage.setItem("tradeNotes", JSON.stringify(notes));
       } catch {}
     }
+    if (event.target.id === "paperBalance") {
+      paperState.startingBalance = Number(event.target.value) || 10000;
+      paperState.balance = paperState.startingBalance;
+      savePaperState();
+      render();
+    }
+    if (event.target.id === "kellyToggle") {
+      kellyEnabled = event.target.checked;
+      saveOverlayPrefs();
+      render();
+    }
   });
   root.addEventListener("change", (event) => {
+    if (event.target.id === "schedToggleInput") {
+      if (event.target.checked) startSchedule(); else stopSchedule();
+      render();
+      return;
+    }
     if (event.target.id === "base") {
       state.base = event.target.value;
       if (nonFiat.has(state.base)) state.quote = "USD";
@@ -2648,20 +3159,26 @@ function setupEvents() {
     if (target.id === "runMultiBacktest") { runMultiPairBacktest(); return; }
     if (target.id === "mpSelectAll") { backtest.multiPairSelected = [...allScanPairs]; saveBacktestMulti(); render(); return; }
     if (target.id === "mpClearAll") { backtest.multiPairSelected = []; saveBacktestMulti(); render(); return; }
+    if (target.id === "runCorr") { computeCorrelationMatrix(); return; }
+    if (target.id === "runMC") { if (backtest.results && backtest.results.trades.length >= 5) { mcState.running = true; mcState.progress = ""; render(); setTimeout(() => { mcState.results = runMonteCarlo(backtest.results.trades, 1000); mcState.running = false; render(); }, 50); } return; }
+    if (target.id === "runWF") { runWalkForward(); return; }
+    if (target.id === "runOpt") { runStrategyOptimizer(); return; }
+    if (target.id === "applyOptimal") { if (optimizerState.results && optimizerState.results.length > 0) { const best = optimizerState.results[0].cfg; const cfg = loadStrategyConfig(); cfg.threshold = best.threshold; cfg.riskRewardRatio = best.riskRewardRatio; cfg.volumeMultiplier = best.volumeMultiplier; saveStrategyConfig(cfg); render(); } return; }
+    if (target.id === "startReplay") { startReplay(`${state.base}/${state.quote}`); return; }
+    if (target.id === "stopReplay") { stopReplay(); render(); return; }
+    if (target.id === "replayStep") { stepReplay(); return; }
+    if (target.id === "replayPlay") { toggleReplayPlay(); return; }
+    if (target.id === "paperReset") { paperState.balance = paperState.startingBalance; paperState.trades = []; paperState.openPositions = []; paperState.equityCurve = []; savePaperState(); render(); return; }
+    if (target.dataset.closePaper) { const price = prompt("Exit price:"); if (price && !isNaN(price)) { closePaperTrade(Number(target.dataset.closePaper), Number(price)); render(); } return; }
     if (target.id === "backtestToggle") {
       const body = document.getElementById("backtestBody");
       const toggle = document.getElementById(target.id);
       if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
       return;
     }
-    if (target.id === "riskToggle") {
-      const body = document.getElementById("riskBody");
-      const toggle = document.getElementById(target.id);
-      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
-      return;
-    }
-    if (target.id === "stratToggle") {
-      const body = document.getElementById("stratBody");
+    if (["riskToggle","stratToggle","alertCondToggle","alertLogToggle","perfSumToggle","compToggle","corrToggle","paperToggle","replayToggle","mcToggle","wfToggle","optToggle","schedToggle"].includes(target.id)) {
+      const bodyId = target.id.replace("Toggle", "Body");
+      const body = document.getElementById(bodyId);
       const toggle = document.getElementById(target.id);
       if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
       return;
@@ -2671,12 +3188,6 @@ function setupEvents() {
       render();
       return;
     }
-    if (target.id === "alertCondToggle") {
-      const body = document.getElementById("alertCondBody");
-      const toggle = document.getElementById(target.id);
-      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
-      return;
-    }
     if (target.id === "testAlertCond") {
       const fired = evaluateAlertConditions(true);
       alertConditions.lastTestResult = fired.length > 0 ? `${fired.join(", ")} triggered` : "No conditions triggered";
@@ -2684,28 +3195,10 @@ function setupEvents() {
       render();
       return;
     }
-    if (target.id === "alertLogToggle") {
-      const body = document.getElementById("alertLogBody");
-      const toggle = document.getElementById(target.id);
-      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
-      return;
-    }
     if (target.id === "clearAlertLog") {
       alertHistory = [];
       saveAlertHistory();
       render();
-      return;
-    }
-    if (target.id === "perfSumToggle") {
-      const body = document.getElementById("perfSumBody");
-      const toggle = document.getElementById(target.id);
-      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
-      return;
-    }
-    if (target.id === "compToggle") {
-      const body = document.getElementById("compBody");
-      const toggle = document.getElementById(target.id);
-      if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
       return;
     }
     if (target.id === "historyToggle" || target.id === "dashToggle") {
@@ -2751,12 +3244,17 @@ loadAlertConditions();
 loadBacktestMulti();
 loadAlertHistory();
 loadStrategyName();
+loadOverlayPrefs();
+loadPaperState();
+loadScheduleState();
 setupEvents();
 load();
 connectWS();
 startAutoScan();
 setInterval(updateOverviewPrices, 10000);
 setInterval(updateLivePrice, 15000);
+if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
+setInterval(autoCheckPaperPositions, 30000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
