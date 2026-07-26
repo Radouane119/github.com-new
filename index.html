@@ -299,6 +299,11 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .pos-partial button{background:#1f2a36;border:1px solid #2a384a;color:#73808d;cursor:pointer;font-size:.58rem;padding:1px 6px;border-radius:3px}
 .pos-partial button:hover{background:#2a384a;color:#e6edf3}
 .drawdown-chart{background:#0b1117;border-radius:6px;overflow:hidden;margin:4px 0}
+.session-seg.active .dot{animation:pulse-dot 2s infinite}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+.heatmap-cell{position:relative;overflow:hidden}
+.heatmap-cell::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.05),transparent);pointer-events:none}
+
 .opt-row{display:flex;align-items:center;gap:8px;font-size:.68rem;padding:4px 0;border-bottom:1px solid #0e151e}
 .opt-row span{flex:1;color:#8c98a5}
 .opt-best{background:#1a3a2a;border-radius:4px;padding:4px 8px}
@@ -366,7 +371,6 @@ let fibOverlay = false;
 let macdHistVote = false;
 let kellyEnabled = false;
 let fxCache = {};
-const sessionInfo = { tokyo: [0, 9], london: [8, 16], ny: [13, 21] };
 let priceLevelAlerts = [];
 let slippageConfig = { spreadPips: 0, slippagePips: 0 };
 
@@ -1472,16 +1476,25 @@ function options(selected, exclude, disableNonFiat = false) {
 }
 
 function getCurrentSession() {
-  const now = new Date();
-  const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
-  const sessions = [];
-  if (utcH >= 0 && utcH < 9) sessions.push({ name: "Tokyo", color: "#b58cff" });
-  if (utcH >= 8 && utcH < 16) sessions.push({ name: "London", color: "#3fb950" });
-  if (utcH >= 13 && utcH < 21) sessions.push({ name: "New York", color: "#8dd7ff" });
-  let volatility = "Low", volColor = "#5c6a7a";
+  var now = new Date();
+  var utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+  var utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  var sessions = [];
+  if (utcH >= 0 && utcH < 9) sessions.push({ name: "Tokyo", color: "#b58cff", start: 0, end: 540 });
+  if (utcH >= 8 && utcH < 16) sessions.push({ name: "London", color: "#3fb950", start: 480, end: 960 });
+  if (utcH >= 13 && utcH < 21) sessions.push({ name: "New York", color: "#8dd7ff", start: 780, end: 1260 });
+  var volatility = "Low", volColor = "#5c6a7a";
   if (sessions.length >= 2) { volatility = "High"; volColor = "#f85149"; }
   else if (sessions.length === 1) { volatility = "Medium"; volColor = "#d29922"; }
-  return { sessions, volatility, volColor, utcH, timeStr: now.toUTCString().slice(17, 22) };
+  var nextSession = "";
+  var allSessions = [
+    { name: "Tokyo", start: 0 }, { name: "London", start: 480 }, { name: "New York", start: 780 }
+  ];
+  for (var i = 0; i < allSessions.length; i++) {
+    if (utcMin < allSessions[i].start) { nextSession = allSessions[i].name + " in " + (allSessions[i].start - utcMin) + "m"; break; }
+  }
+  if (!nextSession) nextSession = "Tokyo in " + ((1440 - utcMin) + allSessions[0].start) + "m";
+  return { sessions: sessions, volatility: volatility, volColor: volColor, utcH: utcH, nextSession: nextSession, timeStr: now.toUTCString().slice(17, 22) };
 }
 
 
@@ -1490,7 +1503,7 @@ function renderSessionBar() {
   const tokyoActive = s.utcH >= 0 && s.utcH < 9;
   const londonActive = s.utcH >= 8 && s.utcH < 16;
   const nyActive = s.utcH >= 13 && s.utcH < 21;
-  return '<div class="session-bar"><span class="session-label">Sessions</span><div class="session-seg ' + (tokyoActive ? 'active' : 'inactive') + '" style="background:rgba(181,140,255,.12)"><span class="dot" style="background:#b58cff"></span>Tokyo</div><div class="session-seg ' + (londonActive ? 'active' : 'inactive') + '" style="background:rgba(63,185,80,.12)"><span class="dot" style="background:#3fb950"></span>London</div><div class="session-seg ' + (nyActive ? 'active' : 'inactive') + '" style="background:rgba(141,215,255,.12)"><span class="dot" style="background:#8dd7ff"></span>New York</div><span class="session-vol" style="background:' + s.volColor + '22;color:' + s.volColor + '">Vol: ' + s.volatility + '</span><span style="font-size:.6rem;color:#5c6a7a;margin-left:auto">' + s.timeStr + ' UTC</span></div>';
+  return '<div class="session-bar"><span class="session-label">Sessions</span><div class="session-seg ' + (tokyoActive ? 'active' : 'inactive') + '" style="background:rgba(181,140,255,.12)"><span class="dot" style="background:#b58cff"></span>Tokyo</div><div class="session-seg ' + (londonActive ? 'active' : 'inactive') + '" style="background:rgba(63,185,80,.12)"><span class="dot" style="background:#3fb950"></span>London</div><div class="session-seg ' + (nyActive ? 'active' : 'inactive') + '" style="background:rgba(141,215,255,.12)"><span class="dot" style="background:#8dd7ff"></span>New York</div><span class="session-vol" style="background:' + s.volColor + '22;color:' + s.volColor + '">Vol: ' + s.volatility + '</span><span style="font-size:.58rem;color:#73808d;margin-left:6px">' + s.nextLine + '</span><span style="font-size:.6rem;color:#5c6a7a;margin-left:auto">' + s.timeStr + ' UTC</span></div>';
 }
 
 
@@ -1506,7 +1519,7 @@ function renderHeatmap() {
     else if (r.direction === 'SELL') { bg = 'rgba(248,81,73,' + Math.min(conf / 100, 0.6) + ')'; fg = '#f85149'; }
     else { bg = 'rgba(181,140,255,.1)'; fg = '#b58cff'; }
     var chg = r.change != null ? (r.change >= 0 ? '+' : '') + r.change.toFixed(1) + '%' : '';
-    return '<div class="heatmap-cell" style="background:' + bg + ';color:' + fg + '" onclick="state.base=\'' + p.split('/')[0] + '\';state.quote=\'' + p.split('/')[1] + '\';state.timeframe=\'1d\';load()" title="' + p + ': ' + r.direction + ' ' + conf + '%">' + p.split('/')[0] + '<div style="font-size:.55rem;font-weight:400;opacity:.7">' + chg + '</div></div>';
+    return '<div class="heatmap-cell" style="background:' + bg + ';color:' + fg + '" data-heatmap="' + p + '" title="' + p + ': ' + r.direction + ' ' + conf + '%">' + p.split('/')[0] + '<div style="font-size:.55rem;font-weight:400;opacity:.7">' + chg + '</div></div>';
   }).join('');
   return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="heatmapToggle"><div class="history-toggle-left"><h3>Portfolio Heatmap</h3></div><span class="arrow">\u25BE</span></button><div class="history-body" id="heatmapBody"><div class="heatmap-grid">' + cells + '</div></div></section>';
 }
@@ -1542,7 +1555,7 @@ function checkPriceLevelAlerts() {
     if (alert.dir === 'above' && price >= alert.price) triggered = true;
     if (alert.dir === 'below' && price <= alert.price) triggered = true;
     if (triggered) {
-      alertHistory.push({ timestamp: new Date(), pair: alert.pair, type: 'price_level', message: alert.pair + ' hit ' + formatPrice(alert.price, alert.pair) + ' (' + alert.dir + ')' });
+      alertHistory.push({ timestamp: new Date().toISOString(), pair: alert.pair, type: 'price_level', message: alert.pair + ' hit ' + formatPrice(alert.price, alert.pair) + ' (' + alert.dir + ')' });
       saveAlertHistory();
       toRemove.push(idx);
       playBeep();
@@ -1578,7 +1591,7 @@ function renderEconCalendar() {
     return (parts[0] * 60 + parts[1]) >= nowMin - 60;
   }).slice(0, 5);
   if (upcoming.length === 0) return '';
-  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + e.time + '</span><span class="econ-name">' + e.name + '</span><span class="econ-impact ' + e.impact + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">Times shown in UTC. High-impact events may increase volatility.</div></div></section>';
+  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + e.time + '</span><span class="econ-flag">' + e.flag + '</span><span class="econ-name">' + e.name + '</span><span class="econ-impact ' + e.impact + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">Times shown in UTC. High-impact events may increase volatility.</div></div></section>';
 }
 
 function render() {
@@ -2198,7 +2211,9 @@ async function runBacktestImpl() {
       const slice = rows.slice(0, i + 1);
       const analysis = analyze(slice, cfg);
       if (!analysis || analysis.direction === "WAIT") continue;
-      const entry = analysis.entry || slice[i].close;
+      const rawEntry = analysis.entry || slice[i].close;
+      const spreadSlip = ((slippageConfig.spreadPips || 0) + (slippageConfig.slippagePips || 0)) * 0.0001;
+      const entry = analysis.direction === "BUY" ? rawEntry + spreadSlip : rawEntry - spreadSlip;
       const stop = analysis.stop;
       const target = analysis.target;
       if (stop == null || target == null) continue;
@@ -3137,8 +3152,16 @@ function setupEvents() {
       }
       return;
     }
+    if (event.target.dataset.heatmap) {
+      var pair = event.target.dataset.heatmap.split('/');
+      state.base = pair[0];
+      state.quote = pair[1];
+      state.timeframe = '1d';
+      load();
+      return;
+    }
     if (event.target.dataset.partialPos) {
-      var posId = event.target.dataset.partialPos;
+      var posId = Number(event.target.dataset.partialPos);
       var pct = parseInt(event.target.dataset.pct) || 50;
       var pos = positions.find(function(p) { return p.id === posId && !p.closedAt; });
       if (pos) {
