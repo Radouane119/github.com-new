@@ -273,6 +273,24 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
   .metric{padding:12px 14px}
   .metric strong{font-size:1.05rem}
 }
+[data-theme="light"] body{background:#f5f6f8;color:#1a1a1a}
+[data-theme="light"] .dashboard-section,[data-theme="light"] .positions-section,[data-theme="light"] .history-section,[data-theme="light"] .alerts-section,[data-theme="light"] .overview-section{background:#fff;border-color:#d0d5db}
+[data-theme="light"] .ov-card{background:#fff;border-color:#d0d5db}
+[data-theme="light"] .ov-card.buy{border-left-color:#16a34a}
+[data-theme="light"] .ov-card.sell{border-left-color:#dc2626}
+[data-theme="light"] .session-bar{background:#fff;border-color:#d0d5db;color:#1a1a1a}
+[data-theme="light"] .topbar{background:#fff;border-color:#d0d5db}
+[data-theme="light"] input,[data-theme="light"] select,[data-theme="light"] textarea{background:#f0f1f3;border-color:#d0d5db;color:#1a1a1a}
+[data-theme="light"] .backtest-toggle,[data-theme="light"] .history-toggle{background:#fff;color:#1a1a1a}
+[data-theme="light"] h3,[data-theme="light"] h4{color:#1a1a1a}
+[data-theme="light"] .ov-pair,[data-theme="light"] .ov-signal{color:#1a1a1a}
+[data-theme="light"] .pos-row{background:#f8f9fa;border-color:#d0d5db}
+[data-theme="light"] .pos-meta span{color:#555}
+[data-theme="light"] .stat-item span{color:#555}
+[data-theme="light"] .history-body{background:#fff;border-color:#d0d5db}
+[data-theme="light"] .metric{background:#f8f9fa;border-color:#d0d5db}
+[data-theme="light"] .scan-button{background:#2563eb;color:#fff}
+[data-theme="light"] .icon-button{background:#f0f1f3;color:#1a1a1a;border-color:#d0d5db}
 .corr-cell{width:48px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:600;border-radius:3px;color:#e6edf3}
 .replay-bar{display:flex;gap:6px;align-items:center;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px}
 .replay-bar button{background:#1f2a36;border:1px solid #2a3848;color:#8c98a5;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.7rem;font-family:inherit}
@@ -1635,7 +1653,8 @@ function render() {
           <button class="icon-button" id="settingsToggle" title="Settings">⚙</button>
           <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot">📷</button>
           <button class="icon-button" id="soundToggle" title="Toggle sound (M)">${soundEnabled ? "🔊" : "🔇"}</button>
-          <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱</span>
+          <button class="icon-button" id="themeToggle" title="Toggle theme (T)">${darkTheme ? "🌙" : "☀️"}</button>
+          <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱ B=Back T=Theme</span>
         </div>
         <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}" onclick="switchTF('${tf}')">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
@@ -1729,18 +1748,19 @@ function render() {
           <h3>Market Overview</h3>
           <span class="ov-progress" id="ovProgress">${multiScan.progress}${autoScan.enabled ? ` · <span id="scanCountdown">${scanCountdown}s</span>` : ""}</span>
           <div style="display:flex;gap:6px">
+            <button class="ov-wl-filter" style="background:${multiScan.watchlistOnly?'#1a3a2a':'#1a2533'};border:1px solid ${multiScan.watchlistOnly?'#2ea043':'#1f2a36'};color:${multiScan.watchlistOnly?'#3fb950':'#8c98a5'};padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">${multiScan.watchlistOnly ? '★ On' : '☆ All'}</button>
             <button class="icon-button" id="toggleScanConfig" title="Configure pairs">⚙</button>
             <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
           </div>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${scanPairs.slice().sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${(multiScan.watchlistOnly ? scanPairs.filter(p => watchlist.includes(p)) : scanPairs).sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="4H: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} 4H</span>` : ''}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px'><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
       </section>
 
       ${(() => { var pa = priceLevelAlerts; return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="priceAlertToggle"><div class="history-toggle-left"><h3>Price Level Alerts</h3><span class="history-count">' + pa.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="priceAlertBody"><div style="padding:10px 12px"><div class="price-alert-row"><select id="paPair" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem">' + scanPairs.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('') + '</select><select id="paDir"><option value="above">Above</option><option value="below">Below</option></select><input type="number" id="paPrice" placeholder="Price" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"><button class="scan-button" id="addPriceAlert" style="font-size:.7rem">+ Add</button></div>' + pa.map(function(a, i) { return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0e151e;font-size:.7rem"><span style="width:56px;color:#e6edf3;font-weight:600">' + a.pair + '</span><span style="color:' + (a.dir === 'above' ? '#3fb950' : '#f85149') + '">' + (a.dir === 'above' ? '\u2191' : '\u2193') + '</span><span style="color:#8c98a5">' + formatPrice(a.price, a.pair) + '</span><button data-rm-pa="' + i + '" style="background:transparent;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;margin-left:auto">\u2715</button></div>'; }).join('') + '</div></div></section>'; })()}
 ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
 
-      ${(() => { const open = positions.filter(p => !p.closedAt); if (open.length === 0) return ""; const corrGroups = [["EUR/USD","GBP/USD","EUR/GBP"],["AUD/USD","NZD/USD"]]; const openPairs = open.map(p => p.pair); const corrWarnings = []; for (const group of corrGroups) { const matched = openPairs.filter(p => group.includes(p)); if (matched.length >= 2) corrWarnings.push(matched.join(", ")); } return `<section class="positions-section"><div class="positions-head"><h4>Open Positions</h4><span>${open.length}</span></div>${open.map(p => { const cp = getPosPrice(p); const pnl = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (pnl / p.entry) * 100 : 0; const pnlCls = pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'}"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span><button class="pos-btn" data-close-pos="${p.id}">Close</button></div><div class="pos-partial"><button data-partial-pos="${p.id}" data-pct="25">25%</button><button data-partial-pos="${p.id}" data-pct="50">50%</button><button data-partial-pos="${p.id}" data-pct="75">75%</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Cur ${formatPrice(cp, p.pair)}</span><span>Stop ${formatPrice(p.stop, p.pair)}</span><span>Target ${formatPrice(p.target, p.pair)}</span></div></div>`; }).join("")}${corrWarnings.length > 0 ? `<div style="padding:6px 10px;background:#3a2a1a;border:1px solid #8c6a3a;border-radius:6px;font-size:.68rem;color:#f0c35a;margin-top:4px">⚠ Correlated positions detected: ${corrWarnings.join("; ")}</div>` : ""}</section>`; })()}
+      ${(() => { const open = positions.filter(p => !p.closedAt); if (open.length === 0) return ""; const corrGroups = [["EUR/USD","GBP/USD","EUR/GBP"],["AUD/USD","NZD/USD"]]; const openPairs = open.map(p => p.pair); const corrWarnings = []; for (const group of corrGroups) { const matched = openPairs.filter(p => group.includes(p)); if (matched.length >= 2) corrWarnings.push(matched.join(", ")); } return `<section class="positions-section"><div class="positions-head"><h4>Open Positions</h4><span>${open.length}</span></div>${open.map(p => { const cp = getPosPrice(p); const pnl = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (pnl / p.entry) * 100 : 0; const pnlCls = pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'}"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span><button class="pos-btn" data-close-pos="${p.id}">Close</button></div><div class="pos-partial"><button data-partial-pos="${p.id}" data-pct="25">25%</button><button data-partial-pos="${p.id}" data-pct="50">50%</button><button data-partial-pos="${p.id}" data-pct="75">75%</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Cur ${formatPrice(cp, p.pair)}</span><span>Stop ${formatPrice(p.stop, p.pair)}</span><span>Target ${formatPrice(p.target, p.pair)}</span><span style="color:${pnl >= 0 ? '#3fb950' : '#f85149'}">R: ${(() => { const risk = Math.abs(p.entry - p.stop); const reward = Math.abs(cp - p.entry); return risk > 0 ? (p.direction === 'BUY' ? (reward / risk) : (reward / risk)).toFixed(1) : '0'; })()}x</span></div></div>`; }).join("")}${corrWarnings.length > 0 ? `<div style="padding:6px 10px;background:#3a2a1a;border:1px solid #8c6a3a;border-radius:6px;font-size:.68rem;color:#f0c35a;margin-top:4px">⚠ Correlated positions detected: ${corrWarnings.join("; ")}</div>` : ""}</section>`; })()}
 
       ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; let tradeNotes = {}; try { tradeNotes = JSON.parse(localStorage.getItem("tradeNotes") || "{}"); } catch {} return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; const noteVal = tradeNotes[p.id] || ""; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div><textarea data-note-pos="${p.id}" placeholder="Trade notes..." style="width:100%;margin-top:4px;background:#0e151e;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#8c98a5;font-size:.65rem;resize:vertical;min-height:20px;font-family:inherit">${noteVal.replace(/</g,"&lt;")}</textarea></div>`; }).join("")}</section>`; })()}
 
@@ -2487,8 +2507,11 @@ async function scanPairForOverview(pair) {
       } catch {}
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
-    const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons } : null;
+    const mtf4hDir = a4h ? a4h.direction : null;
+    const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
+    const prevDir = multiScan.results[pair] && !multiScan.results[pair].loading ? multiScan.results[pair].direction : null;
     const isNew = addSignalToHistory(pair, task);
+    if (prevDir && task && task.direction !== prevDir && task.direction !== "WAIT" && prevDir !== "WAIT") { try { const actx = new (window.AudioContext || window.webkitAudioContext)(); const osc = actx.createOscillator(); const gain = actx.createGain(); osc.connect(gain); gain.connect(actx.destination); osc.type = "sine"; osc.frequency.setValueAtTime(task.direction === "BUY" ? 880 : 440, actx.currentTime); osc.frequency.setValueAtTime(task.direction === "BUY" ? 1100 : 330, actx.currentTime + 0.1); gain.gain.setValueAtTime(0.15, actx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, actx.currentTime + 0.3); osc.start(); osc.stop(actx.currentTime + 0.3); } catch {} }
     const lastRow = rows.at(-1);
     const price = lastRow ? lastRow.close : null;
     const change = rows.length >= 2 ? ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100 : null;
@@ -2496,6 +2519,7 @@ async function scanPairForOverview(pair) {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: conf,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
       entry: analysis?.entry, stop: analysis?.stop, target: analysis?.target,
+      mtf4h: analysis ? (a4h ? a4h.direction : null) : null,
     };
     if (isNew && task && task.direction !== "WAIT") notifySignal({ direction: task.direction, pair, confidence: task.confidence, risk: task.risk, entry: task.entry });
   } catch {
@@ -3357,6 +3381,13 @@ function setupEvents() {
       if (soundEnabled) playBeep();
       return;
     }
+    if (target.id === "themeToggle") {
+      darkTheme = !darkTheme;
+      target.textContent = darkTheme ? "🌙" : "☀️";
+      applyTheme();
+      saveTheme();
+      return;
+    }
     if (target.id === "ssAnalyze") { ssAnalyze(); return; }
     if (target.id === "ssClear") {
       ssPoints = [];
@@ -3413,6 +3444,7 @@ function setupEvents() {
     if (target.id === "autoScanToggle") {
       toggleAutoScan();
     }
+    if (target.classList.contains('ov-wl-filter')) { multiScan.watchlistOnly = !multiScan.watchlistOnly; render(); return; }
     if (target.id === "toggleScanConfig") {
       multiScan.configOpen = !multiScan.configOpen;
       render();
@@ -3498,6 +3530,7 @@ function observeChartContainer() {
 }
 
 let soundEnabled = true;
+let darkTheme = true;
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
@@ -3508,6 +3541,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "4") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "4h"; load(); } return; }
   if (e.key === "h" || e.key === "H") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "1h"; load(); } return; }
   if (e.key === "b" || e.key === "B") { if (!backtest.running) { runBacktestImpl(); } return; }
+  if (e.key === "t" || e.key === "T") { darkTheme = !darkTheme; applyTheme(); saveTheme(); return; }
 });
 
 loadHistory();
@@ -3525,6 +3559,7 @@ loadScheduleState();
 setupEvents();
 load();
 connectWS();
+loadTheme();
 startAutoScan();
 fetchEconEvents();
 setInterval(updateOverviewPrices, 10000);
