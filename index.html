@@ -3380,8 +3380,8 @@ function setupEvents() {
     }
     if (target.dataset.closePos) {
       const id = Number(target.dataset.closePos);
-      const exitPrice = prompt("Enter exit price:");
-      if (exitPrice && !isNaN(exitPrice)) closeTrade(id, Number(exitPrice));
+      const pos = positions.find(p => p.id === id && !p.closedAt);
+      if (pos) closeTrade(id, getPosPrice(pos));
       return;
     }
     if (target.dataset.delPos) {
