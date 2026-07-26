@@ -251,6 +251,10 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 @media(max-width:768px){
   .workspace{grid-template-columns:1fr !important}
   .summary-grid{grid-template-columns:1fr !important}
+  .session-bar{flex-wrap:wrap;gap:4px}
+  .heatmap-grid{grid-template-columns:repeat(auto-fill,minmax(60px,1fr))}
+  .econ-row{flex-wrap:wrap;gap:4px}
+  .pos-partial{flex-wrap:wrap}
   .topbar{padding:10px 0}
   .topbar h1{font-size:1.15rem}
   .eyebrow{font-size:.6rem}
@@ -370,6 +374,7 @@ let ichimokuOverlay = false;
 let fibOverlay = false;
 let macdHistVote = false;
 let kellyEnabled = false;
+let vwapOverlay = false;
 let fxCache = {};
 let priceLevelAlerts = [];
 let slippageConfig = { spreadPips: 0, slippagePips: 0 };
@@ -385,7 +390,7 @@ const corrData = { matrix: null, pairs: [], running: false };
 function loadOverlayPrefs() {
   try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; } } catch {}
 }
-function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled })); } catch {} }
+function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay })); } catch {} }
 function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
 function savePaperState() { try { localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); } catch {} }
 function loadScheduleState() { try { const s = localStorage.getItem("scheduleState"); if (s) { const d = JSON.parse(s); scheduleState.enabled = !!d.enabled; scheduleState.lastSent = d.lastSent ? new Date(d.lastSent) : null; } } catch {} }
@@ -1572,26 +1577,41 @@ function checkPriceLevelAlerts() {
 }
 
 
+var econEvents = [];
+async function fetchEconEvents() {
+  try {
+    var r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
+    if (!r.ok) return;
+    var data = await r.json();
+    econEvents = data.filter(function(e) { return e.impact === 'High' || e.impact === 'Medium'; }).map(function(e) {
+      var impact = e.impact === 'High' ? 'high' : 'med';
+      return { time: e.time || 'TBD', country: e.country || '', name: e.title || e.name || 'Unknown', impact: impact, currency: e.currency || '' };
+    });
+  } catch {}
+}
 function renderEconCalendar() {
-  var events = [
-    { time: '08:30', flag: '\u{1F1FA}\u{1F1F8}', name: 'US GDP (QoQ)', impact: 'high' },
-    { time: '10:00', flag: '\u{1F1EA}\u{1F1FA}', name: 'ECB Interest Rate', impact: 'high' },
-    { time: '13:30', flag: '\u{1F1FA}\u{1F1F8}', name: 'US Non-Farm Payrolls', impact: 'high' },
-    { time: '14:00', flag: '\u{1F1EC}\u{1F1E7}', name: 'UK CPI (YoY)', impact: 'med' },
-    { time: '01:30', flag: '\u{1F1EF}\u{1F1F5}', name: 'Japan CPI (YoY)', impact: 'med' },
-    { time: '15:00', flag: '\u{1F1FA}\u{1F1F8}', name: 'US Consumer Confidence', impact: 'med' },
-    { time: '07:00', flag: '\u{1F1E9}\u{1F1EA}', name: 'German IFO Climate', impact: 'low' },
-    { time: '19:00', flag: '\u{1F1E6}\u{1F1FA}', name: 'AU Employment Change', impact: 'med' },
+  var events = econEvents.length > 0 ? econEvents : [
+    { time: '08:30', country: 'US', name: 'US GDP (QoQ)', impact: 'high', currency: 'USD' },
+    { time: '10:00', country: 'EU', name: 'ECB Interest Rate', impact: 'high', currency: 'EUR' },
+    { time: '13:30', country: 'US', name: 'US Non-Farm Payrolls', impact: 'high', currency: 'USD' },
+    { time: '14:00', country: 'UK', name: 'UK CPI (YoY)', impact: 'med', currency: 'GBP' },
+    { time: '01:30', country: 'JP', name: 'Japan CPI (YoY)', impact: 'med', currency: 'JPY' },
+    { time: '15:00', country: 'US', name: 'US Consumer Confidence', impact: 'med', currency: 'USD' },
+    { time: '07:00', country: 'DE', name: 'German IFO Climate', impact: 'low', currency: 'EUR' },
+    { time: '19:00', country: 'AU', name: 'AU Employment Change', impact: 'med', currency: 'AUD' },
   ];
   var now = new Date();
   var utcH = now.getUTCHours(), utcM = now.getUTCMinutes();
   var nowMin = utcH * 60 + utcM;
   var upcoming = events.filter(function(e) {
+    if (!e.time || e.time === 'TBD') return true;
     var parts = e.time.split(':').map(Number);
+    if (parts.length < 2) return true;
     return (parts[0] * 60 + parts[1]) >= nowMin - 60;
-  }).slice(0, 5);
+  }).slice(0, 8);
   if (upcoming.length === 0) return '';
-  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + e.time + '</span><span class="econ-flag">' + e.flag + '</span><span class="econ-name">' + e.name + '</span><span class="econ-impact ' + e.impact + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">Times shown in UTC. High-impact events may increase volatility.</div></div></section>';
+  var isLive = econEvents.length > 0;
+  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + (isLive ? ' live' : '') + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + e.time + '</span><span class="econ-flag">' + (e.country || '') + '</span><span class="econ-name">' + e.name + '<span style="font-size:.58rem;color:#5c6a7a;margin-left:4px">' + (e.currency || '') + '</span></span><span class="econ-impact ' + e.impact + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">' + (isLive ? 'Data from ForexFactory. ' : 'Fallback data. ') + 'High-impact events may increase volatility.</div></div></section>';
 }
 
 function render() {
@@ -1684,7 +1704,7 @@ function render() {
                 <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
                   <button onclick="ichimokuOverlay=!ichimokuOverlay;saveOverlayPrefs();render()" style="background:${ichimokuOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${ichimokuOverlay?'#2ea043':'#2a3848'};color:${ichimokuOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">☁ Ichimoku</button>
                   <button onclick="fibOverlay=!fibOverlay;saveOverlayPrefs();render()" style="background:${fibOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${fibOverlay?'#2ea043':'#2a3848'};color:${fibOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 Fibonacci</button>
-                  <button onclick="macdHistVote=!macdHistVote;saveOverlayPrefs();render()" style="background:${macdHistVote?'#1a3a2a':'#1f2a36'};border:1px solid ${macdHistVote?'#2ea043':'#2a3848'};color:${macdHistVote?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 MACD+Hist</button>
+                  <button onclick="macdHistVote=!macdHistVote;saveOverlayPrefs();render()" style="background:${macdHistVote?'#1a3a2a':'#1f2a36'};border:1px solid ${macdHistVote?'#2ea043':'#2a3848'};color:${macdHistVote?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 MACD+Hist</button><button onclick="vwapOverlay=!vwapOverlay;saveOverlayPrefs();render()" style="background:${vwapOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${vwapOverlay?'#2ea043':'#2a3848'};color:${vwapOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 VWAP</button>
                 </div>
                 <div id="chartContainer"><canvas id="priceChart"></canvas></div>
               </div>
@@ -2139,6 +2159,12 @@ function renderBacktest() {
   eqVals.forEach(v => { if (v > runPeak) runPeak = v; eqPeaks.push(runPeak); });
   const ddSeries = eqVals.map((v, i) => eqPeaks[i] - v);
   const maxDdPct = Math.max(...ddSeries, 0);
+  const tradeReturns = r.trades.filter(t => t.result !== "pending").map(t => t.pnlPct);
+  const avgReturn = tradeReturns.length > 0 ? tradeReturns.reduce((s, v) => s + v, 0) / tradeReturns.length : 0;
+  const stdDev = tradeReturns.length > 1 ? Math.sqrt(tradeReturns.reduce((s, v) => s + Math.pow(v - avgReturn, 2), 0) / (tradeReturns.length - 1)) : 0;
+  const sharpe = stdDev > 0 ? (avgReturn / stdDev * Math.sqrt(252)).toFixed(2) : "-";
+  const calmar = maxDdPct > 0 ? (cum / maxDdPct).toFixed(2) : "-";
+  const expectancy = total > 0 ? ((wr / 100 * avgWin) + ((1 - wr / 100) * avgLoss)).toFixed(2) : "0";
   let maxDdDur = 0, ddDur = 0;
   for (let i = 0; i < eqVals.length; i++) { if (eqVals[i] < eqPeaks[i]) { ddDur++; if (ddDur > maxDdDur) maxDdDur = ddDur; } else ddDur = 0; }
   const eqMax = Math.max(...eqVals, 0);
@@ -2172,7 +2198,7 @@ function renderBacktest() {
     const rCls = t.result === "win" ? "stat-win" : t.result === "loss" ? "stat-loss" : "";
     return `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:2px 0;border-bottom:1px solid #0e151e"><span style="width:14px;font-size:.55rem">${r.trades.length - i}</span><span style="width:56px;text-transform:uppercase">${t.date}</span><span style="width:32px;font-weight:600;color:${t.direction === 'BUY' ? '#3fb950' : '#f85149'}">${t.direction}</span><span style="width:44px;text-align:right;font-variant-numeric:tabular-nums">${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(1)}%</span><span style="flex:1;height:4px;background:#1f2a36;border-radius:2px;overflow:hidden"><div style="width:${Math.min(Math.abs(t.pnlPct) * 5, 100)}%;height:100%;background:${t.pnlPct >= 0 ? '#3fb950' : '#f85149'};border-radius:2px"></div></span><span style="width:30px;text-align:right;font-size:.58rem;color:${t.result === 'win' ? '#3fb950' : t.result === 'loss' ? '#f85149' : '#73808d'}">${t.result === 'win' ? 'W' : t.result === 'loss' ? 'L' : '?'}</span></div>`;
   }).join("");
-  singleResult = `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD (${maxDdDur}t)</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div>${eqCurve}</div><div style="padding:0 12px 4px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Drawdown</div>${ddChart}</div><div style="padding:8px 12px"><button id="runBacktest" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
+  singleResult = `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD (${maxDdDur}t)</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${typeof sharpe === 'number' && sharpe > 1 ? '#3fb950' : typeof sharpe === 'number' && sharpe > 0 ? '#d29922' : '#f85149'}">${sharpe}</div><div style="font-size:.55rem;color:#5c6a7a">Sharpe Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${typeof calmar === 'number' && calmar > 1 ? '#3fb950' : '#f85149'}">${calmar}</div><div style="font-size:.55rem;color:#5c6a7a">Calmar Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:#f0f4f8">${expectancy}%</div><div style="font-size:.55rem;color:#5c6a7a">Expectancy</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div>${eqCurve}</div><div style="padding:0 12px 4px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Drawdown</div>${ddChart}</div><div style="padding:8px 12px"><button id="runBacktest" style="width:100%;padding:8px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
 }
   }
   let multiResult = "";
@@ -2757,6 +2783,7 @@ function toggleAutoScan() {
     stopAutoScan();
   } else {
     startAutoScan();
+fetchEconEvents();
   }
 }
 
@@ -2904,6 +2931,37 @@ function drawChart(canvas, rows, pair) {
       ctx.font = "8px Inter, sans-serif";
       ctx.fillText("FIB " + fib.label, pad.left + 2, yy - 3);
     });
+  }
+  if (vwapOverlay) {
+    let cumVol = 0, cumTP = 0;
+    const vwapPts = [];
+    for (let vi = 0; vi < rows.length; vi++) {
+      const tp = (rows[vi].high + rows[vi].low + rows[vi].close) / 3;
+      cumTP += tp * rows[vi].volume;
+      cumVol += rows[vi].volume;
+      const vwap = cumVol > 0 ? cumTP / cumVol : tp;
+      const vIdx = Math.max(0, Math.min(Math.round((vi / (rows.length - 1)) * (w - 1)), w - 1));
+      const vY = Math.round(((vwap - minP) / (maxP - minP)) * (h - padding * 2) + padding);
+      vwapPts.push(`${vIdx},${Math.max(padding, Math.min(h - padding, vY))}`);
+    }
+    if (vwapPts.length > 1) {
+      ctx.strokeStyle = '#ff9800';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      const f = vwapPts[0].split(',');
+      ctx.moveTo(Number(f[0]), Number(f[1]));
+      for (let vi2 = 1; vi2 < vwapPts.length; vi2++) {
+        const pt = vwapPts[vi2].split(',');
+        ctx.lineTo(Number(pt[0]), Number(pt[1]));
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ff9800';
+      ctx.font = '8px Inter, sans-serif';
+      const lp = vwapPts[vwapPts.length - 1].split(',');
+      ctx.fillText('VWAP', Number(lp[0]) - 24, Number(lp[1]) - 3);
+    }
   }
   if (ichimokuOverlay && rows.length >= 78) {
     const ichi = computeIchimoku(rows);
@@ -3449,6 +3507,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "1") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "1d"; load(); } return; }
   if (e.key === "4") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "4h"; load(); } return; }
   if (e.key === "h" || e.key === "H") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "1h"; load(); } return; }
+  if (e.key === "b" || e.key === "B") { if (!backtest.running) { runBacktestImpl(); } return; }
 });
 
 loadHistory();
@@ -3467,8 +3526,10 @@ setupEvents();
 load();
 connectWS();
 startAutoScan();
+fetchEconEvents();
 setInterval(updateOverviewPrices, 10000);
 setInterval(checkPriceLevelAlerts, 15000);
+setInterval(function() { if (document.getElementById('sessionBar')) render(); }, 60000);
 setInterval(updateLivePrice, 15000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
