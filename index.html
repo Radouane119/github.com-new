@@ -412,6 +412,9 @@ function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.st
 function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
 function savePaperState() { try { localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); } catch {} }
 function loadScheduleState() { try { const s = localStorage.getItem("scheduleState"); if (s) { const d = JSON.parse(s); scheduleState.enabled = !!d.enabled; scheduleState.lastSent = d.lastSent ? new Date(d.lastSent) : null; } } catch {} }
+function loadTheme() { try { darkTheme = localStorage.getItem("theme") !== "light"; } catch {} applyTheme(); }
+function saveTheme() { try { localStorage.setItem("theme", darkTheme ? "dark" : "light"); } catch {} }
+function applyTheme() { if (darkTheme) { document.documentElement.removeAttribute("data-theme"); } else { document.documentElement.setAttribute("data-theme", "light"); } }
 function saveScheduleState() { try { localStorage.setItem("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null })); } catch {} }
 
 function loadAlertHistory() {
@@ -2493,23 +2496,24 @@ function scheduleRender() {
 async function scanPairForOverview(pair) {
   const [base, quote] = pair.split("/");
   try {
+    const prevDir = multiScan.results[pair] && !multiScan.results[pair].loading ? multiScan.results[pair].direction : null;
     multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
     scheduleRender();
     const rows = (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
     const cfg = loadStrategyConfig();
     const analysis = rows.length >= 80 ? analyze(rows, cfg) : null;
     let mtfConf = 0;
+    let a4h = null;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
       try {
         const rows4h = await fetchBinanceRows(base, quote, "4h");
-        const a4h = rows4h.length >= 80 ? analyze(rows4h, cfg) : null;
+        a4h = rows4h.length >= 80 ? analyze(rows4h, cfg) : null;
         if (a4h) mtfConf = a4h.direction === analysis.direction ? 15 : a4h.direction !== "WAIT" ? -20 : 0;
       } catch {}
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
     const mtf4hDir = a4h ? a4h.direction : null;
     const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
-    const prevDir = multiScan.results[pair] && !multiScan.results[pair].loading ? multiScan.results[pair].direction : null;
     const isNew = addSignalToHistory(pair, task);
     if (prevDir && task && task.direction !== prevDir && task.direction !== "WAIT" && prevDir !== "WAIT") { try { const actx = new (window.AudioContext || window.webkitAudioContext)(); const osc = actx.createOscillator(); const gain = actx.createGain(); osc.connect(gain); gain.connect(actx.destination); osc.type = "sine"; osc.frequency.setValueAtTime(task.direction === "BUY" ? 880 : 440, actx.currentTime); osc.frequency.setValueAtTime(task.direction === "BUY" ? 1100 : 330, actx.currentTime + 0.1); gain.gain.setValueAtTime(0.15, actx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, actx.currentTime + 0.3); osc.start(); osc.stop(actx.currentTime + 0.3); } catch {} }
     const lastRow = rows.at(-1);
@@ -2964,9 +2968,9 @@ function drawChart(canvas, rows, pair) {
       cumTP += tp * rows[vi].volume;
       cumVol += rows[vi].volume;
       const vwap = cumVol > 0 ? cumTP / cumVol : tp;
-      const vIdx = Math.max(0, Math.min(Math.round((vi / (rows.length - 1)) * (w - 1)), w - 1));
-      const vY = Math.round(((vwap - minP) / (maxP - minP)) * (h - padding * 2) + padding);
-      vwapPts.push(`${vIdx},${Math.max(padding, Math.min(h - padding, vY))}`);
+      const vIdx = Math.round(x(vi));
+      const vY = Math.round(y(vwap));
+      vwapPts.push(`${vIdx},${Math.max(pad.top, Math.min(height - pad.bottom, vY))}`);
     }
     if (vwapPts.length > 1) {
       ctx.strokeStyle = '#ff9800';
@@ -3211,56 +3215,7 @@ function setupEvents() {
       savePaperState();
       render();
     }
-    if (event.target.id === "addPriceAlert") {
-      var pair = document.getElementById("paPair");
-      var dir = document.getElementById("paDir");
-      var priceEl = document.getElementById("paPrice");
-      if (pair && dir && priceEl) {
-        var price = parseFloat(priceEl.value);
-        if (pair.value && price > 0) {
-          priceLevelAlerts.push({ pair: pair.value, dir: dir.value, price: price, id: Date.now() });
-          savePriceLevelAlerts();
-          render();
-        }
-      }
-      return;
-    }
-    if (event.target.dataset.rmPa !== undefined) {
-      var idx = parseInt(event.target.dataset.rmPa);
-      if (!isNaN(idx) && idx >= 0 && idx < priceLevelAlerts.length) {
-        priceLevelAlerts.splice(idx, 1);
-        savePriceLevelAlerts();
-        render();
-      }
-      return;
-    }
-    if (event.target.dataset.heatmap) {
-      var pair = event.target.dataset.heatmap.split('/');
-      state.base = pair[0];
-      state.quote = pair[1];
-      state.timeframe = '1d';
-      load();
-      return;
-    }
-    if (event.target.dataset.partialPos) {
-      var posId = Number(event.target.dataset.partialPos);
-      var pct = parseInt(event.target.dataset.pct) || 50;
-      var pos = positions.find(function(p) { return p.id === posId && !p.closedAt; });
-      if (pos) {
-        var closePct = pct / 100;
-        var cp = getPosPrice(pos);
-        var pnl = pos.direction === "BUY" ? cp - pos.entry : pos.entry - cp;
-        var pnlPct = pos.entry ? (pnl / pos.entry) * 100 : 0;
-        var oldSize = pos.size || 10000;
-        var closeSize = oldSize * closePct;
-        var pnlCurrency = pnlPct / 100 * closeSize;
-        positions.push({ id: posId + "-pc" + Date.now(), pair: pos.pair, direction: pos.direction, entry: pos.entry, stop: pos.stop, target: pos.target, openedAt: pos.openedAt, closedAt: new Date().toISOString(), exitPrice: cp, pnl: pnlCurrency, pnlPct: pnlPct, pnlCurrency: pnlCurrency, size: closeSize });
-        pos.size = oldSize * (1 - closePct);
-        savePositions();
-        render();
-      }
-      return;
-    }
+
     if (event.target.id === "slipSpread") { slippageConfig.spreadPips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); return; }
     if (event.target.id === "slipSlip") { slippageConfig.slippagePips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); return; }
     if (event.target.id === "kellyToggle") {
@@ -3433,6 +3388,56 @@ function setupEvents() {
       deletePosition(Number(target.dataset.delPos));
       return;
     }
+    if (target.id === "addPriceAlert") {
+      var pair = document.getElementById("paPair");
+      var dir = document.getElementById("paDir");
+      var priceEl = document.getElementById("paPrice");
+      if (pair && dir && priceEl) {
+        var price = parseFloat(priceEl.value);
+        if (pair.value && price > 0) {
+          priceLevelAlerts.push({ pair: pair.value, dir: dir.value, price: price, id: Date.now() });
+          savePriceLevelAlerts();
+          render();
+        }
+      }
+      return;
+    }
+    if (target.dataset.rmPa !== undefined) {
+      var idx = parseInt(target.dataset.rmPa);
+      if (!isNaN(idx) && idx >= 0 && idx < priceLevelAlerts.length) {
+        priceLevelAlerts.splice(idx, 1);
+        savePriceLevelAlerts();
+        render();
+      }
+      return;
+    }
+    if (target.dataset.heatmap) {
+      var pair = target.dataset.heatmap.split('/');
+      state.base = pair[0];
+      state.quote = pair[1];
+      state.timeframe = "1d";
+      load();
+      return;
+    }
+    if (target.dataset.partialPos) {
+      var posId = Number(target.dataset.partialPos);
+      var pct = parseInt(target.dataset.pct) || 50;
+      var pos = positions.find(function(p) { return p.id === posId && !p.closedAt; });
+      if (pos) {
+        var closePct = pct / 100;
+        var cp = getPosPrice(pos);
+        var pnl = pos.direction === "BUY" ? cp - pos.entry : pos.entry - cp;
+        var pnlPct = pos.entry ? (pnl / pos.entry) * 100 : 0;
+        var oldSize = pos.size || 10000;
+        var closeSize = oldSize * closePct;
+        var pnlCurrency = pnlPct / 100 * closeSize;
+        positions.push({ id: posId + "-pc" + Date.now(), pair: pos.pair, direction: pos.direction, entry: pos.entry, stop: pos.stop, target: pos.target, openedAt: pos.openedAt, closedAt: new Date().toISOString(), exitPrice: cp, pnl: pnlCurrency, pnlPct: pnlPct, pnlCurrency: pnlCurrency, size: closeSize });
+        pos.size = oldSize * (1 - closePct);
+        savePositions();
+        render();
+      }
+      return;
+    }
     if (target.id === "swap") {
       if (nonFiat.has(state.base)) return;
       [state.base, state.quote] = [state.quote, state.base];
@@ -3480,7 +3485,7 @@ function setupEvents() {
       if (body) { body.classList.toggle("open"); toggle.classList.toggle("open"); }
       return;
     }
-    if (["riskToggle","stratToggle","alertCondToggle","alertLogToggle","perfSumToggle","compToggle","corrToggle","paperToggle","replayToggle","mcToggle","wfToggle","optToggle","schedToggle"].includes(target.id)) {
+    if (["riskToggle","stratToggle","alertCondToggle","alertLogToggle","perfSumToggle","compToggle","corrToggle","paperToggle","replayToggle","mcToggle","wfToggle","optToggle","schedToggle","priceAlertToggle","heatmapToggle","ddToggle","econToggle","sessionToggle"].includes(target.id)) {
       const bodyId = target.id.replace("Toggle", "Body");
       const body = document.getElementById(bodyId);
       const toggle = document.getElementById(target.id);
@@ -3536,7 +3541,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (e.key === "r" || e.key === "R") { load(); return; }
   if (e.key === "s" || e.key === "S") { toggleAutoScan(); return; }
-  if (e.key === "m" || e.key === "M") { soundEnabled = !soundEnabled; playBeep(); return; }
+  if (e.key === "m" || e.key === "M") { soundEnabled = !soundEnabled; const sb = document.getElementById("soundToggle"); if (sb) sb.textContent = soundEnabled ? "\uD83D\uDD0A" : "\uD83D\uDD07"; playBeep(); return; }
   if (e.key === "1") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "1d"; load(); } return; }
   if (e.key === "4") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "4h"; load(); } return; }
   if (e.key === "h" || e.key === "H") { const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"); if (ok) { state.timeframe = "1h"; load(); } return; }
@@ -3564,7 +3569,7 @@ startAutoScan();
 fetchEconEvents();
 setInterval(updateOverviewPrices, 10000);
 setInterval(checkPriceLevelAlerts, 15000);
-setInterval(function() { if (document.getElementById('sessionBar')) render(); }, 60000);
+setInterval(function() { if (document.querySelector('.session-bar')) render(); }, 60000);
 setInterval(updateLivePrice, 15000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
