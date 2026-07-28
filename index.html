@@ -407,7 +407,7 @@ const scheduleState = { enabled: false, intervalId: null, lastSent: null };
 const corrData = { matrix: null, pairs: [], running: false };
 
 function loadOverlayPrefs() {
-  try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; } } catch {}
+  try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; vwapOverlay = !!d.vwap; } } catch {}
 }
 function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay })); } catch {} }
 function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
@@ -449,7 +449,7 @@ function loadPositions() {
     const saved = localStorage.getItem("positions");
     if (saved) {
       positions = JSON.parse(saved);
-      positions.forEach(p => p.openedAt = new Date(p.openedAt));
+      positions.forEach(p => { p.openedAt = new Date(p.openedAt); p.closedAt = p.closedAt ? new Date(p.closedAt) : null; });
     }
   } catch {}
 }
@@ -598,6 +598,7 @@ const multiScan = {
   scanning: false,
   progress: "",
   configOpen: false,
+  watchlistOnly: false,
 };
 
 function loadScanConfig() {
@@ -1530,7 +1531,7 @@ function renderSessionBar() {
   const tokyoActive = s.utcH >= 0 && s.utcH < 9;
   const londonActive = s.utcH >= 8 && s.utcH < 16;
   const nyActive = s.utcH >= 13 && s.utcH < 21;
-  return '<div class="session-bar"><span class="session-label">Sessions</span><div class="session-seg ' + (tokyoActive ? 'active' : 'inactive') + '" style="background:rgba(181,140,255,.12)"><span class="dot" style="background:#b58cff"></span>Tokyo</div><div class="session-seg ' + (londonActive ? 'active' : 'inactive') + '" style="background:rgba(63,185,80,.12)"><span class="dot" style="background:#3fb950"></span>London</div><div class="session-seg ' + (nyActive ? 'active' : 'inactive') + '" style="background:rgba(141,215,255,.12)"><span class="dot" style="background:#8dd7ff"></span>New York</div><span class="session-vol" style="background:' + s.volColor + '22;color:' + s.volColor + '">Vol: ' + s.volatility + '</span><span style="font-size:.58rem;color:#73808d;margin-left:6px">' + s.nextLine + '</span><span style="font-size:.6rem;color:#5c6a7a;margin-left:auto">' + s.timeStr + ' UTC</span></div>';
+  return '<div class="session-bar"><span class="session-label">Sessions</span><div class="session-seg ' + (tokyoActive ? 'active' : 'inactive') + '" style="background:rgba(181,140,255,.12)"><span class="dot" style="background:#b58cff"></span>Tokyo</div><div class="session-seg ' + (londonActive ? 'active' : 'inactive') + '" style="background:rgba(63,185,80,.12)"><span class="dot" style="background:#3fb950"></span>London</div><div class="session-seg ' + (nyActive ? 'active' : 'inactive') + '" style="background:rgba(141,215,255,.12)"><span class="dot" style="background:#8dd7ff"></span>New York</div><span class="session-vol" style="background:' + s.volColor + '22;color:' + s.volColor + '">Vol: ' + s.volatility + '</span><span style="font-size:.58rem;color:#73808d;margin-left:6px">' + s.nextSession + '</span><span style="font-size:.6rem;color:#5c6a7a;margin-left:auto">' + s.timeStr + ' UTC</span></div>';
 }
 
 
@@ -1961,6 +1962,7 @@ function playBeep() {
     osc.frequency.setValueAtTime(880, ctx.currentTime);
     osc.connect(ctx.destination);
     osc.start(); osc.stop(ctx.currentTime + 0.12);
+    osc.onended = () => ctx.close();
   } catch {}
 }
 
@@ -2186,8 +2188,10 @@ function renderBacktest() {
   const tradeReturns = r.trades.filter(t => t.result !== "pending").map(t => t.pnlPct);
   const avgReturn = tradeReturns.length > 0 ? tradeReturns.reduce((s, v) => s + v, 0) / tradeReturns.length : 0;
   const stdDev = tradeReturns.length > 1 ? Math.sqrt(tradeReturns.reduce((s, v) => s + Math.pow(v - avgReturn, 2), 0) / (tradeReturns.length - 1)) : 0;
-  const sharpe = stdDev > 0 ? (avgReturn / stdDev * Math.sqrt(252)).toFixed(2) : "-";
-  const calmar = maxDdPct > 0 ? (cum / maxDdPct).toFixed(2) : "-";
+  const sharpeRaw = stdDev > 0 ? avgReturn / stdDev * Math.sqrt(252) : "-";
+  const sharpe = sharpeRaw === "-" ? "-" : sharpeRaw.toFixed(2);
+  const calmarRaw = maxDdPct > 0 ? cum / maxDdPct : "-";
+  const calmar = calmarRaw === "-" ? "-" : calmarRaw.toFixed(2);
   const expectancy = total > 0 ? ((wr / 100 * avgWin) + ((1 - wr / 100) * avgLoss)).toFixed(2) : "0";
   let maxDdDur = 0, ddDur = 0;
   for (let i = 0; i < eqVals.length; i++) { if (eqVals[i] < eqPeaks[i]) { ddDur++; if (ddDur > maxDdDur) maxDdDur = ddDur; } else ddDur = 0; }
@@ -2222,7 +2226,7 @@ function renderBacktest() {
     const rCls = t.result === "win" ? "stat-win" : t.result === "loss" ? "stat-loss" : "";
     return `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:2px 0;border-bottom:1px solid #0e151e"><span style="width:14px;font-size:.55rem">${r.trades.length - i}</span><span style="width:56px;text-transform:uppercase">${t.date}</span><span style="width:32px;font-weight:600;color:${t.direction === 'BUY' ? '#3fb950' : '#f85149'}">${t.direction}</span><span style="width:44px;text-align:right;font-variant-numeric:tabular-nums">${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(1)}%</span><span style="flex:1;height:4px;background:#1f2a36;border-radius:2px;overflow:hidden"><div style="width:${Math.min(Math.abs(t.pnlPct) * 5, 100)}%;height:100%;background:${t.pnlPct >= 0 ? '#3fb950' : '#f85149'};border-radius:2px"></div></span><span style="width:30px;text-align:right;font-size:.58rem;color:${t.result === 'win' ? '#3fb950' : t.result === 'loss' ? '#f85149' : '#73808d'}">${t.result === 'win' ? 'W' : t.result === 'loss' ? 'L' : '?'}</span></div>`;
   }).join("");
-  singleResult = `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD (${maxDdDur}t)</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${typeof sharpe === 'number' && sharpe > 1 ? '#3fb950' : typeof sharpe === 'number' && sharpe > 0 ? '#d29922' : '#f85149'}">${sharpe}</div><div style="font-size:.55rem;color:#5c6a7a">Sharpe Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${typeof calmar === 'number' && calmar > 1 ? '#3fb950' : '#f85149'}">${calmar}</div><div style="font-size:.55rem;color:#5c6a7a">Calmar Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:#f0f4f8">${expectancy}%</div><div style="font-size:.55rem;color:#5c6a7a">Expectancy</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div><svg width="100%" height="${eqH + ddChartH}" viewBox="0 0 ${eqW} ${eqH + ddChartH}" preserveAspectRatio="none" style="display:block;background:#0b1117;border-radius:4px"><polyline points="${eqPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="1.5"/><line x1="0" y1="${eqY(0)}" x2="${eqW}" y2="${eqY(0)}" stroke="#2a3848" stroke-width="0.5" stroke-dasharray="3,3"/><polyline points="${peakPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.3"/><rect x="0" y="${eqH}" width="${eqW}" height="${ddChartH}" fill="none"/><polyline points="${ddPts.join(' ')}" fill="rgba(248,81,73,0.2)" stroke="#f85149" stroke-width="1"/></svg><div style="display:flex;justify-content:space-between;font-size:.55rem;color:#5c6a7a;margin-top:2px"><span>Max DD: ${maxDdPct.toFixed(1)}%</span><span>DD Duration: ${maxDdDur} trades</span></div></div></div></section>`;
+  singleResult = `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${total}</div><div style="font-size:.6rem;color:#5c6a7a">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#3fb950">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:#5c6a7a">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:#f85149">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:#5c6a7a">Max DD (${maxDdDur}t)</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${sharpeRaw !== '-' && sharpeRaw > 1 ? '#3fb950' : sharpeRaw !== '-' && sharpeRaw > 0 ? '#d29922' : '#f85149'}">${sharpe}</div><div style="font-size:.55rem;color:#5c6a7a">Sharpe Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${calmarRaw !== '-' && calmarRaw > 1 ? '#3fb950' : '#f85149'}">${calmar}</div><div style="font-size:.55rem;color:#5c6a7a">Calmar Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:#f0f4f8">${expectancy}%</div><div style="font-size:.55rem;color:#5c6a7a">Expectancy</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:#5c6a7a"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid #1f2a36;padding:4px 12px">${tradeRows}</div><div style="padding:4px 12px"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Equity Curve</div><svg width="100%" height="${eqH + ddChartH}" viewBox="0 0 ${eqW} ${eqH + ddChartH}" preserveAspectRatio="none" style="display:block;background:#0b1117;border-radius:4px"><polyline points="${eqPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="1.5"/><line x1="0" y1="${eqY(0)}" x2="${eqW}" y2="${eqY(0)}" stroke="#2a3848" stroke-width="0.5" stroke-dasharray="3,3"/><polyline points="${peakPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.3"/><rect x="0" y="${eqH}" width="${eqW}" height="${ddChartH}" fill="none"/><polyline points="${ddPts.join(' ')}" fill="rgba(248,81,73,0.2)" stroke="#f85149" stroke-width="1"/></svg><div style="display:flex;justify-content:space-between;font-size:.55rem;color:#5c6a7a;margin-top:2px"><span>Max DD: ${maxDdPct.toFixed(1)}%</span><span>DD Duration: ${maxDdDur} trades</span></div></div></div></section>`;
   }
   let multiResult = "";
   if (backtest.multiResults) {
@@ -3078,6 +3082,7 @@ function findSwingLevels(rows, lookback = 80) {
     }
   }
   const grouped = [];
+  if (levels.length === 0) return grouped;
   const threshold = (Math.max(...levels.map(l => l.price)) - Math.min(...levels.map(l => l.price))) * 0.02;
   for (const level of levels) {
     const close = grouped.find(g => Math.abs(g.price - level.price) / g.price < threshold);
@@ -3436,7 +3441,7 @@ function setupEvents() {
         var oldSize = pos.size || 10000;
         var closeSize = oldSize * closePct;
         var pnlCurrency = pnlPct / 100 * closeSize;
-        positions.push({ id: posId + "-pc" + Date.now(), pair: pos.pair, direction: pos.direction, entry: pos.entry, stop: pos.stop, target: pos.target, openedAt: pos.openedAt, closedAt: new Date().toISOString(), exitPrice: cp, pnl: pnlCurrency, pnlPct: pnlPct, pnlCurrency: pnlCurrency, size: closeSize });
+        positions.push({ id: posId + "-pc" + Date.now(), pair: pos.pair, direction: pos.direction, entry: pos.entry, stop: pos.stop, target: pos.target, openedAt: pos.openedAt, closedAt: new Date(), exitPrice: cp, pnl: pnlCurrency, pnlPct: pnlPct, pnlCurrency: pnlCurrency, size: closeSize });
         pos.size = oldSize * (1 - closePct);
         savePositions();
         render();
@@ -3575,7 +3580,6 @@ fetchEconEvents();
 setInterval(updateOverviewPrices, 10000);
 setInterval(checkPriceLevelAlerts, 15000);
 setInterval(function() { if (document.querySelector('.session-bar')) render(); }, 60000);
-setInterval(updateLivePrice, 15000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
