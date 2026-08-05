@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
+<meta name="theme-color" content="#0b1117">
 <title>Forex, Crypto & Gold Trading Ideas</title>
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -25,6 +27,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .select-wrap::after{content:"▾";position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:.6rem;color:#73808d;pointer-events:none}
 .icon-button{background:transparent;border:1px solid #1f2a36;color:#8c98a5;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all .15s;font-family:inherit}
 .icon-button:hover{background:#1f2a36;color:#e6edf3}
+.icon-button:focus-visible,.scan-button:focus-visible,.tf-btn:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #8dd7ff;outline-offset:2px}
 .icon-button:disabled{opacity:.3;cursor:not-allowed}
 .icon-button:disabled:hover{background:transparent;color:#8c98a5}
 /* summary grid */
@@ -371,6 +374,9 @@ const state = {
   timeframe: "1d",
   mtf: {},
 };
+
+let activeDataRequestId = 0;
+let activeLoadId = 0;
 
 const autoScan = {
   enabled: false,
@@ -875,19 +881,25 @@ function binanceSymbol(base, quote) {
 async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
   const symbol = binanceSymbol(base, quote);
   const limit = limitOverride || (interval === "1d" ? 200 : interval === "4h" ? 500 : interval === "1h" ? 500 : 200);
-  const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
-  if (!response.ok) throw new Error(`Live data unavailable for ${base}/${quote}.`);
-  const data = await response.json();
-  return data
-    .map((k) => ({
-      date: new Date(k[0]).toISOString().slice(0, 10),
-      open: Number(k[1]),
-      high: Number(k[2]),
-      low: Number(k[3]),
-      close: Number(k[4]),
-      volume: Number(k[5]),
-    }))
-    .filter((row) => Number.isFinite(row.close));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Live data unavailable for ${base}/${quote}.`);
+    const data = await response.json();
+    return data
+      .map((k) => ({
+        date: new Date(k[0]).toISOString().slice(0, 10),
+        open: Number(k[1]),
+        high: Number(k[2]),
+        low: Number(k[3]),
+        close: Number(k[4]),
+        volume: Number(k[5]),
+      }))
+      .filter((row) => Number.isFinite(row.close));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchLivePrice(base, quote) {
@@ -1643,7 +1655,7 @@ function render() {
   const signalClass = analysis ? analysis.direction.toLowerCase() : "wait";
   const headlineSignal = state.status === "error" ? "DATA ERROR" : state.status === "ready" && analysis ? analysis.direction : "LOADING";
   root.innerHTML = `
-    <main>
+    <main aria-busy="${state.status === "loading"}">
       <section class="topbar">
         <div>
           <p class="eyebrow">Low Risk Signal Desk</p>
@@ -1651,14 +1663,14 @@ function render() {
         </div>
         <div class="pair-controls">
           <label class="select-wrap"><span>${names[state.base] || state.base}</span><select id="base">${options(state.base, state.quote)}</select></label>
-          <button class="icon-button" id="swap" title="Swap pair" ${nonFiat.has(state.base) ? "disabled" : ""}>⇄</button>
+          <button class="icon-button" id="swap" title="Swap pair" aria-label="Swap base and quote currencies" ${nonFiat.has(state.base) ? "disabled" : ""}>⇄</button>
           <label class="select-wrap"><span>${names[state.quote] || state.quote}</span><select id="quote" ${nonFiat.has(state.base) ? "disabled" : ""}>${options(state.quote, state.base, true)}</select></label>
-          <button class="icon-button" id="refresh" title="Refresh analysis">↻</button>
-          <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
-          <button class="icon-button" id="settingsToggle" title="Settings">⚙</button>
-          <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot">📷</button>
-          <button class="icon-button" id="soundToggle" title="Toggle sound (M)">${soundEnabled ? "🔊" : "🔇"}</button>
-          <button class="icon-button" id="themeToggle" title="Toggle theme (T)">${darkTheme ? "🌙" : "☀️"}</button>
+          <button class="icon-button" id="refresh" title="Refresh analysis" aria-label="Refresh analysis">↻</button>
+          <button class="scan-button" id="autoScanToggle" title="Toggle auto-scan" aria-label="Toggle automatic signal scanning" aria-pressed="${autoScan.enabled}"><span class="dot" id="scanDot"></span><span id="scanLabel">Auto-scan</span></button>
+          <button class="icon-button" id="settingsToggle" title="Settings" aria-label="Open settings">⚙</button>
+          <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot" aria-label="Analyze chart screenshot">📷</button>
+          <button class="icon-button" id="soundToggle" title="Toggle sound (M)" aria-label="Toggle sound">${soundEnabled ? "🔊" : "🔇"}</button>
+          <button class="icon-button" id="themeToggle" title="Toggle theme (T)" aria-label="Toggle color theme">${darkTheme ? "🌙" : "☀️"}</button>
           <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱ B=Back T=Theme</span>
         </div>
         <div class="tf-row">${["1d", "4h", "1h"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}" onclick="switchTF('${tf}')">${tf}</button>`).join("")}</div>
@@ -1714,7 +1726,7 @@ function render() {
         ${metric("Volatility", analysis ? `${analysis.volatilityPct.toFixed(2)}%` : "-")}
       </section>
 
-      ${state.error ? `<div class="notice error">${state.error}</div>` : ""}
+          ${state.error ? `<div class="notice error" role="alert">${state.error}</div>` : ""}
       ${state.source ? `<div class="source-line">Data source: ${state.source}. Signals are educational trading ideas, not financial advice.</div>` : ""}
 
       ${
@@ -1981,15 +1993,17 @@ function exportAllData() {
 function importAllData(json) {
   try {
     const data = JSON.parse(json);
-    if (!data.history || !data.positions) return;
-    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) }));
-    positions = data.positions.map(p => ({ ...p, openedAt: new Date(p.openedAt), closedAt: p.closedAt ? new Date(p.closedAt) : null }));
+    if (!Array.isArray(data.history) || !Array.isArray(data.positions)) throw new Error("missing history or positions");
+    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) })).filter(e => !Number.isNaN(e.timestamp.getTime()));
+    positions = data.positions.map(p => ({ ...p, openedAt: new Date(p.openedAt), closedAt: p.closedAt ? new Date(p.closedAt) : null })).filter(p => !Number.isNaN(p.openedAt.getTime()));
     if (data.watchlist) watchlist = data.watchlist;
     if (data.alerts) alerts = data.alerts;
     if (data.scanPairs) { scanPairs = data.scanPairs; saveScanConfig(); }
     if (data.webhookUrl != null) { webhookUrl = data.webhookUrl; saveWebhook(); }
     saveHistory(); savePositions(); saveWatchlist(); saveAlerts(); render();
-  } catch {}
+  } catch {
+    alert("That backup file is invalid or incomplete. No data was imported.");
+  }
 }
 
 function exportCSV() {
@@ -2827,48 +2841,64 @@ function switchTF(tf) {
 }
 
 async function loadDataOnly() {
+  const requestId = ++activeDataRequestId;
+  const base = state.base;
+  const quote = state.quote;
+  let timeframe = state.timeframe;
   state.status = "loading";
   state.error = "";
   state.rows = [];
   state.source = "";
   try {
-    const canUseBinance = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
-    if (canUseBinance && state.timeframe !== "1d") {
-      const tfLabel = state.timeframe === "4h" ? "4-hour" : state.timeframe === "1h" ? "1-hour" : "daily";
-      state.rows = await fetchBinanceRows(state.base, state.quote, state.timeframe);
-      state.source = `Binance ${names[state.base]}/${state.quote} ${tfLabel} prices`;
-    } else if (canUseBinance && state.timeframe === "1d") {
+    const canUseBinance = nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD");
+    let rows;
+    let source;
+    if (canUseBinance && timeframe !== "1d") {
+      const tfLabel = timeframe === "4h" ? "4-hour" : timeframe === "1h" ? "1-hour" : "daily";
+      rows = await fetchBinanceRows(base, quote, timeframe);
+      source = `Binance ${names[base]}/${quote} ${tfLabel} prices`;
+    } else if (canUseBinance && timeframe === "1d") {
       try {
-        state.rows = await fetchBinanceRows(state.base, state.quote, "1d");
-        state.source = `Binance ${names[state.base]}/${state.quote} daily prices`;
+        rows = await fetchBinanceRows(base, quote, "1d");
+        source = `Binance ${names[base]}/${quote} daily prices`;
       } catch {
-        state.rows = await fetchFxRows(state.base, state.quote);
-        state.source = "Frankfurter.dev daily ECB reference rates";
+        rows = await fetchFxRows(base, quote);
+        source = "Frankfurter.dev daily ECB reference rates";
       }
     } else {
       state.timeframe = "1d";
-      state.rows = await fetchFxRows(state.base, state.quote);
-      state.source = "Frankfurter.dev daily ECB reference rates";
+      timeframe = "1d";
+      rows = await fetchFxRows(base, quote);
+      source = "Frankfurter.dev daily ECB reference rates";
     }
-    if (state.rows.length < 80) throw new Error("Not enough history for strict signal mode.");
+    if (rows.length < 80) throw new Error("Not enough history for strict signal mode.");
+    if (requestId !== activeDataRequestId || base !== state.base || quote !== state.quote || timeframe !== state.timeframe) return false;
+    state.rows = rows;
+    state.source = source;
     state.status = "ready";
+    return true;
   } catch (error) {
-    console.error(`[${state.base}/${state.quote}] Data fetch failed:`, error?.message || error);
-    state.rows = generateFallbackRows(state.base, state.quote);
+    if (requestId !== activeDataRequestId || base !== state.base || quote !== state.quote || timeframe !== state.timeframe) return false;
+    console.error(`[${base}/${quote}] Data fetch failed:`, error?.message || error);
+    state.rows = generateFallbackRows(base, quote);
     state.source = "Offline demo data because live market data could not be reached";
     state.status = "ready";
     state.error = "Live data is unavailable in this browser session. The dashboard is using demo data, so do not trade this signal.";
+    return true;
   }
 }
 
 async function load() {
+  const loadId = ++activeLoadId;
   state.status = "loading";
   state.error = "";
   state.rows = [];
   state.source = "";
   state.mtf = {};
   render();
-  await loadDataOnly();
+  const loaded = await loadDataOnly();
+  if (!loaded || loadId !== activeLoadId) return;
+  const dataRequestId = activeDataRequestId;
   const canMTF = state.status === "ready" && (nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD"));
   if (canMTF) {
     const tfs = ["1d", "4h", "1h"].filter(tf => tf !== state.timeframe);
@@ -2876,6 +2906,7 @@ async function load() {
       try { const rows = await fetchBinanceRows(state.base, state.quote, tf); if (rows.length >= 80)       state.mtf[tf] = analyze(rows, loadStrategyConfig()); } catch {}
     }
   }
+  if (loadId !== activeLoadId || dataRequestId !== activeDataRequestId) return;
   recordSignal();
   evaluateAlertConditions();
   render();
@@ -3548,7 +3579,7 @@ let soundEnabled = true;
 let darkTheme = true;
 
 document.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
   if (e.key === "r" || e.key === "R") { load(); return; }
   if (e.key === "s" || e.key === "S") { toggleAutoScan(); return; }
   if (e.key === "m" || e.key === "M") { soundEnabled = !soundEnabled; const sb = document.getElementById("soundToggle"); if (sb) sb.textContent = soundEnabled ? "\uD83D\uDD0A" : "\uD83D\uDD07"; playBeep(); return; }
