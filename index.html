@@ -524,6 +524,16 @@ function mlFilterWarn(analysis) {
 
 let mlStats = { filtered: 0, filteredCorrect: 0 };
 
+function mlSizingFactor(analysis, fallbackWR) {
+  if (!mlModel.trained || !analysis || !analysis.ml || analysis.ml.win == null) return 1;
+  const p = Math.max(0.05, Math.min(0.95, analysis.ml.win));
+  const rr = (loadStrategyConfig().riskRewardRatio) || 2;
+  const kelly = p - (1 - p) / rr;
+  return Math.max(0.5, Math.min(1.5, 1 + kelly * 0.75));
+}
+
+let paperAutotrade = false;
+
 function renderMlBadge(analysis) {
   const trained = mlModel.trained;
   const samplePct = Math.min(100, Math.round((mlModel.n / mlModel.minSamples) * 100));
@@ -550,9 +560,9 @@ const scheduleState = { enabled: false, intervalId: null, lastSent: null };
 const corrData = { matrix: null, pairs: [], running: false };
 
 function loadOverlayPrefs() {
-  try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; vwapOverlay = !!d.vwap; mlFilterEnabled = !!d.ml; } } catch {}
+  try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; vwapOverlay = !!d.vwap; mlFilterEnabled = !!d.ml; paperAutotrade = !!d.paperAuto; } } catch {}
 }
-function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled })); } catch {} }
+function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled, paperAuto: paperAutotrade })); } catch {} }
 function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
 function savePaperState() { try { localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); } catch {} }
 function loadScheduleState() { try { const s = localStorage.getItem("scheduleState"); if (s) { const d = JSON.parse(s); scheduleState.enabled = !!d.enabled; scheduleState.lastSent = d.lastSent ? new Date(d.lastSent) : null; } } catch {} }
@@ -1155,6 +1165,55 @@ function binanceSymbol(base, quote) {
   return base === "XAU" ? `PAXG${q}` : `${base}${q}`;
 }
 
+let lastCryptoSource = "Binance";
+
+const bybitInterval = { "1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "D" };
+const coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+
+async function fetchBybitRows(base, quote, interval, limit) {
+  const symbol = binanceSymbol(base, quote);
+  const res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval[interval] || "D"}&limit=${limit}`);
+  if (!res.ok) throw new Error(`Bybit unavailable for ${base}/${quote}.`);
+  const data = await res.json();
+  const list = data?.result?.list;
+  if (data.retCode !== 0 || !Array.isArray(list) || list.length === 0) throw new Error(`Bybit returned no data for ${base}/${quote}.`);
+  return list
+    .map((k) => ({
+      date: new Date(Number(k[0])).toISOString().slice(0, 10),
+      time: new Date(Number(k[0])).toISOString(),
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+      volume: Number(k[5]),
+    }))
+    .filter((row) => Number.isFinite(row.close))
+    .sort((a, b) => new Date(a.time) - new Date(b.time));
+}
+
+async function fetchCoinbaseRows(base, quote, interval, limit) {
+  if (quote !== "USD") throw new Error("Coinbase fallback only supports USD quotes.");
+  const symbol = binanceSymbol(base, quote);
+  const granularity = coinbaseGranularity[interval] || 86400;
+  const res = await fetch(`https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`);
+  if (!res.ok) throw new Error(`Coinbase unavailable for ${base}/${quote}.`);
+  const data = await res.json();
+  if (!Array.isArray(data) || data.length === 0) throw new Error(`Coinbase returned no data for ${base}/${quote}.`);
+  return data
+    .map((k) => ({
+      date: new Date(k[0] * 1000).toISOString().slice(0, 10),
+      time: new Date(k[0] * 1000).toISOString(),
+      open: Number(k[3]),
+      high: Number(k[2]),
+      low: Number(k[1]),
+      close: Number(k[4]),
+      volume: Number(k[5]),
+    }))
+    .filter((row) => Number.isFinite(row.close))
+    .sort((a, b) => new Date(a.time) - new Date(b.time))
+    .slice(-limit);
+}
+
 async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
   const symbol = binanceSymbol(base, quote);
   const limit = limitOverride || (interval === "1d" ? 200 : ["4h", "1h", "15m", "30m"].includes(interval) ? 500 : interval === "1m" ? 1000 : 200);
@@ -1162,22 +1221,34 @@ async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, { signal: controller.signal });
-    if (!response.ok) throw new Error(`Live data unavailable for ${base}/${quote}.`);
-    const data = await response.json();
-    return data
-      .map((k) => ({
-        date: new Date(k[0]).toISOString().slice(0, 10),
-        time: new Date(k[0]).toISOString(),
-        open: Number(k[1]),
-        high: Number(k[2]),
-        low: Number(k[3]),
-        close: Number(k[4]),
-        volume: Number(k[5]),
-      }))
-      .filter((row) => Number.isFinite(row.close));
-  } finally {
-    clearTimeout(timer);
-  }
+    if (response.ok) {
+      const data = await response.json();
+      const rows = data
+        .map((k) => ({
+          date: new Date(k[0]).toISOString().slice(0, 10),
+          time: new Date(k[0]).toISOString(),
+          open: Number(k[1]),
+          high: Number(k[2]),
+          low: Number(k[3]),
+          close: Number(k[4]),
+          volume: Number(k[5]),
+        }))
+        .filter((row) => Number.isFinite(row.close));
+      if (rows.length > 0) { clearTimeout(timer); lastCryptoSource = "Binance"; return rows; }
+    }
+  } catch {}
+  clearTimeout(timer);
+  try {
+    const rows = await fetchBybitRows(base, quote, interval, limit);
+    lastCryptoSource = "Bybit";
+    return rows;
+  } catch {}
+  try {
+    const rows = await fetchCoinbaseRows(base, quote, interval, limit);
+    lastCryptoSource = "Coinbase";
+    return rows;
+  } catch {}
+  throw new Error(`Live data unavailable for ${base}/${quote} on Binance, Bybit and Coinbase.`);
 }
 
 function tfLabel(tf) {
@@ -1200,10 +1271,21 @@ async function fetchLivePrice(base, quote) {
   try {
     if (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) {
       const symbol = binanceSymbol(base, quote);
-      const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-      if (!r.ok) return null;
-      const d = await r.json();
-      return { price: Number(d.lastPrice), change: Number(d.priceChangePercent) };
+      try {
+        const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+        if (r.ok) { const d = await r.json(); return { price: Number(d.lastPrice), change: Number(d.priceChangePercent) }; }
+      } catch {}
+      try {
+        const r = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`);
+        if (r.ok) { const d = await r.json(); const t = d?.result?.list?.[0]; if (t && t.lastPrice) return { price: Number(t.lastPrice), change: t.price24hPcnt != null ? Number(t.price24hPcnt) * 100 : null }; }
+      } catch {}
+      if (quote === "USD") {
+        try {
+          const r = await fetch(`https://api.exchange.coinbase.com/products/${symbol}-USD/ticker`);
+          if (r.ok) { const d = await r.json(); if (d && d.price) return { price: Number(d.price), change: null }; }
+        } catch {}
+      }
+      return null;
     }
     try {
       const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`);
@@ -1648,9 +1730,11 @@ function toggleReplayPlay() {
   render();
 }
 
-function addPaperTrade(direction, pair, entry, stop, target) {
-  paperState.openPositions.push({ id: Date.now(), pair, direction, entry, stop, target, time: new Date(), exitPrice: null, pnlPct: 0, size: 1, originalStop: stop, takenPartial: false, highWater: entry, lowWater: entry });
+function addPaperTrade(direction, pair, entry, stop, target, signalId, sizeFactor) {
+  const id = Date.now();
+  paperState.openPositions.push({ id, pair, direction, entry, stop, target, time: new Date(), exitPrice: null, pnlPct: 0, size: sizeFactor || 1, originalStop: stop, takenPartial: false, highWater: entry, lowWater: entry, signalId: signalId || null });
   savePaperState();
+  return id;
 }
 
 function closePaperTrade(id, exitPrice) {
@@ -1664,6 +1748,17 @@ function closePaperTrade(id, exitPrice) {
   paperState.openPositions = paperState.openPositions.filter(p => p.id !== id);
   paperState.equityCurve.push({ time: new Date(), balance: paperState.balance });
   savePaperState();
+  if (pos.signalId != null) {
+    const entry = autoScan.history.find(e => e.id === pos.signalId);
+    if (entry && entry.result === "pending") {
+      entry.result = pos.pnlPct >= 0 ? "win" : "loss";
+      entry.exitPrice = exitPrice;
+      entry.pnlPct = pos.pnlPct;
+      entry.closedTime = new Date();
+      saveHistory();
+      mlTrainEntry(entry);
+    }
+  }
 }
 
 function autoCheckPaperPositions() {
@@ -2213,7 +2308,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
 
       ${(() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss"); if (sigs.length < 3) return ""; const byPair = {}; sigs.forEach(e => { if (!byPair[e.pair]) byPair[e.pair] = { wins: 0, losses: 0, rrSumAll: 0, rrSumWins: 0, rrCount: 0 }; const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : null; if (e.result === "win") { byPair[e.pair].wins++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumWins += rr; byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } else { byPair[e.pair].losses++; if (rr != null && isFinite(rr)) { byPair[e.pair].rrSumAll += rr; byPair[e.pair].rrCount++; } } }); const pairRows = Object.entries(byPair).map(([pair, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); const avgRR = v.rrCount > 0 ? (v.rrSumAll / v.rrCount).toFixed(1) : "-"; const pf = v.losses > 0 ? (v.rrSumWins / v.losses).toFixed(2) : (v.wins > 0 ? "∞" : "0"); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:52px;text-transform:uppercase">${pair.split("/")[0]}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:28px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:36px;text-align:right;color:#8c98a5" title="Avg R:R">RR ${avgRR}</span><span style="width:36px;text-align:right;color:#5c6a7a" title="Profit Factor">PF ${pf}</span><span style="width:32px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); const months = {}; sigs.forEach(e => { const m = e.timestamp.toISOString().slice(0, 7); if (!months[m]) months[m] = { wins: 0, losses: 0 }; months[m][e.result === "win" ? "wins" : "losses"]++; }); const monthRows = Object.entries(months).sort((a,b) => a[0].localeCompare(b[0])).map(([m, v]) => { const total = v.wins + v.losses; const wr = Math.round((v.wins / total) * 100); return `<div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:3px 0"><span style="width:48px">${m.slice(5)}/${m.slice(2,4)}</span><div style="flex:1;height:6px;background:#1f2a36;border-radius:3px;overflow:hidden"><div style="width:${wr}%;height:100%;background:${wr >= 50 ? '#3fb950' : '#f85149'};border-radius:3px"></div></div><span style="width:30px;text-align:right;color:${wr >= 50 ? '#3fb950' : '#f85149'}">${wr}%</span><span style="width:40px;text-align:right;color:#5c6a7a">${v.wins}/${total}</span></div>`; }).join(""); return `<section class="dashboard-section"><button class="history-toggle no-select" id="dashToggle"><div class="history-toggle-left"><h3>Signal Quality Dashboard</h3></div><span class="arrow">▾</span></button><div class="history-body" id="dashBody"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:8px 0">${pairRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Win rate by pair</p>${pairRows}</div>` : ""}${monthRows.length > 0 ? `<div><p style="font-size:.72rem;color:#8c98a5;margin-bottom:4px">Monthly win rate</p>${monthRows}</div>` : ""}</div></div></section>`; })()}
 
-      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const startingBalance = rc.startingBalance ?? balance; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const maxLossStreak = rc.maxLossStreak ?? 4; const corrCap = rc.corrCap ?? 2; const curStreak = getLossStreak(); const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const realizedPnl = positions.filter(p => p.closedAt).reduce((s, p) => s + (p.pnlCurrency || 0), 0); const unrealizedPnl = positions.filter(p => !p.closedAt).reduce((s, p) => { const cp = getPosPrice(p); const diff = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (diff / p.entry) * 100 : 0; return s + pnlPct / 100 * balance; }, 0); const equity = startingBalance + realizedPnl + unrealizedPnl; const posSize = stopDist > 0 ? Math.round((equity * riskPct / 100) / stopDist) : 0; const hist = autoScan.history.filter(e => e.direction !== "WAIT" && (e.result === "win" || e.result === "loss")); const histWins = hist.filter(e => e.result === "win").length; const histWR = hist.length > 0 ? histWins / hist.length : 0.5; const histAvgW = hist.filter(e => e.result === "win").length > 0 ? hist.filter(e => e.result === "win").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 2; return s + rr; }, 0) / hist.filter(e => e.result === "win").length : 2; const histAvgL = hist.filter(e => e.result === "loss").length > 0 ? hist.filter(e => e.result === "loss").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 1; return s + rr; }, 0) / hist.filter(e => e.result === "loss").length : 1; const kellyFrac = kellyFraction(histWR, histAvgW, histAvgL); const kellySize = stopDist > 0 ? Math.round((equity * kellyFrac) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Starting Balance<input type="number" id="rmStartingBalance" value="${startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Loss Streak<input type="number" id="rmMaxStreak" value="${maxLossStreak}" min="1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Correlated Pos<input type="number" id="rmCorrCap" value="${corrCap}" min="1" max="5" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 0;font-size:.72rem;color:#8c98a5">Equity: <strong style="color:#f0f4f8">$${equity.toFixed(2)}</strong> <span style="font-size:.65rem;color:#5c6a7a">(starting: $${startingBalance.toLocaleString()}, realized: <span style="color:${realizedPnl >= 0 ? '#3fb950' : '#f85149'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</span>, unrealized: <span style="color:${unrealizedPnl >= 0 ? '#3fb950' : '#f85149'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</span>)</span></div><div style="padding:4px 12px 8px;display:flex;align-items:center;gap:8px;font-size:.72rem"><span style="color:#8c98a5">Kelly Sizing</span><label class="toggle"><input type="checkbox" id="kellyToggle" ${kellyEnabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label>${kellyEnabled && kellyFrac > 0 ? `<span style="color:#b58cff;font-size:.65rem">Fraction: ${(kellyFrac * 100).toFixed(1)}% \u2192 ${kellySize.toLocaleString()} units</span>` : ""}</div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">${kellyEnabled ? "Position Size (Kelly)" : "Position Size (Fixed)"}</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}${curStreak > 0 ? ` · Streak: <span style="color:${curStreak >= maxLossStreak ? '#f85149' : '#ff9b45'}">${curStreak}/${maxLossStreak}</span>` : ""}</div></div></div></div></section>`; })()}
+      ${(() => { const rc = (() => { try { const s = localStorage.getItem("riskConfig"); return s ? JSON.parse(s) : {}; } catch { return {}; } })(); const balance = rc.balance ?? 10000; const startingBalance = rc.startingBalance ?? balance; const riskPct = rc.riskPct ?? 1; const maxPos = rc.maxPos ?? 5; const dailyLimit = rc.dailyLimit ?? 5; const maxLossStreak = rc.maxLossStreak ?? 4; const corrCap = rc.corrCap ?? 2; const curStreak = getLossStreak(); const openCount = positions.filter(p => !p.closedAt).length; const analysis2 = analyze(state.rows); const stopDist = analysis2 && analysis2.direction !== "WAIT" ? Math.abs(analysis2.entry - analysis2.stop) : 0; const realizedPnl = positions.filter(p => p.closedAt).reduce((s, p) => s + (p.pnlCurrency || 0), 0); const unrealizedPnl = positions.filter(p => !p.closedAt).reduce((s, p) => { const cp = getPosPrice(p); const diff = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (diff / p.entry) * 100 : 0; return s + pnlPct / 100 * balance; }, 0); const equity = startingBalance + realizedPnl + unrealizedPnl; const posSize = stopDist > 0 ? Math.round((equity * riskPct * mlSizingFactor(analysis2, 0.5) / 100) / stopDist) : 0; const hist = autoScan.history.filter(e => e.direction !== "WAIT" && (e.result === "win" || e.result === "loss")); const histWins = hist.filter(e => e.result === "win").length; const histWR = hist.length > 0 ? histWins / hist.length : 0.5; const histAvgW = hist.filter(e => e.result === "win").length > 0 ? hist.filter(e => e.result === "win").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 2; return s + rr; }, 0) / hist.filter(e => e.result === "win").length : 2; const histAvgL = hist.filter(e => e.result === "loss").length > 0 ? hist.filter(e => e.result === "loss").reduce((s,e) => { const rr = e.entry != null && e.stop != null && e.target != null && Math.abs(e.entry - e.stop) > 0 ? Math.abs(e.target - e.entry) / Math.abs(e.entry - e.stop) : 1; return s + rr; }, 0) / hist.filter(e => e.result === "loss").length : 1; const kellyFrac = kellyFraction(histWR, histAvgW, histAvgL); const kellySize = stopDist > 0 ? Math.round((equity * kellyFrac) / stopDist) : 0; const todayKey = new Date().toISOString().slice(0,10); let dailyPnl = 0; try { const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}"); dailyPnl = dl[todayKey] || 0; } catch {} const dailyPct = balance > 0 ? ((dailyPnl / balance) * 100).toFixed(2) : "0.00"; return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="riskToggle"><div class="history-toggle-left"><h3>Risk Management</h3></div><span class="arrow">▾</span></button><div class="history-body" id="riskBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.72rem"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Account Balance<input type="number" id="rmBalance" value="${balance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Starting Balance<input type="number" id="rmStartingBalance" value="${startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Risk Per Trade %<input type="number" id="rmRisk" value="${riskPct}" step="0.1" min="0.1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Concurrent Positions<input type="number" id="rmMaxPos" value="${maxPos}" min="1" max="20" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Daily Loss Limit $<input type="number" id="rmDailyLimit" value="${dailyLimit}" min="1" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Loss Streak<input type="number" id="rmMaxStreak" value="${maxLossStreak}" min="1" max="10" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5">Max Correlated Pos<input type="number" id="rmCorrCap" value="${corrCap}" min="1" max="5" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div><div style="padding:4px 12px 0;font-size:.72rem;color:#8c98a5">Equity: <strong style="color:#f0f4f8">$${equity.toFixed(2)}</strong> <span style="font-size:.65rem;color:#5c6a7a">(starting: $${startingBalance.toLocaleString()}, realized: <span style="color:${realizedPnl >= 0 ? '#3fb950' : '#f85149'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</span>, unrealized: <span style="color:${unrealizedPnl >= 0 ? '#3fb950' : '#f85149'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</span>)</span></div><div style="padding:4px 12px 8px;display:flex;align-items:center;gap:8px;font-size:.72rem"><span style="color:#8c98a5">Kelly Sizing</span><label class="toggle"><input type="checkbox" id="kellyToggle" ${kellyEnabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label>${kellyEnabled && kellyFrac > 0 ? `<span style="color:#b58cff;font-size:.65rem">Fraction: ${(kellyFrac * 100).toFixed(1)}% \u2192 ${kellySize.toLocaleString()} units</span>` : ""}</div><div style="padding:4px 12px 12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:.68rem"><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">${kellyEnabled ? "Position Size (Kelly)" : "Position Size (Fixed)"}${mlModel.trained && analysis2.ml && analysis2.ml.win != null ? ' ·ML' : ''}</div><div style="font-weight:600;color:${posSize > 0 ? '#3fb950' : '#73808d'};font-size:.85rem">${posSize > 0 ? posSize.toLocaleString() + ' units' : 'N/A'}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Stop: ${analysis2 && analysis2.direction !== "WAIT" ? formatPrice(analysis2.stop, pair) : '-'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Open Positions</div><div style="font-weight:600;color:${openCount >= maxPos ? '#f85149' : '#f0f4f8'};font-size:.85rem">${openCount} / ${maxPos}</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">${openCount >= maxPos ? 'Max reached' : 'Available'}</div></div><div style="padding:6px 8px;background:#0e151e;border-radius:6px;text-align:center"><div style="color:#5c6a7a;margin-bottom:2px">Daily P&L</div><div style="font-weight:600;color:${dailyPnl >= 0 ? '#3fb950' : '#f85149'};font-size:.85rem">${dailyPnl >= 0 ? '+' : ''}${dailyPct}%</div><div style="font-size:.58rem;color:#5c6a7a;margin-top:2px">Limit: $${dailyLimit}${curStreak > 0 ? ` · Streak: <span style="color:${curStreak >= maxLossStreak ? '#f85149' : '#ff9b45'}">${curStreak}/${maxLossStreak}</span>` : ""}</div></div></div></div></section>`; })()}
 
       ${renderAlertConditions()}
       ${renderPerformanceSummary()}
@@ -2372,7 +2467,15 @@ function recordSignal() {
   const task = state.rows.length > 0 ? analyze(state.rows, loadStrategyConfig()) : null;
   const dir = task?.direction ?? "WAIT";
   const isNew = addSignalToHistory(`${state.base}/${state.quote}`, task);
-  if (isNew && dir !== "WAIT") notifySignal({ direction: dir, pair: `${state.base}/${state.quote}`, confidence: task.confidence, risk: task.risk, entry: task.entry });
+  if (isNew && dir !== "WAIT") {
+    const entry = autoScan.history[0];
+    notifySignal({ direction: dir, pair: `${state.base}/${state.quote}`, confidence: task.confidence, risk: task.risk, entry: task.entry });
+    if (paperAutotrade && entry && task.entry != null && task.stop != null && task.target != null && entry.result === "pending") {
+      entry.paperId = addPaperTrade(dir, `${state.base}/${state.quote}`, task.entry, task.stop, task.target, entry.id, mlSizingFactor(task, 0.5));
+      entry.autoPaper = true;
+      saveHistory();
+    }
+  }
 }
 
 function saveHistory() {
@@ -2951,7 +3054,7 @@ function renderPaperTrading() {
   const eqY = (v) => 56 - ((v - eqMin) / eqRng) * 48 - 4;
   const eqPtsStr = eqCov.map((v, i) => `${eqX(i).toFixed(1)},${eqY(v).toFixed(1)}`).join(" ");
   const eqChart = (p.equityCurve || []).length > 0 || p.trades.length > 0 ? `<div style="padding:8px 12px 0"><div style="font-size:.6rem;color:#5c6a7a;margin-bottom:2px">Paper Equity Curve</div><svg width="100%" height="60" viewBox="0 0 460 60" preserveAspectRatio="none" style="display:block;background:#0b1117;border-radius:4px"><polyline points="${eqPtsStr}" fill="none" stroke="${pnlPct >= 0 ? '#3fb950' : '#f85149'}" stroke-width="1.5"/>${eqCov.length >= 2 ? `<line x1="0" y1="${eqY(p.startingBalance).toFixed(1)}" x2="460" y2="${eqY(p.startingBalance).toFixed(1)}" stroke="#2a3848" stroke-width="0.5" stroke-dasharray="3,3"/>` : ""}</svg><div style="display:flex;justify-content:space-between;font-size:.55rem;color:#5c6a7a;margin-top:2px"><span>${(p.equityCurve || []).length} points</span><span>high $${eqMax.toFixed(0)}</span><span>low $${eqMin.toFixed(0)}</span><span>PnL ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%</span></div></div>` : "";
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="paperToggle"><div class="history-toggle-left"><h3>Paper Trading</h3><span class="history-count" style="background:${totalPnl>=0?'#1a3a2a':'#3a1a1a'};color:${totalPnl>=0?'#3fb950':'#f85149'}">虚拟$${Math.round(p.balance)}</span></div><span class="arrow">▾</span></button><div class="history-body" id="paperBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;text-align:center"><div><div style="font-size:1rem;font-weight:700;color:${totalPnl>=0?'#3fb950':'#f85149'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(0)}</div><div style="font-size:.6rem;color:#5c6a7a">P/L</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.trades.length}</div><div style="font-size:.6rem;color:#5c6a7a">Trades</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.openPositions.length}</div><div style="font-size:.6rem;color:#5c6a7a">Open</div></div></div>${eqChart}<div style="padding:0 12px"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5;font-size:.72rem">Starting Balance<input type="number" id="paperBalance" value="${p.startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div>${p.openPositions.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Open Paper Trades:</div>${p.openPositions.map(pos => { const r = multiScan.results[pos.pair]; const price = r?.price || pos.entry; const pnl = pos.direction === "BUY" ? ((price - pos.entry) / pos.entry * 100) : ((pos.entry - price) / pos.entry * 100); return `<div class="pos-row paper-trade" style="margin:4px 12px"><div class="pos-top"><span class="pos-pair">${pos.pair}</span><span class="pos-dir">${pos.direction}</span><span class="${pnl>=0?'pos-profit':'pos-loss'}">${pnl>=0?'+':''}${pnl.toFixed(2)}%</span><button class="pos-btn" data-close-paper="${pos.id}">Close</button></div><div class="pos-meta"><span>Entry ${formatPrice(pos.entry, pos.pair)}</span><span>Stop ${formatPrice(pos.stop, pos.pair)}</span><span>Target ${formatPrice(pos.target, pos.pair)}</span>${pos.takenPartial ? `<span style="color:#ff9b45">${Math.round((pos.size ?? 1) * 100)}% left</span>` : ""}</div></div>`; }).join('')}` : ''}${p.trades.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Recent Paper Trades:</div><div style="max-height:150px;overflow-y:auto;padding:0 12px">${p.trades.slice(-10).reverse().map(t => `<div style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid #0e151e;font-size:.65rem"><span style="color:#5c6a7a">${t.date || ''}</span><span style="color:#8c98a5;font-weight:600">${t.pair}</span><span style="color:${t.direction==='BUY'?'#3fb950':'#f85149'};font-weight:700">${t.direction}</span><span style="color:${t.pnlPct>=0?'#3fb950':'#f85149'};margin-left:auto">${t.pnlPct>=0?'+':''}${t.pnlPct.toFixed(2)}%</span></div>`).join('')}</div>` : ''}</div><div style="padding:8px 12px;display:flex;gap:6px"><button id="paperReset" style="flex:1;padding:6px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:6px;font-size:.72rem;cursor:pointer">Reset</button></div></div></section>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="paperToggle"><div class="history-toggle-left"><h3>Paper Trading</h3><span class="history-count" style="background:${totalPnl>=0?'#1a3a2a':'#3a1a1a'};color:${totalPnl>=0?'#3fb950':'#f85149'}">虚拟$${Math.round(p.balance)}</span></div><span class="arrow">▾</span></button><div class="history-body" id="paperBody"><div style="padding:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;text-align:center"><div><div style="font-size:1rem;font-weight:700;color:${totalPnl>=0?'#3fb950':'#f85149'}">${totalPnl>=0?'+':''}$${totalPnl.toFixed(0)}</div><div style="font-size:.6rem;color:#5c6a7a">P/L</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${wr}%</div><div style="font-size:.6rem;color:#5c6a7a">Win Rate</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.trades.length}</div><div style="font-size:.6rem;color:#5c6a7a">Trades</div></div><div><div style="font-size:1rem;font-weight:700;color:#f0f4f8">${p.openPositions.length}</div><div style="font-size:.6rem;color:#5c6a7a">Open</div></div></div>${eqChart}<div style="padding:4px 12px" class="cond-row"><div class="cond-info"><span class="cond-title">Auto-trade signals</span><span class="cond-desc">Open a paper trade on each new signal</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="paperAutoToggle" ${paperAutotrade ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div><div style="padding:0 12px"><label style="display:flex;flex-direction:column;gap:2px;color:#8c98a5;font-size:.72rem">Starting Balance<input type="number" id="paperBalance" value="${p.startingBalance}" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:.75rem"></label></div>${p.openPositions.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Open Paper Trades:</div>${p.openPositions.map(pos => { const r = multiScan.results[pos.pair]; const price = r?.price || pos.entry; const pnl = pos.direction === "BUY" ? ((price - pos.entry) / pos.entry * 100) : ((pos.entry - price) / pos.entry * 100); return `<div class="pos-row paper-trade" style="margin:4px 12px"><div class="pos-top"><span class="pos-pair">${pos.pair}</span><span class="pos-dir">${pos.direction}</span><span class="${pnl>=0?'pos-profit':'pos-loss'}">${pnl>=0?'+':''}${pnl.toFixed(2)}%</span><button class="pos-btn" data-close-paper="${pos.id}">Close</button></div><div class="pos-meta"><span>Entry ${formatPrice(pos.entry, pos.pair)}</span><span>Stop ${formatPrice(pos.stop, pos.pair)}</span><span>Target ${formatPrice(pos.target, pos.pair)}</span>${pos.takenPartial ? `<span style="color:#ff9b45">${Math.round((pos.size ?? 1) * 100)}% left</span>` : ""}</div></div>`; }).join('')}` : ''}${p.trades.length > 0 ? `<div style="padding:4px 12px;font-size:.65rem;color:#5c6a7a">Recent Paper Trades:</div><div style="max-height:150px;overflow-y:auto;padding:0 12px">${p.trades.slice(-10).reverse().map(t => `<div style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid #0e151e;font-size:.65rem"><span style="color:#5c6a7a">${t.date || ''}</span><span style="color:#8c98a5;font-weight:600">${t.pair}</span><span style="color:${t.direction==='BUY'?'#3fb950':'#f85149'};font-weight:700">${t.direction}</span><span style="color:${t.pnlPct>=0?'#3fb950':'#f85149'};margin-left:auto">${t.pnlPct>=0?'+':''}${t.pnlPct.toFixed(2)}%</span></div>`).join('')}</div>` : ''}</div><div style="padding:8px 12px;display:flex;gap:6px"><button id="paperReset" style="flex:1;padding:6px;background:#1f2a36;color:#8c98a5;border:1px solid #2a3848;border-radius:6px;font-size:.72rem;cursor:pointer">Reset</button></div></div></section>`;
 }
 
 function renderTradeReplay() {
@@ -3119,7 +3222,7 @@ async function scanAllPairs() {
 }
 
 async function verifySignals() {
-  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.stop != null && e.target != null);
+  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
   if (pending.length === 0) return;
   const pairs = [...new Set(pending.map(e => e.pair))];
   const priceCache = {};
@@ -3413,11 +3516,11 @@ async function loadDataOnly() {
     let source;
     if (canUseBinance && timeframe !== "1d") {
       rows = await fetchBinanceRows(base, quote, timeframe);
-      source = `Binance ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
+      source = `${lastCryptoSource} ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
     } else if (canUseBinance && timeframe === "1d") {
       try {
         rows = await fetchBinanceRows(base, quote, "1d");
-        source = `Binance ${names[base]}/${quote} daily prices`;
+        source = `${lastCryptoSource} ${names[base]}/${quote} daily prices`;
       } catch {
         rows = await fetchFxRows(base, quote);
         source = "Frankfurter.dev daily ECB reference rates";
@@ -3846,6 +3949,12 @@ function setupEvents() {
   root.addEventListener("change", (event) => {
     if (event.target.id === "schedToggleInput") {
       if (event.target.checked) startSchedule(); else stopSchedule();
+      render();
+      return;
+    }
+    if (event.target.id === "paperAutoToggle") {
+      paperAutotrade = event.target.checked;
+      saveOverlayPrefs();
       render();
       return;
     }
