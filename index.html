@@ -2760,19 +2760,46 @@ async function runCompareBacktestImpl() {
     if (rows.length < 120) { backtest.comparing = false; render(); return; }
     const defaultCfg = { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 };
     const customCfg = loadStrategyConfig();
-    function runCfg(cfg) {
+    function runCfg(cfg, useMl) {
+      const local = useMl ? { n: 0, trained: false, minSamples: 8, muWin: [0,0,0,0,0], varWin: [0,0,0,0,0], muLoss: [0,0,0,0,0], varLoss: [0,0,0,0,0], nWin: 0, nLoss: 0 } : null;
+      function ltrain(entry) {
+        if (!local) return;
+        const f = mlFeaturize(entry);
+        if (entry.result === "win") { local.nWin = _updateClass(local.muWin, local.varWin, local.nWin, f); }
+        else { local.nLoss = _updateClass(local.muLoss, local.varLoss, local.nLoss, f); }
+        local.n++;
+        local.trained = local.n >= local.minSamples;
+      }
+      function lpredict(entry) {
+        if (!local || !local.trained) return null;
+        const f = mlFeaturize(entry);
+        const nWin = local.nWin, nLoss = local.nLoss, total = nWin + nLoss;
+        if (total < local.minSamples) return null;
+        let lWin = Math.log(nWin + 1) - Math.log(total + 2);
+        let lLoss = Math.log(nLoss + 1) - Math.log(total + 2);
+        for (let i = 0; i < ML_FEATURES.length; i++) {
+          if (nWin > 0) lWin += Math.log(Math.max(_gauss(f[i], local.muWin[i], local.varWin[i]), 1e-12));
+          if (nLoss > 0) lLoss += Math.log(Math.max(_gauss(f[i], local.muLoss[i], local.varLoss[i]), 1e-12));
+        }
+        const m = Math.max(lWin, lLoss), eW = Math.exp(lWin - m), eL = Math.exp(lLoss - m);
+        return { win: eW / (eW + eL), label: (eW / (eW + eL)) >= 0.5 ? "win" : "loss" };
+      }
       const trades = [];
       for (let i = 100; i < rows.length; i++) {
         const slice = rows.slice(0, i + 1);
         const a = analyze(slice, cfg);
         if (!a || a.direction === "WAIT") continue;
-        const entry = a.entry || slice[i].close;
+        const entryBar = a.entry || slice[i].close;
         const stop = a.stop;
         const target = a.target;
         if (stop == null || target == null) continue;
+        if (useMl && local.trained) {
+          const pred = lpredict({ confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction });
+          if (pred && pred.label === "loss") continue;
+        }
         const isBuy = a.direction === "BUY";
-        const riskPct = isBuy ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
-        const rewardPct = isBuy ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
+        const riskPct = isBuy ? ((entryBar - stop) / entryBar) * 100 : ((stop - entryBar) / entryBar) * 100;
+        const rewardPct = isBuy ? ((target - entryBar) / entryBar) * 100 : ((entryBar - target) / entryBar) * 100;
         let result = "pending";
         let pnlPct = 0;
         for (let j = i + 1; j < rows.length; j++) {
@@ -2786,6 +2813,8 @@ async function runCompareBacktestImpl() {
           }
         }
         if (result === "pending") pnlPct = 0;
+        const resolved = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
+        if (useMl && (result === "win" || result === "loss")) ltrain(resolved);
         trades.push({ result, pnlPct });
       }
       return trades;
@@ -2793,11 +2822,15 @@ async function runCompareBacktestImpl() {
     backtest.progress = "Default config...";
     render();
     await new Promise(r => setTimeout(r, 0));
-    const defTrades = runCfg(defaultCfg);
+    const defTrades = runCfg(defaultCfg, false);
     backtest.progress = "Custom config...";
     render();
     await new Promise(r => setTimeout(r, 0));
-    const cstTrades = runCfg(customCfg);
+    const cstTrades = runCfg(customCfg, false);
+    backtest.progress = "Custom + ML filter...";
+    render();
+    await new Promise(r => setTimeout(r, 0));
+    const mlTrades = runCfg(customCfg, true);
     function metrics(trades) {
       const total = trades.length;
       const wins = trades.filter(t => t.result === "win");
@@ -2813,7 +2846,7 @@ async function runCompareBacktestImpl() {
       trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
       return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
     }
-    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades) };
+    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades), ml: metrics(mlTrades) };
   } catch {}
   backtest.comparing = false;
   render();
@@ -2823,7 +2856,12 @@ function renderComparison() {
   if (!backtest.comparison) return "";
   const d = backtest.comparison.default;
   const c = backtest.comparison.custom;
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem"><div style="color:#5c6a7a;font-weight:600;padding:4px 0">Metric</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Default</div><div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">Custom</div><div style="color:#8c98a5;padding:4px 0">Signals</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.signals}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.signals}</div><div style="color:#8c98a5;padding:4px 0">Win Rate</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.winRate}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.winRate}</div><div style="color:#8c98a5;padding:4px 0">Avg R:R</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.avgRR}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.avgRR}</div><div style="color:#8c98a5;padding:4px 0">Profit Factor</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.profitFactor}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.profitFactor}</div><div style="color:#8c98a5;padding:4px 0">Max DD</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${d.maxDD}</div><div style="text-align:center;color:#e6edf3;padding:4px 0">${c.maxDD}</div></div></div></section>`;
+  const m = backtest.comparison.ml;
+  const g = (a, b) => (a.startsWith("∞") ? "#3fb950" : parseFloat(a) >= parseFloat(b) ? "#3fb950" : "#e6edf3");
+  const dg = (a, b) => (parseFloat(a) <= parseFloat(b) ? "#3fb950" : "#e6edf3");
+  const head = (t) => `<div style="color:#5c6a7a;font-weight:600;text-align:center;padding:4px 0">${t}</div>`;
+  const row = (label, v1, c1, v2, c2, v3, c3) => `<div style="color:#8c98a5;padding:4px 0">${label}</div><div style="text-align:center;padding:4px 0;color:${c1}">${v1}</div><div style="text-align:center;padding:4px 0;color:${c2}">${v2}</div><div style="text-align:center;padding:4px 0;color:${c3}">${v3}</div>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3><span class="history-count">🤖 ML</span></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="padding:4px 12px;font-size:.58rem;color:#5c6a7a">Green = better of Custom vs Custom + ML. ML column filters trades the self-trained model predicts as losses (walk-forward).</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem">${head("Metric")}${head("Default")}${head("Custom")}${head("Custom+ML")}${row("Signals", d.signals, "#e6edf3", c.signals, "#e6edf3", m.signals, "#e6edf3")}${row("Win Rate", d.winRate, g(d.winRate, c.winRate), c.winRate, g(c.winRate, m.winRate), m.winRate, g(m.winRate, c.winRate))}${row("Avg R:R", d.avgRR, g(d.avgRR, c.avgRR), c.avgRR, g(c.avgRR, m.avgRR), m.avgRR, g(m.avgRR, c.avgRR))}${row("Profit Factor", d.profitFactor, g(d.profitFactor, c.profitFactor), c.profitFactor, g(c.profitFactor, m.profitFactor), m.profitFactor, g(m.profitFactor, c.profitFactor))}${row("Max DD", d.maxDD, dg(d.maxDD, c.maxDD), c.maxDD, dg(c.maxDD, m.maxDD), m.maxDD, dg(m.maxDD, c.maxDD))}</div></div></section>`;
 }
 
 function renderCorrelationMatrix() {

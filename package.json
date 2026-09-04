@@ -1,0 +1,9 @@
+{
+  "name": "trading-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forex, Crypto & Gold trading ideas dashboard",
+  "scripts": {
+    "test": "node test/dashboard.test.js"
+  }
+}
