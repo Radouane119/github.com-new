@@ -1122,12 +1122,15 @@ function makeOhlc(date, close, previousClose) {
   const open = previousClose ?? close;
   const baseRange = Math.abs(close - open) || Math.abs(close) * 0.0025;
   const spread = Math.max(baseRange * 0.7, Math.abs(close) * 0.0012);
+  const high = Math.max(close, open) + spread;
+  const low = Math.min(close, open) - spread;
   return {
     date,
     open,
-    high: Math.max(close, open) + spread,
-    low: Math.min(close, open) - spread,
+    high,
+    low,
     close,
+    volume: Math.max(1, Math.round((high - low) * (close + open) / 2 * 100000)),
   };
 }
 
