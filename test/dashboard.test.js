@@ -16,6 +16,7 @@ js = js.slice(0, boot + 1);
 
 // --- Stub browser globals so pure functions load without a DOM/network ---
 const ls = new Map();
+const domEls = { root: { innerHTML: "", addEventListener: () => {}, style: {}, dataset: {} } };
 const localStorageStub = {
   getItem: (k) => (ls.has(k) ? ls.get(k) : null),
   setItem: (k, v) => ls.set(k, String(v)),
@@ -25,7 +26,7 @@ const evt = () => ({ target: {}, preventDefault() {}, });
 const ctx = {
   console,
   localStorage: localStorageStub,
-  document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, documentElement: { style: {}, setAttribute() {}, removeAttribute() {} }, body: { appendChild() {} }, createElement: () => ({ style: {}, setAttribute() {}, addEventListener() {}, appendChild() {} }) },
+  document: { getElementById: (id) => domEls[id] || null, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, documentElement: { style: {}, setAttribute() {}, removeAttribute() {} }, body: { appendChild() {} }, createElement: () => ({ style: {}, setAttribute() {}, addEventListener() {}, appendChild() {} }) },
   window: { showToast: () => {}, addEventListener: () => {}, getComputedStyle: () => ({}) },
   navigator: { serviceWorker: { register: () => Promise.resolve() } },
   fetch: () => new Promise(() => {}),
@@ -125,6 +126,26 @@ if (a) {
 // analyze returns null on short data (rows < 80)
 const short = ctx.analyze(rows.slice(0, 40), cfg);
 assert(short === null, "analyze returns null when rows < 80");
+
+// ================= PAPER TRADING MANUAL OPEN =================
+const paperInputs = (entry, stop, target) => { domEls.paperEntry = { value: entry }; domEls.paperStop = { value: stop }; domEls.paperTarget = { value: target }; };
+vm.runInContext("paperState.openPositions = []; paperState.trades = [];", ctx);
+paperInputs("1.10", "1.12", "1.05");
+ctx.openManualPaperTrade("SELL");
+let ps = vm.runInContext("paperState", ctx);
+assert(ps.openPositions.length === 1 && ps.openPositions[0].direction === "SELL", "manual SELL paper trade opens");
+paperInputs("1.10", "1.05", "1.12");
+ctx.openManualPaperTrade("BUY");
+ps = vm.runInContext("paperState", ctx);
+assert(ps.openPositions.length === 2, "manual BUY paper trade opens");
+paperInputs("1.10", "1.12", "1.13");
+ctx.openManualPaperTrade("BUY");
+ps = vm.runInContext("paperState", ctx);
+assert(ps.openPositions.length === 2, "invalid BUY ordering is rejected");
+paperInputs("abc", "1.05", "1.12");
+ctx.openManualPaperTrade("BUY");
+ps = vm.runInContext("paperState", ctx);
+assert(ps.openPositions.length === 2, "non-numeric entry is rejected");
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
