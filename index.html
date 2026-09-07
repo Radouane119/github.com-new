@@ -173,6 +173,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 .ov-card.sell{border-left-color:#da3633}
 .ov-card.wait{border-left-color:#b58cff}
 .ov-card.loading{opacity:.5}
+.ov-card.ov-best{border:1px solid #f0c35a;box-shadow:0 0 0 1px rgba(240,195,90,0.35),0 0 10px rgba(240,195,90,0.18)}
+.ov-best-badge{position:absolute;top:5px;right:5px;background:#f0c35a;color:#1a1300;font-size:.52rem;font-weight:800;letter-spacing:.06em;padding:1px 5px;border-radius:3px}
+.ov-card{position:relative}
 .ov-pair{font-size:.65rem;text-transform:uppercase;letter-spacing:.04em;color:#73808d}
 .ov-signal{font-size:.85rem;font-weight:700}
 .ov-card.buy .ov-signal{color:#3fb950}
@@ -811,7 +814,64 @@ const multiScan = {
   progress: "",
   configOpen: false,
   watchlistOnly: false,
+  sortMode: "conf",
+  filter: "all",
 };
+
+function loadOverviewPrefs() {
+  try {
+    const s = localStorage.getItem("overviewPrefs");
+    if (s) { const p = JSON.parse(s); if (p.sortMode === "conf" || p.sortMode === "dir" || p.sortMode === "name") multiScan.sortMode = p.sortMode; if (p.filter === "all" || p.filter === "BUY" || p.filter === "SELL" || p.filter === "WAIT") multiScan.filter = p.filter; }
+  } catch {}
+}
+
+function saveOverviewPrefs() {
+  try { localStorage.setItem("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter })); } catch {}
+}
+
+function overviewFilteredPairs() {
+  const base = multiScan.watchlistOnly ? scanPairs.filter(p => watchlist.includes(p)) : scanPairs;
+  const f = multiScan.filter;
+  if (f === "all") return base;
+  return base.filter(p => { const r = multiScan.results[p]; return r && !r.loading && r.direction === f; });
+}
+
+function overviewSort(a, b) {
+  const ra = multiScan.results[a];
+  const rb = multiScan.results[b];
+  if (multiScan.sortMode === "name") {
+    const al = a.localeCompare(b);
+    return al !== 0 ? al : ((rb && !rb.loading ? rb.confidence : 0) - (ra && !ra.loading ? ra.confidence : 0));
+  }
+  const wa = watchlist.includes(a) ? 0 : 1;
+  const wb = watchlist.includes(b) ? 0 : 1;
+  if (wa !== wb) return wa - wb;
+  if (multiScan.sortMode === "conf") {
+    const ca = ra && !ra.loading ? ra.confidence : 0;
+    const cb = rb && !rb.loading ? rb.confidence : 0;
+    const d = cb - ca;
+    if (d !== 0) return d;
+    const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3;
+    const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3;
+    return da - db;
+  }
+  const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3;
+  const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3;
+  if (da !== db) return da - db;
+  const ca = ra && !ra.loading ? ra.confidence : 0;
+  const cb = rb && !rb.loading ? rb.confidence : 0;
+  return cb - ca;
+}
+
+function overviewBestPair() {
+  let best = null;
+  let bestConf = -1;
+  for (const p of scanPairs) {
+    const r = multiScan.results[p];
+    if (r && !r.loading && r.direction !== "WAIT" && r.confidence > bestConf) { best = p; bestConf = r.confidence; }
+  }
+  return best;
+}
 
 function loadScanConfig() {
   try {
@@ -945,6 +1005,7 @@ async function checkAlerts() {
 loadWatchlist();
 loadAlerts();
 loadScanConfig();
+loadOverviewPrefs();
 
 const root = document.getElementById("root");
 
@@ -2407,8 +2468,16 @@ function render() {
             <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
           </div>
         </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:8px 12px 0">
+          ${["all","BUY","SELL","WAIT"].map(f => `<button class="ov-filter" data-ov-filter="${f}" style="background:${multiScan.filter === f ? (f === 'BUY' ? '#1a3a2a' : f === 'SELL' ? '#3a1a1a' : '#1a2533') : '#0e151e'};border:1px solid ${multiScan.filter === f ? (f === 'BUY' ? '#2ea043' : f === 'SELL' ? '#f85149' : '#394757') : '#1f2a36'};color:${multiScan.filter === f ? (f === 'BUY' ? '#3fb950' : f === 'SELL' ? '#f85149' : '#e6edf3') : '#8c98a5'};padding:2px 10px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">${f === "all" ? "All" : f}</button>`).join("")}
+          <select id="ovSort" title="Sort overview" style="margin-left:auto;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:2px 6px;color:#8c98a5;font-size:.62rem;font-family:inherit">
+            <option value="conf" ${multiScan.sortMode === "conf" ? "selected" : ""}>Sort: Confidence</option>
+            <option value="dir" ${multiScan.sortMode === "dir" ? "selected" : ""}>Sort: Direction</option>
+            <option value="name" ${multiScan.sortMode === "name" ? "selected" : ""}>Sort: Pair</option>
+          </select>
+        </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${(multiScan.watchlistOnly ? scanPairs.filter(p => watchlist.includes(p)) : scanPairs).sort((a,b) => { const ra = multiScan.results[a]; const rb = multiScan.results[b]; const da = ra && !ra.loading ? (ra.direction === "BUY" ? 0 : ra.direction === "SELL" ? 1 : 2) : 3; const db = rb && !rb.loading ? (rb.direction === "BUY" ? 0 : rb.direction === "SELL" ? 1 : 2) : 3; const wa = watchlist.includes(a) ? 0 : 1; const wb = watchlist.includes(b) ? 0 : 1; if (wa !== wb) return wa - wb; if (da !== db) return da - db; const ca = ra && !ra.loading ? ra.confidence : 0; const cb = rb && !rb.loading ? rb.confidence : 0; return cb - ca; }).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}"><div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="4H: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} 4H</span>` : ''}</div>${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px'><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join("")}</div>
+        <div class="overview-grid">${(() => { const best = overviewBestPair(); return overviewFilteredPairs().sort(overviewSort).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const isBest = pair === best; const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}${isBest ? " ov-best" : ""}">${isBest && !r.loading ? `<div class="ov-best-badge">BEST</div>` : ""}<div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="4H: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} 4H</span>` : ''}${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join(""); })()}</div></div>
       </section>
 
       ${(() => { var pa = priceLevelAlerts; return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="priceAlertToggle"><div class="history-toggle-left"><h3>Price Level Alerts</h3><span class="history-count">' + pa.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="priceAlertBody"><div style="padding:10px 12px"><div class="price-alert-row"><select id="paPair" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem">' + scanPairs.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('') + '</select><select id="paDir"><option value="above">Above</option><option value="below">Below</option></select><input type="number" id="paPrice" placeholder="Price" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"><button class="scan-button" id="addPriceAlert" style="font-size:.7rem">+ Add</button></div>' + pa.map(function(a, i) { return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0e151e;font-size:.7rem"><span style="width:56px;color:#e6edf3;font-weight:600">' + a.pair + '</span><span style="color:' + (a.dir === 'above' ? '#3fb950' : '#f85149') + '">' + (a.dir === 'above' ? '\u2191' : '\u2193') + '</span><span style="color:#8c98a5">' + formatPrice(a.price, a.pair) + '</span><button data-rm-pa="' + i + '" style="background:transparent;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;margin-left:auto">\u2715</button></div>'; }).join('') + '</div></div></section>'; })()}
@@ -4073,6 +4142,12 @@ function setupEvents() {
     }
   });
   root.addEventListener("change", (event) => {
+    if (event.target.id === "ovSort") {
+      multiScan.sortMode = event.target.value;
+      saveOverviewPrefs();
+      render();
+      return;
+    }
     if (event.target.id === "schedToggleInput") {
       if (event.target.checked) startSchedule(); else stopSchedule();
       render();
@@ -4312,6 +4387,7 @@ function setupEvents() {
     if (target.id === "autoScanToggle") {
       toggleAutoScan();
     }
+    if (target.dataset.ovFilter) { multiScan.filter = target.dataset.ovFilter; saveOverviewPrefs(); render(); return; }
     if (target.classList.contains('ov-wl-filter')) { multiScan.watchlistOnly = !multiScan.watchlistOnly; render(); return; }
     if (target.id === "toggleScanConfig") {
       multiScan.configOpen = !multiScan.configOpen;

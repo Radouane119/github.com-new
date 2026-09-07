@@ -147,6 +147,30 @@ ctx.openManualPaperTrade("BUY");
 ps = vm.runInContext("paperState", ctx);
 assert(ps.openPositions.length === 2, "non-numeric entry is rejected");
 
+// ================= OVERVIEW SORT / FILTER / BEST =================
+vm.runInContext(`multiScan.results = {};
+const seed = {};
+seed["AAA/USD"] = { loading:false, direction:"BUY",  confidence:80, price:1 };
+seed["BBB/USD"] = { loading:false, direction:"SELL", confidence:95, price:2 };
+seed["CCC/USD"] = { loading:false, direction:"WAIT", confidence:55, price:3 };
+seed["DDD/USD"] = { loading:false, direction:"BUY",  confidence:72, price:4 };
+seed["EEE/USD"] = { loading:true,  direction:"WAIT", confidence:0, price:null };
+multiScan.results = seed;
+scanPairs = ["AAA/USD","BBB/USD","CCC/USD","DDD/USD","EEE/USD"];
+multiScan.sortMode = "conf"; multiScan.filter = "all";`, ctx);
+assert(vm.runInContext("overviewBestPair()", ctx) === "BBB/USD", "overview best pair is highest-confidence non-WAIT");
+let ov = vm.runInContext("overviewFilteredPairs().sort(overviewSort)", ctx);
+assert(ov[0] === "BBB/USD" && ov[1] === "AAA/USD" && ov[ov.length - 1] === "EEE/USD", "overview sorts by confidence desc, loading last");
+vm.runInContext("multiScan.filter = 'BUY'", ctx);
+ov = vm.runInContext("overviewFilteredPairs()", ctx);
+assert(ov.length === 2 && ov.includes("AAA/USD") && ov.includes("DDD/USD"), "overview BUY filter only shows BUY cards");
+vm.runInContext("multiScan.filter = 'all'; multiScan.sortMode = 'name'", ctx);
+ov = vm.runInContext("overviewFilteredPairs().sort(overviewSort)", ctx);
+assert(ov[0] === "AAA/USD" && ov[4] === "EEE/USD", "overview name sort is alphabetical");
+vm.runInContext("multiScan.sortMode = 'dir'; multiScan.filter = 'SELL'; saveOverviewPrefs();", ctx);
+vm.runInContext("multiScan.sortMode = 'conf'; multiScan.filter = 'all'; loadOverviewPrefs();", ctx);
+assert(vm.runInContext("multiScan.sortMode === 'dir' && multiScan.filter === 'SELL'", ctx), "overview prefs persist and reload");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
