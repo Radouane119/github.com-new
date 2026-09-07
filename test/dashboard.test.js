@@ -127,6 +127,46 @@ if (a) {
 const short = ctx.analyze(rows.slice(0, 40), cfg);
 assert(short === null, "analyze returns null when rows < 80");
 
+// ================= TREND-EXTENSION GATE REGRESSION TESTS =================
+// Strong trend whose last close sits beyond the 20-period Bollinger band.
+// The extension gate must not block entries when ADX is strong (trending),
+// otherwise trending SELLs (and BUYs) would all collapse to WAIT.
+function makeTrendRows(count, baseStep, tailBars, tailStep) {
+  const rows = [];
+  let price = 100;
+  for (let i = 0; i < count; i++) {
+    const step = (i >= count - tailBars) ? tailStep : baseStep;
+    const open = price;
+    price = Math.max(0.001, price - step - (i % 4 === 0 ? 0.08 : 0));
+    rows.push({ time: new Date(Date.UTC(2020, 0, 1) + i * 86400000).toISOString(), open, high: Math.max(open, price) + 0.01, low: Math.min(open, price) - 0.01, close: price, volume: 2000 });
+  }
+  return rows;
+}
+const downRows = makeTrendRows(130, 0.35, 8, 1.0);
+const downA = ctx.analyze(downRows, cfg, "TST/SELL");
+assert(downA && downA.direction === "SELL", "strong downtrend extended below lower band -> SELL, got " + (downA && downA.direction));
+const upRows = [];
+{
+  let price = 100;
+  for (let i = 0; i < 140; i++) {
+    const step = i >= 130 ? 1.0 : 0.35;
+    const open = price;
+    price = price + step + (i % 4 === 0 ? 0.08 : 0);
+    upRows.push({ time: new Date(Date.UTC(2020, 0, 1) + i * 86400000).toISOString(), open, high: Math.max(open, price) + 0.01, low: Math.min(open, price) - 0.01, close: price, volume: 2000 });
+  }
+}
+const upA = ctx.analyze(upRows, cfg, "TST/BUY");
+assert(upA && upA.direction === "BUY", "strong uptrend extended above upper band -> BUY, got " + (upA && upA.direction));
+
+// ================= PER-PAIR SIGNAL KEYS =================
+// Analyze calls for two different instruments must not share a lastSignals slot
+// (a BUY result for one pair must not suppress a SELL for another).
+vm.runInContext("lastSignals.clear();", ctx);
+vm.runInContext("multiScan.results = {}; scanPairs = ['AAA/USD','BBB/USD'];", ctx);
+const pair1 = ctx.analyze(downRows, cfg, "AA/A");
+const pair2 = ctx.analyze(upRows, cfg, "BB/B");
+assert(pair1 && pair1.direction === "SELL" && pair2 && pair2.direction === "BUY", "per-pair keys keep BUY and SELL independent across instruments");
+
 // ================= PAPER TRADING MANUAL OPEN =================
 const paperInputs = (entry, stop, target) => { domEls.paperEntry = { value: entry }; domEls.paperStop = { value: stop }; domEls.paperTarget = { value: target }; };
 vm.runInContext("paperState.openPositions = []; paperState.trades = [];", ctx);

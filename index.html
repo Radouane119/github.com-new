@@ -1982,7 +1982,7 @@ function autoCheckPaperPositions() {
   }
 }
 
-function analyze(rows, cfg) {
+function analyze(rows, cfg, sigKey) {
   if (rows.length < 80) return null;
   const threshold = cfg?.threshold ?? 5;
   const rrRatio = cfg?.riskRewardRatio ?? 2.0;
@@ -2034,8 +2034,11 @@ function analyze(rows, cfg) {
   const momentumDown = last.macd < last.macdSignal && last.macdHist < prev.macdHist;
   const rsiBuyZone = last.rsi < rsiBuyThreshold;
   const rsiSellZone = last.rsi > rsiSellThreshold;
-  const notExtendedLong = last.bUpper == null || last.close < last.bUpper;
-  const notExtendedShort = last.bLower == null || last.close > last.bLower;
+  const adxNow = regime.adx;
+  const adxStrongNow = adxNow > 25;
+  const extBuffer = adxStrongNow ? (Number.isFinite(last.atr) ? last.atr : 0) : 0;
+  const notExtendedLong = last.bUpper == null || last.close < last.bUpper + extBuffer;
+  const notExtendedShort = last.bLower == null || last.close > last.bLower - extBuffer;
   const priceRising = rows.length >= 5 && last.close > rows[rows.length - 5].close;
   const priceFalling = rows.length >= 5 && last.close < rows[rows.length - 5].close;
   const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
@@ -2068,8 +2071,8 @@ function analyze(rows, cfg) {
   const obvUp = obvOk && obvSmaLast != null && lastObv > obvSmaLast && lastObv > prevObv;
   const obvDown = obvOk && obvSmaLast != null && lastObv < obvSmaLast && lastObv < prevObv;
 
-  const adx = regime.adx;
-  const adxStrong = adx > 25;
+  const adx = adxNow;
+  const adxStrong = adxStrongNow;
 
   const currBody = Math.abs(last.close - last.open);
   const currRange = last.high - last.low;
@@ -2122,7 +2125,7 @@ function analyze(rows, cfg) {
   const thresholdWeight = (threshold / 7) * maxWeighted;
   const rawConfidence = Math.round((Math.max(buyScore, sellScore) / maxWeighted) * 100);
 
-  const key = `${state.base}/${state.quote}`;
+  const key = sigKey || (state ? `${state.base}/${state.quote}` : "DEFAULT");
   const prevSig = lastSignals.get(key);
   let direction = "WAIT";
   const buyGate = buyScore >= thresholdWeight && buyScore > sellScore && notExtendedLong;
@@ -3296,7 +3299,7 @@ async function runMultiPairBacktest() {
       const trades = [];
       for (let j = 100; j < rows.length; j++) {
         const slice = rows.slice(0, j + 1);
-        const analysis = analyze(slice, cfg);
+        const analysis = analyze(slice, cfg, pair);
         if (!analysis || analysis.direction === "WAIT") continue;
         const entry = analysis.entry || slice[j].close;
         const stop = analysis.stop;
@@ -3354,7 +3357,7 @@ async function scanPairForOverview(pair) {
     scheduleRender();
     const rows = (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
     const cfg = loadStrategyConfig();
-    const analysis = rows.length >= 80 ? analyze(rows, cfg) : null;
+    const analysis = rows.length >= 80 ? analyze(rows, cfg, pair) : null;
     let mtfConf = 0;
     let a4h = null;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
@@ -3362,7 +3365,7 @@ async function scanPairForOverview(pair) {
       mtfConf = mtfAdj.score;
       try {
         const rows4h = await fetchBinanceRows(base, quote, "4h");
-        a4h = rows4h.length >= 80 ? analyze(rows4h, cfg) : null;
+        a4h = rows4h.length >= 80 ? analyze(rows4h, cfg, pair) : null;
       } catch {}
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
