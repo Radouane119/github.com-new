@@ -389,6 +389,8 @@ const state = {
   source: "",
   timeframe: "1d",
   mtf: {},
+  notice: "",
+  isDemo: false,
 };
 
 let activeDataRequestId = 0;
@@ -1285,42 +1287,8 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
 }
 
 const fxMajors = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD"]);
-const yahooFxInterval = { "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m" };
-const yahooFxRange = { "1m": "5d", "5m": "1mo", "15m": "3mo", "30m": "6mo", "1h": "1y" };
 function fxIntradayable(base, quote) { return !nonFiat.has(base) && fxMajors.has(base) && fxMajors.has(quote); }
 
-async function fetchYahooChart(symbol, interval, range) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`, { signal: controller.signal });
-    if (!response.ok) throw new Error(`Yahoo Finance unavailable for ${symbol}.`);
-    const data = await response.json();
-    const result = data?.chart?.result?.[0];
-    if (!result) throw new Error(`Yahoo returned no chart for ${symbol}.`);
-    const ts = result.timestamp || [];
-    const q = result.indicators?.quote?.[0] || {};
-    return ts
-      .map((t, i) => {
-        const open = Number(q.open?.[i]);
-        const high = Number(q.high?.[i]);
-        const low = Number(q.low?.[i]);
-        const close = Number(q.close?.[i]);
-        const vol = Math.max(0, Number(q.volume?.[i] || 0));
-        if (![open, high, low, close].every(Number.isFinite) || close <= 0) return null;
-        return {
-          date: new Date(t * 1000).toISOString().slice(0, 10),
-          time: new Date(t * 1000).toISOString(),
-          open, high, low, close,
-          volume: vol > 0 ? vol : Math.max(1, Math.round((high - low) * ((open + close) / 2) * 100000)),
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => new Date(a.time) - new Date(b.time));
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 function bucketTo4h(hourlyRows) {
   const out = [];
@@ -1339,22 +1307,112 @@ function bucketTo4h(hourlyRows) {
   return out;
 }
 
+// Currencies Binance lists against USDT. Used as the USD leg for FX crosses,
+// because Binance sends Access-Control-Allow-Origin: * and is therefore readable
+// from the browser. Yahoo Finance is NOT usable here: it sends no CORS header at
+// all, so every browser read is rejected regardless of network health.
+const fxUsdLegs = { EUR: "EURUSDT", GBP: "GBPUSDT", AUD: "AUDUSDT" };
+const fxUsdLegCache = new Map();
+
+function fxSourceLabel(base, quote) {
+  const legs = [base, quote].filter((c) => c !== "USD" && fxUsdLegs[c]);
+  return legs.length > 0 ? `Derived from Binance ${legs.map((c) => fxUsdLegs[c]).join("/")}` : "Binance";
+}
+
+async function fetchFxUsdLegSeries(currency, interval) {
+  const symbol = fxUsdLegs[currency];
+  if (!symbol) return null;
+  const cacheKey = symbol + ":" + interval;
+  if (fxUsdLegCache.has(cacheKey)) return fxUsdLegCache.get(cacheKey);
+  const rows = await fetchBinanceRows(currency, "USDT", interval);
+  const series = rows.filter((r) => Number.isFinite(r.close) && r.close > 0);
+  fxUsdLegCache.set(cacheKey, series);
+  return series;
+}
+
+// A USD leg is exactly 1, but it must inherit the timestamps of the real leg so
+// the two series line up bar for bar. Synthesising its own clock instead produces
+// a set with zero timestamp overlap, i.e. an empty cross.
+function unitSeriesFrom(rows) {
+  return rows.map((r) => ({ date: r.date, time: r.time, open: 1, high: 1, low: 1, close: 1, volume: r.volume }));
+}
+
+// A/B where both legs are quoted as "USD per 1 unit of currency", aligned on
+// identical bar timestamps. Bar extremes come from the true per-leg extremes:
+// the ratio of two series over one bar peaks at base high / quote low.
+function deriveCrossSeries(baseLeg, quoteLeg) {
+  const byTime = new Map();
+  for (const b of quoteLeg) {
+    if (b && Number.isFinite(b.close) && b.close > 0 && Number.isFinite(b.low) && b.low > 0) byTime.set(b.time, b);
+  }
+  const out = [];
+  for (const a of baseLeg) {
+    const q = byTime.get(a && a.time);
+    if (!q) continue;
+    if (!Number.isFinite(a.close) || a.close <= 0 || !Number.isFinite(a.open) || a.open <= 0) continue;
+    if (!Number.isFinite(a.high) || !Number.isFinite(a.low)) continue;
+    const close = a.close / q.close;
+    const open = a.open / q.open;
+    const high = a.high / q.low;
+    const low = a.low / q.high;
+    if (![close, open, high, low].every((v) => Number.isFinite(v) && v > 0)) continue;
+    out.push({
+      date: a.time.slice(0, 10),
+      time: a.time,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      volume: Math.max(1, Math.round(Math.min(a.volume, q.volume))),
+    });
+  }
+  return out;
+}
+
+async function fetchFxIntradayCross(base, quote, interval) {
+  if (base === "USD" && quote === "USD") return [];
+  const [legBase, legQuote] = await Promise.all([
+    base === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(base, interval).catch(() => null),
+    quote === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(quote, interval).catch(() => null),
+  ]);
+  let baseLeg = legBase;
+  let quoteLeg = legQuote;
+  if (base === "USD" && quoteLeg) baseLeg = unitSeriesFrom(quoteLeg);
+  if (quote === "USD" && baseLeg) quoteLeg = unitSeriesFrom(baseLeg);
+  if (!baseLeg || !quoteLeg) return [];
+  return deriveCrossSeries(baseLeg, quoteLeg);
+}
+
 async function fetchForexRows(base, quote, interval = "1d") {
   if (interval === "1d") return fetchFxRows(base, quote);
-  const format = yahooFxInterval[interval] || "60m";
-  const range = yahooFxRange[interval] || "6mo";
-  let rows = await fetchYahooChart(`${base}${quote}=X`, format, range);
-  if (rows.length === 0 && base !== quote) {
-    rows = await fetchYahooChart(`${quote}${base}=X`, format, range);
-    if (rows.length > 0) {
-      rows = rows
-        .map((r) => ({ date: r.date, time: r.time, open: 1 / r.open, high: 1 / r.low, low: 1 / r.high, close: 1 / r.close, volume: r.volume }))
-        .filter((r) => Number.isFinite(r.close));
-    }
-  }
-  if (rows.length === 0) throw new Error(`No intraday price data for ${base}/${quote}.`);
-  if (interval === "4h") rows = bucketTo4h(rows);
-  return rows;
+  const binanceInterval = interval === "4h" ? "1h" : interval;
+  const derived = await fetchFxIntradayCross(base, quote, binanceInterval);
+  if (derived.length >= 80) return interval === "4h" ? bucketTo4h(derived) : derived;
+  // Both currencies must be quotable against USDT to build an intraday cross.
+  const missing = [base, quote].filter((c) => c !== "USD" && !fxUsdLegs[c]);
+  throw new Error(
+    missing.length > 0
+      ? `No browser-readable intraday feed for ${missing.join("/")} (Binance USDT legs cover ${Object.keys(fxUsdLegs).join(", ")}).`
+      : `No intraday cross data for ${base}/${quote}.`
+  );
+}
+
+const barStepMs = { "1m": 60000, "5m": 300000, "15m": 900000, "30m": 1800000, "1h": 3600000, "4h": 14400000, "1d": 86400000 };
+
+// Some exchange books are technically "live" but effectively dead. Binance's
+// GBPUSDT and AUDUSDT spot pairs, for example, still answer with their last real
+// trades from 2023. Serving those bars as current data silently analyses years-old
+// prices, so reject any series whose newest bar is implausibly old.
+function rowsAreStale(rows, interval) {
+  if (!Array.isArray(rows) || rows.length === 0) return true;
+  const last = rows[rows.length - 1];
+  const stamp = Date.parse(last && last.time ? last.time : last && last.date);
+  if (!Number.isFinite(stamp)) return false;
+  const step = barStepMs[interval] || 3600000;
+  // Four missed bars is a dead feed; the 30-minute floor still absorbs exchange
+  // hiccups without letting a 1-minute chart run an hour behind.
+  const maxAge = Math.max(step * 4, 30 * 60 * 1000);
+  return Date.now() - stamp > maxAge;
 }
 
 async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
@@ -1377,21 +1435,19 @@ async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
           volume: Number(k[5]),
         }))
         .filter((row) => Number.isFinite(row.close));
-      if (rows.length > 0) { clearTimeout(timer); lastCryptoSource = "Binance"; return rows; }
+      if (rows.length > 0 && !rowsAreStale(rows, interval)) { clearTimeout(timer); lastCryptoSource = "Binance"; return rows; }
     }
   } catch {}
   clearTimeout(timer);
   try {
     const rows = await fetchBybitRows(base, quote, interval, limit);
-    lastCryptoSource = "Bybit";
-    return rows;
+    if (!rowsAreStale(rows, interval)) { lastCryptoSource = "Bybit"; return rows; }
   } catch {}
   try {
     const rows = await fetchCoinbaseRows(base, quote, interval, limit);
-    lastCryptoSource = "Coinbase";
-    return rows;
+    if (!rowsAreStale(rows, interval)) { lastCryptoSource = "Coinbase"; return rows; }
   } catch {}
-  throw new Error(`Live data unavailable for ${base}/${quote} on Binance, Bybit and Coinbase.`);
+  throw new Error(`Live data unavailable or stale for ${base}/${quote} on Binance, Bybit and Coinbase.`);
 }
 
 function tfLabel(tf) {
@@ -1431,21 +1487,22 @@ async function fetchLivePrice(base, quote) {
       return null;
     }
     if (fxIntradayable(base, quote)) {
+      // Intraday FX live price: derive from Binance USDT legs, which are
+      // browser-readable. Yahoo is intentionally not used here (no CORS header).
       try {
-        const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${base}${quote}=X?interval=1m&range=1d`);
-        if (r.ok) {
-          const data = await r.json();
-          const result = data?.chart?.result?.[0];
-          if (result) {
-            const ts = result.timestamp || [];
-            const q = result.indicators?.quote?.[0] || {};
-            for (let i = ts.length - 1; i >= 0; i--) {
-              const close = Number(q.close?.[i]);
-              if (Number.isFinite(close) && close > 0) {
-                const prev = Number(q.close?.[i - 1]);
-                return { price: close, change: Number.isFinite(prev) && prev > 0 ? ((close - prev) / prev) * 100 : null };
-              }
-            }
+        const [legBase, legQuote] = await Promise.all([
+          base === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(base, "1m").catch(() => null),
+          quote === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(quote, "1m").catch(() => null),
+        ]);
+        if (base !== "USD" && legBase && legBase.length > 1) {
+          const lastBase = legBase[legBase.length - 1].close;
+          const priorBase = legBase[legBase.length - 2].close;
+          const lastQuote = legQuote ? legQuote[legQuote.length - 1].close : 1;
+          const priorQuote = legQuote ? legQuote[legQuote.length - 1].close : 1;
+          const price = lastBase / lastQuote;
+          const prior = priorBase / priorQuote;
+          if (Number.isFinite(price) && price > 0) {
+            return { price, change: Number.isFinite(prior) && prior > 0 ? ((price - prior) / prior) * 100 : null };
           }
         }
       } catch {}
@@ -1987,6 +2044,10 @@ function autoCheckPaperPositions() {
 
 function analyze(rows, cfg, sigKey, trackSignal = false) {
   if (rows.length < 80) return null;
+  // Rows can be synthetic demo data when every live source failed. Compute the
+  // indicators as usual so charts still draw, but never emit a tradable signal.
+  const demoSuppressed = !!(state && state.isDemo);
+  if (demoSuppressed) trackSignal = false;
   const threshold = cfg?.threshold ?? 5;
   const rrRatio = cfg?.riskRewardRatio ?? 2.0;
   const volumeMultiplier = cfg?.volumeMultiplier ?? 1.3;
@@ -2183,7 +2244,9 @@ function analyze(rows, cfg, sigKey, trackSignal = false) {
     ...(hammer ? [{ ok: true, text: "Hammer pattern — potential reversal up" }] : []),
     ...(shootingStar ? [{ ok: true, text: "Shooting star — potential reversal down" }] : []),
   ];
-  return { chartRows: merged.slice(-140), last, direction, confidence, risk, entry, stop, target, trailingStop, reasons, buyScore, sellScore, volatilityPct, regime, adx, swingPivot, buyPieces, sellPieces, pullbackEntry: computePullbackEntry(direction, last.close, last.ema21 || entry, entry, stop), ml: mlModel.trained ? mlPredict([confidence / 100, Math.max(buyScore, sellScore) / 100, Math.max(-1, Math.min(1, (buyScore - sellScore) / 100)), Math.max(0, Math.min(20, volatilityPct)) / 10, direction === "BUY" ? 1 : 0]) : null };
+  const outDirection = demoSuppressed ? "WAIT" : direction;
+  const outConfidence = demoSuppressed ? 0 : confidence;
+  return { chartRows: merged.slice(-140), last, direction: outDirection, confidence: outConfidence, risk: demoSuppressed ? "No trade (demo data)" : risk, entry, stop, target, trailingStop, reasons: demoSuppressed ? [...reasons, { ok: false, text: "Live market data could not be reached — signal suppressed, the chart below is simulated demo data and must not be traded." }] : reasons, buyScore, sellScore, volatilityPct, regime, adx, swingPivot, buyPieces, sellPieces, pullbackEntry: computePullbackEntry(outDirection, last.close, last.ema21 || entry, entry, stop), ml: mlModel.trained && !demoSuppressed ? mlPredict([outConfidence / 100, Math.max(buyScore, sellScore) / 100, Math.max(-1, Math.min(1, (buyScore - sellScore) / 100)), Math.max(0, Math.min(20, volatilityPct)) / 10, outDirection === "BUY" ? 1 : 0]) : null };
 }
 
 function computePullbackEntry(direction, price, ema21, entry, stop) {
@@ -2431,6 +2494,7 @@ function render() {
       </section>
 
           ${state.error ? `<div class="notice error" role="alert">${state.error}</div>` : ""}
+          ${state.notice ? `<div class="notice" role="status">${state.notice}</div>` : ""}
       ${state.source ? `<div class="source-line">Data source: ${state.source}. Signals are educational trading ideas, not financial advice.</div>` : ""}
 
       ${
@@ -3755,6 +3819,8 @@ async function loadDataOnly() {
   let timeframe = state.timeframe;
   state.status = "loading";
   state.error = "";
+  state.notice = "";
+  state.isDemo = false;
   state.rows = [];
   state.source = "";
   try {
@@ -3762,24 +3828,31 @@ async function loadDataOnly() {
     const fxIntra = fxIntradayable(base, quote);
     let rows;
     let source;
-    if (canUseBinance && timeframe !== "1d") {
-      rows = await fetchBinanceRows(base, quote, timeframe);
-      source = `${lastCryptoSource} ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
-    } else if (canUseBinance && timeframe === "1d") {
+    let gotExchange = false;
+    if (canUseBinance) {
       try {
-        rows = await fetchBinanceRows(base, quote, "1d");
-        source = `${lastCryptoSource} ${names[base]}/${quote} daily prices`;
-      } catch {
+        rows = await fetchBinanceRows(base, quote, timeframe);
+        source = timeframe === "1d"
+          ? `${lastCryptoSource} ${names[base]}/${quote} daily prices`
+          : `${lastCryptoSource} ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
+        gotExchange = true;
+      } catch {}
+    }
+    if (!gotExchange && fxIntra && timeframe !== "1d") {
+      try {
+        rows = await fetchForexRows(base, quote, timeframe);
+        source = `${fxSourceLabel(base, quote)} ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
+      } catch (intradayError) {
+        // Intraday FX is not published for every currency pair by any
+        // browser-readable source. Degrade to daily ECB reference rates instead
+        // of silently falling back to synthetic demo data.
         rows = await fetchFxRows(base, quote);
+        state.timeframe = "1d";
+        timeframe = "1d";
+        state.notice = `Intraday ${base}/${quote} is unavailable (${intradayError.message}) Showing daily rates instead.`;
         source = "Frankfurter.dev daily ECB reference rates";
       }
-    } else if (fxIntra && timeframe !== "1d") {
-      rows = await fetchForexRows(base, quote, timeframe);
-      source = `Yahoo Finance ${names[base]}/${quote} ${tfLabel(timeframe)} prices`;
-    } else if (fxIntra && timeframe === "1d") {
-      rows = await fetchFxRows(base, quote);
-      source = "Frankfurter.dev daily ECB reference rates";
-    } else {
+    } else if (!gotExchange) {
       state.timeframe = "1d";
       timeframe = "1d";
       rows = await fetchFxRows(base, quote);
@@ -3797,7 +3870,8 @@ async function loadDataOnly() {
     state.rows = generateFallbackRows(base, quote);
     state.source = "Offline demo data because live market data could not be reached";
     state.status = "ready";
-    state.error = "Live data is unavailable in this browser session. The dashboard is using demo data, so do not trade this signal.";
+    state.isDemo = true;
+    state.error = "Live data is unavailable in this browser session. Signals are disabled; the chart below is simulated demo data and must not be traded.";
     return true;
   }
 }

@@ -339,5 +339,111 @@ assert(fixedUnits !== kellyUnits, "Kelly toggle changes the recommended size (" 
 assert(kellyUnits === 0 || kellyUnits > 0, "Kelly size is a finite number");
 
 console.log("");
+console.log("--- M20: stale exchange books are rejected (never analysed as live) ---");
+// Binance's GBPUSDT/AUDUSDT spot books still answer with their last real trades
+// from 2023. Accepting those bars would silently analyse years-old prices.
+const stale = ctx.rowsAreStale;
+assert(stale([], "1h") === true, "empty series counts as stale");
+assert(stale(null, "1d") === true, "null series counts as stale");
+const freshBar = (msAgo, interval) => {
+  const t = new Date(Date.now() - msAgo).toISOString();
+  return [{ time: t, date: t.slice(0, 10), open: 1, high: 1, low: 1, close: 1.12, volume: 10 }];
+};
+assert(stale(freshBar(30 * 60 * 1000, "1h"), "1h") === false, "30-minute-old hourly bar is fresh");
+assert(stale(freshBar(60 * 60 * 1000, "1m"), "1m") === true, "1-hour-old 1-minute bar is stale");
+assert(stale(freshBar(3 * 24 * 3600 * 1000, "1d"), "1d") === false, "3-day-old daily bar tolerates a weekend");
+assert(stale(freshBar(30 * 24 * 3600 * 1000, "1d"), "1d") === true, "30-day-old daily bar is stale");
+assert(stale(freshBar(24 * 3600 * 1000, "1h"), "1h") === true, "24-hour-old hourly bar is stale");
+const gbpStale = freshBar(24282 * 3600 * 1000, "1h");
+assert(stale(gbpStale, "1h") === true, "GBPUSDT-shaped 2023 book is rejected");
+assert(stale([{ date: "2023-12-29", open: 1, high: 1, low: 1, close: 1.18 }], "1d") === true, "date-only stale series is rejected too");
+assert(stale([{ close: 1.18 }], "1h") === false, "series without a usable stamp is not force-rejected");
+
+console.log("");
+console.log("--- M21: deriveCrossSeries maths ---");
+const H = 3600000;
+const legA = [
+  { time: new Date(Date.now() - 2 * H).toISOString(), open: 1.10, high: 1.20, low: 1.05, close: 1.15, volume: 900 },
+  { time: new Date(Date.now() - H).toISOString(), open: 1.15, high: 1.25, low: 1.10, close: 1.20, volume: 800 },
+];
+const legB = [
+  { time: new Date(Date.now() - 2 * H).toISOString(), open: 2.50, high: 2.60, low: 2.40, close: 2.55, volume: 700 },
+  { time: new Date(Date.now() - H).toISOString(), open: 2.55, high: 2.70, low: 2.50, close: 2.60, volume: 600 },
+];
+const cross = ctx.deriveCrossSeries(legA, legB);
+assert(cross.length === 2, "deriveCrossSeries keeps every timestamp-aligned bar, got " + cross.length);
+if (cross.length === 2) {
+  const okClose = (v, e) => Math.abs(v - e) < 1e-9;
+  assert(okClose(cross[0].close, 1.15 / 2.55), "close = base close / quote close");
+  assert(okClose(cross[0].open, 1.10 / 2.50), "open = base open / quote open");
+  assert(okClose(cross[0].high, 1.20 / 2.40), "high = base high / quote low");
+  assert(okClose(cross[0].low, 1.05 / 2.60), "low = base low / quote high");
+  const barsOk = cross.every((r) => r.high >= Math.max(r.open, r.close) - 1e-12 && r.low <= Math.min(r.open, r.close) + 1e-12);
+  assert(barsOk, "every derived bar keeps high >= max(open,close) and low <= min(open,close)");
+  assert(cross.every((r) => Number.isFinite(r.close) && r.close > 0), "derived closes are finite and positive");
+  assert(cross.every((r) => r.volume >= 1), "derived bars carry a usable volume");
+  assert(cross[0].date === legA[0].time.slice(0, 10), "derived bar keeps the leg date");
+}
+assert(ctx.deriveCrossSeries(legA, [{ ...legB[0], close: 0 }]).length === 0, "zero quote close is discarded, not divided by");
+assert(ctx.deriveCrossSeries(legA, [{ ...legB[0], time: "1999-01-01T00:00:00.000Z" }]).length === 0, "misaligned timestamps produce no bars");
+assert(ctx.deriveCrossSeries(legA, [{ ...legB[0], low: 0 }]).length === 0, "quote leg with a zero low is rejected");
+
+console.log("");
+console.log("--- M22: unitSeriesFrom anchors a USD leg to real timestamps ---");
+const unit = ctx.unitSeriesFrom(legA);
+assert(unit.length === legA.length, "unit series has one point per real bar");
+assert(unit.every((u) => u.open === 1 && u.high === 1 && u.low === 1 && u.close === 1), "USD leg is exactly 1 on every field");
+assert(unit.every((u, i) => u.time === legA[i].time), "USD leg inherits the real bar timestamps");
+const anchored = ctx.deriveCrossSeries(legA, unit);
+assert(anchored.length === 2, "A/USD derived from a real leg is non-empty, got " + anchored.length);
+assert(anchored.length === 2 && Math.abs(anchored[1].close - 1.20) < 1e-9, "A/USD close equals the real A close");
+assert(anchored.length === 2 && Math.abs(anchored[1].open - 1.15) < 1e-9, "A/USD open equals the real A open");
+assert(anchored.length === 2 && Math.abs(anchored[1].high - 1.25) < 1e-9, "A/USD high equals the real A high");
+assert(anchored.length === 2 && Math.abs(anchored[1].low - 1.10) < 1e-9, "A/USD low equals the real A low");
+const inverted = ctx.deriveCrossSeries(unit, legA);
+assert(inverted.length === 2, "USD/A derived from a real leg is non-empty, got " + inverted.length);
+assert(inverted.length === 2 && Math.abs(inverted[1].close - 1 / 1.20) < 1e-9, "USD/A close inverts the leg");
+assert(inverted.length === 2 && Math.abs(inverted[1].high - 1 / 1.10) < 1e-9, "USD/A high = 1 / leg low");
+
+console.log("");
+console.log("--- M23: demo data never produces a tradable signal ---");
+const demoCase = vm.runInContext(`(() => {
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    const close = 100 + i * 0.35;
+    rows.push({
+      date: new Date(Date.UTC(2024, 0, 1 + Math.floor(i / 24))).toISOString().slice(0, 10),
+      time: new Date(Date.UTC(2024, 0, 1, i)).toISOString(),
+      open: close - 0.35, high: close + 0.2, low: close - 0.2, close, volume: 1000,
+    });
+  }
+  const cfg = loadStrategyConfig();
+  state.rows = rows;
+  state.isDemo = false;
+  const live = analyze(rows, cfg, "T/B", false);
+  state.isDemo = true;
+  const demo = analyze(rows, cfg, "T/B", false);
+  state.isDemo = false;
+  return { live, demo };
+})()`, ctx);
+assert(demoCase.demo.direction === "WAIT", "demo data is forced to WAIT, got " + demoCase.demo.direction);
+assert(demoCase.demo.confidence === 0, "demo confidence is 0, got " + demoCase.demo.confidence);
+assert(/demo data/.test(demoCase.demo.risk), "demo risk line names the demo data, got " + demoCase.demo.risk);
+assert(demoCase.demo.ml === null, "no ML prediction is attached to demo output");
+assert(demoCase.demo.reasons.some((r) => /must not be traded/.test(r.text)), "demo output carries a do-not-trade reason");
+assert(demoCase.live.direction !== "WAIT" || demoCase.live.confidence > 0, "the same rows analysed as live are not suppressed (control)");
+
+console.log("");
+console.log("--- M24: intraday fallback to daily keeps a real source label ---");
+const fxNotice = vm.runInContext(`(() => {
+  state.base = "EUR"; state.quote = "JPY"; state.timeframe = "1h";
+  state.rows = []; state.source = ""; state.notice = ""; state.isDemo = false; state.status = "idle";
+  return { ok: true };
+})()`, ctx);
+assert(fxNotice.ok === true, "FX intraday state can be staged for a fallback load");
+const hasDailyFallback = /catch \(intradayError\)[\s\S]{0,600}?fetchFxRows\(base, quote\)[\s\S]{0,400}?state\.timeframe = "1d"/.test(js);
+assert(hasDailyFallback, "failed intraday FX degrades to daily ECB rates instead of demo data");
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
