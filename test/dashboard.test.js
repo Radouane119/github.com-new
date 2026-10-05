@@ -35,6 +35,9 @@ const ctx = {
   requestAnimationFrame: (fn) => 0,
   ResizeObserver: class { observe() {} disconnect() {} },
   setInterval: () => 0,
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+  clearInterval: () => {},
   setTimezone: () => {},
   HTMLElement: class {},
   Event: class {},
@@ -210,6 +213,130 @@ assert(ov[0] === "AAA/USD" && ov[4] === "EEE/USD", "overview name sort is alphab
 vm.runInContext("multiScan.sortMode = 'dir'; multiScan.filter = 'SELL'; saveOverviewPrefs();", ctx);
 vm.runInContext("multiScan.sortMode = 'conf'; multiScan.filter = 'all'; loadOverviewPrefs();", ctx);
 assert(vm.runInContext("multiScan.sortMode === 'dir' && multiScan.filter === 'SELL'", ctx), "overview prefs persist and reload");
+
+// ================= BACKTEST RENDER REGRESSION =================
+// Regression: the backtest card referenced undeclared eqPts/peakPts, so render()
+// threw "ReferenceError: eqPts is not defined" as soon as backtest results existed.
+const mkTrade = (i, pnl) => ({ result: pnl > 0 ? "win" : pnl < 0 ? "loss" : "pending", pnlPct: pnl, direction: pnl >= 0 ? "BUY" : "SELL", date: `2020-01-${String((i % 28) + 1).padStart(2, "0")}` });
+vm.runInContext(`
+backtest.multiResults = null;
+backtest.results = { trades: ${JSON.stringify(Array.from({ length: 12 }, (_, i) => mkTrade(i, i % 3 === 0 ? -1.2 : 1.8)))}, stats: {}, config: {} };
+`, ctx);
+let btHtml = null, btErr = null;
+try { btHtml = ctx.renderBacktest(); } catch (e) { btErr = e; }
+assert(!btErr, "renderBacktest with results does not throw" + (btErr ? ": " + btErr.message : ""));
+assert(typeof btHtml === "string" && btHtml.includes("svg"), "renderBacktest emits the equity SVG chart");
+
+// A long backtest must not blow the argument stack in Math.max/Math.min.
+const longTrades = Array.from({ length: 4000 }, (_, i) => mkTrade(i, Math.sin(i / 7) * 2));
+vm.runInContext(`backtest.results = { trades: ${JSON.stringify(longTrades)}, stats: {}, config: {} };`, ctx);
+let longErr = null, longHtml = null;
+try { longHtml = ctx.renderBacktest(); } catch (e) { longErr = e; }
+assert(!longErr, "renderBacktest survives a 4000-trade curve" + (longErr ? ": " + longErr.message : ""));
+assert(longHtml && longHtml.split(" ").length < 400000, "renderBacktest downsamples the equity curve");
+
+// Same for the paper-trading equity curve (used to throw RangeError past ~100k points).
+vm.runInContext(`
+paperState.equityCurve = Array.from({ length: 150000 }, (_, i) => ({ balance: 10000 + (i % 500) }));
+paperState.trades = []; paperState.openPositions = [];
+`, ctx);
+let paperErr = null;
+try { ctx.renderPaperTrading(); } catch (e) { paperErr = e; }
+assert(!paperErr, "renderPaperTrading survives a 150k-point equity curve" + (paperErr ? ": " + paperErr.message : ""));
+
+// ================= PURE analyze() / SIGNAL STATE =================
+// Regression: analyze() used to mutate lastSignals on every call, so each render()
+// incremented the decay counter and a BUY could flip to WAIT without new data.
+vm.runInContext("lastSignals.clear();", ctx);
+const sig1 = ctx.analyze(upRows, cfg, "AAA/USD");
+const sig1b = ctx.analyze(upRows, cfg, "AAA/USD");
+assert(sig1.direction === sig1b.direction && sig1.confidence === sig1b.confidence,
+  "analyze() is pure: repeated calls return identical output (" + sig1.direction + "/" + sig1.confidence + " vs " + sig1b.direction + "/" + sig1b.confidence + ")");
+assert(vm.runInContext("lastSignals.size", ctx) === 0, "analyze() does not write lastSignals unless tracking is requested");
+
+// With tracking on, consecutive same-direction signals must decay confidence.
+vm.runInContext("lastSignals.clear();", ctx);
+const t1 = ctx.analyze(upRows, cfg, "TRK/USD", true);
+const t2 = ctx.analyze(upRows, cfg, "TRK/USD", true);
+assert(t2.confidence <= t1.confidence, "tracked repeat signals do not gain confidence from decay (" + t1.confidence + " -> " + t2.confidence + ")");
+
+// ================= SAME-BAR STOP/TARGET =================
+// A bar that spans both levels has unknowable intrabar ordering; the pessimistic
+// model must book the stop, not the target.
+const spanRows = [
+  { high: 100, low: 100 },
+  { high: 105, low: 95 },   // spans stop=98 and target=102
+  { high: 100, low: 100 },
+];
+const exBuy = ctx.resolveTradeExit(spanRows, 0, true, 98, 102);
+const exSell = ctx.resolveTradeExit(spanRows, 0, false, 98, 102);
+assert(exBuy.result === "loss" && exBuy.exitPrice === 98, "same-bar BUY books the stop, not the target (got " + exBuy.result + " @ " + exBuy.exitPrice + ")");
+assert(exSell.result === "loss" && exSell.exitPrice === 98, "same-bar SELL books the stop, not the target (got " + exSell.result + " @ " + exSell.exitPrice + ")");
+const exTargetFirst = ctx.resolveTradeExit([{ high: 100, low: 100 }, { high: 103, low: 99.5 }, { high: 105, low: 95 }], 0, true, 98, 102);
+assert(exTargetFirst.result === "win" && exTargetFirst.hitIndex === 1, "a bar touching only the target is still a win");
+const exPending = ctx.resolveTradeExit([{ high: 100, low: 100 }], 0, true, 98, 102);
+assert(exPending.result === "pending", "an unresolved trade stays pending");
+
+// ================= SCHEDULE RENDER IN A HIDDEN TAB =================
+// Regression: requestAnimationFrame never fires in a background tab, so the old
+// code left renderPending latched on and silently dropped every later render.
+vm.runInContext("renderPending = false;", ctx);
+let rafCalls = 0, timerCalls = 0;
+const savedRaf = ctx.requestAnimationFrame, savedSetTimeout = ctx.setTimeout;
+ctx.requestAnimationFrame = (fn) => { rafCalls++; return 0; };
+ctx.setTimeout = (fn, ms) => { timerCalls++; return 0; };
+vm.runInContext("scheduleRender();", ctx);
+vm.runInContext("scheduleRender();", ctx);  // must coalesce, not queue
+assert(rafCalls === 1 && timerCalls === 1, "scheduleRender coalesces while pending (raf=" + rafCalls + " timer=" + timerCalls + ")");
+// Capture the fallback callback instead of firing it inline, so the latched state
+// can be observed first. rAF stays suppressed, mimicking a hidden tab.
+let capturedFallback = null;
+ctx.setTimeout = (fn, ms) => { capturedFallback = fn; return 7; };
+vm.runInContext("__renderCalls = 0; __realRender = render; render = function () { __renderCalls++; };", ctx);
+vm.runInContext("renderPending = false;", ctx);
+vm.runInContext("scheduleRender();", ctx);
+const latchBefore = vm.runInContext("renderPending", ctx);
+assert(typeof capturedFallback === "function", "a timer fallback is registered when rAF is pending");
+capturedFallback();  // simulate the hidden tab's timer finally firing
+const afterFallback = vm.runInContext("renderPending", ctx);
+const renderCalls = vm.runInContext("__renderCalls", ctx);
+vm.runInContext("render = __realRender;", ctx);
+assert(latchBefore === true && afterFallback === false, "the timer fallback clears renderPending so later renders are not dropped");
+assert(renderCalls >= 1, "the timer fallback actually performs the deferred render (" + renderCalls + " call)");
+ctx.requestAnimationFrame = savedRaf;
+ctx.setTimeout = savedSetTimeout;
+vm.runInContext("renderPending = false;", ctx);
+
+// ================= KELLY SIZING TOGGLE =================
+// Regression: the Kelly checkbox only relabelled the card; the recommended size
+// stayed on the fixed-fractional value.
+const kellyCase = vm.runInContext(`(() => {
+  const e0 = new Date(2020, 0, 1).getTime();
+  const hist = (result) => ({
+    pair: "EUR/USD", direction: "BUY", result, entry: 100, stop: 98, target: 106,
+    confidence: 70, risk: "Low", volatilityPct: 1, buyScore: 4, sellScore: 1,
+    reasons: [], timestamp: new Date(e0), id: Math.random(),
+  });
+  autoScan.history = [hist("win"), hist("win"), hist("win"), hist("loss"), hist("win")];
+  state.base = "EUR"; state.quote = "USD";
+  state.rows = ${JSON.stringify(upRows)};
+  document.getElementById("root").innerHTML = "";
+  const out = {};
+  kellyEnabled = false; render();
+  out.fixed = document.getElementById("root").innerHTML;
+  kellyEnabled = true; render();
+  out.kelly = document.getElementById("root").innerHTML;
+  return out;
+})()`, ctx);
+const grabUnits = (html) => {
+  const m = /font-size:\.85rem[^>]*>([\d,]+)\s*units</.exec(html || "");
+  return m ? Number(m[1].replace(/,/g, "")) : null;
+};
+const fixedUnits = grabUnits(kellyCase.fixed), kellyUnits = grabUnits(kellyCase.kelly);
+assert(kellyCase.fixed !== null && kellyCase.kelly !== null, "risk panel renders a position size in both modes");
+assert(kellyCase.fixed.includes("Position Size (Fixed)") && kellyCase.kelly.includes("Position Size (Kelly)"), "Kelly toggle swaps the card label");
+assert(fixedUnits !== kellyUnits, "Kelly toggle changes the recommended size (" + fixedUnits + " vs " + kellyUnits + ")");
+assert(kellyUnits === 0 || kellyUnits > 0, "Kelly size is a finite number");
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
