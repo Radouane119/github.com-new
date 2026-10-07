@@ -361,14 +361,17 @@ assert(stale([{ close: 1.18 }], "1h") === false, "series without a usable stamp 
 
 console.log("");
 console.log("--- M21: deriveCrossSeries maths ---");
-const H = 3600000;
+// Fixed timestamps: building these from Date.now() lets a millisecond tick
+// between the two legs desynchronise them and make the test flaky.
+const T0 = "2024-03-01T10:00:00.000Z";
+const T1 = "2024-03-01T11:00:00.000Z";
 const legA = [
-  { time: new Date(Date.now() - 2 * H).toISOString(), open: 1.10, high: 1.20, low: 1.05, close: 1.15, volume: 900 },
-  { time: new Date(Date.now() - H).toISOString(), open: 1.15, high: 1.25, low: 1.10, close: 1.20, volume: 800 },
+  { time: T0, date: T0.slice(0, 10), open: 1.10, high: 1.20, low: 1.05, close: 1.15, volume: 900 },
+  { time: T1, date: T1.slice(0, 10), open: 1.15, high: 1.25, low: 1.10, close: 1.20, volume: 800 },
 ];
 const legB = [
-  { time: new Date(Date.now() - 2 * H).toISOString(), open: 2.50, high: 2.60, low: 2.40, close: 2.55, volume: 700 },
-  { time: new Date(Date.now() - H).toISOString(), open: 2.55, high: 2.70, low: 2.50, close: 2.60, volume: 600 },
+  { time: T0, date: T0.slice(0, 10), open: 2.50, high: 2.60, low: 2.40, close: 2.55, volume: 700 },
+  { time: T1, date: T1.slice(0, 10), open: 2.55, high: 2.70, low: 2.50, close: 2.60, volume: 600 },
 ];
 const cross = ctx.deriveCrossSeries(legA, legB);
 assert(cross.length === 2, "deriveCrossSeries keeps every timestamp-aligned bar, got " + cross.length);
@@ -443,6 +446,62 @@ const fxNotice = vm.runInContext(`(() => {
 assert(fxNotice.ok === true, "FX intraday state can be staged for a fallback load");
 const hasDailyFallback = /catch \(intradayError\)[\s\S]{0,600}?fetchFxRows\(base, quote\)[\s\S]{0,400}?state\.timeframe = "1d"/.test(js);
 assert(hasDailyFallback, "failed intraday FX degrades to daily ECB rates instead of demo data");
+
+console.log("");
+console.log("--- M25: signal history records BUY and SELL only ---");
+const histSnapshot = vm.runInContext("autoScan.history.map(e => ({...e}))", ctx);
+const savedHistRaw = ls.get("signalHistory");
+const histLen = () => vm.runInContext("autoScan.history.length", ctx);
+const countDir = (d) => vm.runInContext(`autoScan.history.filter(e => e.direction === ${JSON.stringify(d)}).length`, ctx);
+
+assert(ctx.addSignalToHistory("EUR/USD", null) === false, "a null task is not recorded");
+assert(ctx.addSignalToHistory("EUR/USD", { direction: "WAIT" }) === false, "a WAIT task is not recorded");
+const lenAfterWait = histLen();
+for (let i = 0; i < 5; i++) ctx.addSignalToHistory("EUR/USD", { direction: "WAIT", confidence: 50 });
+assert(histLen() === lenAfterWait, "five WAIT evaluations leave history untouched, got " + histLen() + " vs " + lenAfterWait);
+
+const buyTask = { direction: "BUY", confidence: 80, risk: "Low", entry: 1.1, stop: 1.09, target: 1.13 };
+assert(ctx.addSignalToHistory("EUR/USD", buyTask) === true, "a BUY task is recorded");
+assert(histLen() === lenAfterWait + 1, "history grew by one for the BUY, got " + histLen());
+assert(ctx.addSignalToHistory("GBP/USD", { direction: "SELL", confidence: 74, risk: "Low" }) === true, "a SELL task is recorded");
+assert(histLen() === lenAfterWait + 2, "history grew by two, got " + histLen());
+assert(countDir("BUY") > 0 && countDir("SELL") > 0, "BUY and SELL entries are present");
+assert(countDir("WAIT") === 0, "no WAIT entry exists after recording, got " + countDir("WAIT"));
+
+const demoTask = vm.runInContext(`(() => {
+  const cfg = loadStrategyConfig();
+  state.rows = ${JSON.stringify(
+    Array.from({ length: 200 }, (_, i) => {
+      const close = 100 + i * 0.35;
+      return { date: "2024-01-01", time: new Date(Date.UTC(2024, 0, 1, i)).toISOString(), open: close - 0.35, high: close + 0.2, low: close - 0.2, close, volume: 1000 };
+    })
+  )};
+  state.isDemo = true;
+  const a = analyze(state.rows, cfg, "NZD/USD", true);
+  state.isDemo = false;
+  return a;
+})()`, ctx);
+const lenBeforeDemo = histLen();
+const demoAdded = ctx.addSignalToHistory("NZD/USD", demoTask);
+assert(demoTask.direction === "WAIT", "demo-suppressed analysis yields WAIT, got " + demoTask.direction);
+assert(demoAdded === false, "a demo-suppressed result is not recorded");
+assert(histLen() === lenBeforeDemo, "demo output does not pad history");
+
+// Persisted WAIT entries from earlier builds are purged on load. ids double as
+// creation timestamps, so they must be recent to clear the 14-day cutoff.
+const freshId = Date.now();
+ls.set("signalHistory", JSON.stringify([
+  { id: freshId - 2, timestamp: freshId - 2, pair: "EUR/USD", direction: "WAIT", result: "pending" },
+  { id: freshId - 1, timestamp: freshId - 1, pair: "EUR/USD", direction: "BUY", result: "pending" },
+  { id: freshId, timestamp: freshId, pair: "GBP/USD", direction: "SELL", result: "pending" },
+]));
+vm.runInContext("loadHistory()", ctx);
+assert(histLen() === 2, "loadHistory drops persisted WAIT entries, got " + histLen());
+assert(countDir("WAIT") === 0, "loaded history contains no WAIT entries");
+
+// restore for any later assertions
+vm.runInContext("autoScan.history = " + JSON.stringify(histSnapshot) + "; autoScan.history.forEach(e => e.timestamp = new Date(e.timestamp));", ctx);
+if (savedHistRaw !== undefined) ls.set("signalHistory", savedHistRaw); else ls.delete("signalHistory");
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);

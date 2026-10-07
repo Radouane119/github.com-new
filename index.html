@@ -2686,6 +2686,9 @@ function updateScanUI() {
 
 function addSignalToHistory(pair, task) {
   const direction = task?.direction ?? "WAIT";
+  // Only actionable setups belong in history. WAIT means "stand aside", so
+  // recording it would pad the log with non-signals and with demo-data noise.
+  if (direction === "WAIT") return false;
   const lastForPair = autoScan.history.find(e => e.pair === pair);
   if (lastForPair && lastForPair.direction === direction && lastForPair.result === "pending") {
     Object.assign(lastForPair, {
@@ -2750,7 +2753,10 @@ function loadHistory() {
       autoScan.history = JSON.parse(saved);
       autoScan.history.forEach(e => e.timestamp = new Date(e.timestamp));
       const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-      autoScan.history = autoScan.history.filter(e => e.result !== "pending" || (e.id || 0) > cutoff);
+      const before = autoScan.history.length;
+      autoScan.history = autoScan.history.filter(e => e && e.direction !== "WAIT" && (e.result !== "pending" || (e.id || 0) > cutoff));
+      // Drop WAIT entries recorded by earlier builds so the log reflects BUY/SELL only.
+      if (autoScan.history.length !== before) saveHistory();
     }
   } catch {}
   mlLoad();
@@ -2786,7 +2792,7 @@ function importAllData(json) {
   try {
     const data = JSON.parse(json);
     if (!Array.isArray(data.history) || !Array.isArray(data.positions)) throw new Error("missing history or positions");
-    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) })).filter(e => !Number.isNaN(e.timestamp.getTime()));
+    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) })).filter(e => e.direction !== "WAIT" && !Number.isNaN(e.timestamp.getTime()));
     positions = data.positions.map(p => ({ ...p, openedAt: new Date(p.openedAt), closedAt: p.closedAt ? new Date(p.closedAt) : null })).filter(p => !Number.isNaN(p.openedAt.getTime()));
     if (data.watchlist) watchlist = data.watchlist;
     if (data.alerts) alerts = data.alerts;
