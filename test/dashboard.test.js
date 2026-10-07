@@ -504,5 +504,22 @@ vm.runInContext("autoScan.history = " + JSON.stringify(histSnapshot) + "; autoSc
 if (savedHistRaw !== undefined) ls.set("signalHistory", savedHistRaw); else ls.delete("signalHistory");
 
 console.log("");
+console.log("--- M26: render survives empty rows when the ML model is trained ---");
+// Regression: with a trained model, the risk section's "·ML" marker read
+// analysis2.ml on the null produced for empty rows, so every fresh load() tore
+// the dashboard down before the first bar arrived.
+const mlBefore = vm.runInContext("({ trained: mlModel.trained, n: mlModel.n, minSamples: mlModel.minSamples })", ctx);
+let renderThrew = null;
+try {
+  vm.runInContext(
+    "mlModel.trained = true; mlModel.n = 12; mlModel.minSamples = 8; mlFilterEnabled = false; state.timeframe = '1h'; state.rows = []; state.status = 'loading'; state.error = ''; state.notice = ''; state.source = ''; document.getElementById('root').innerHTML = ''; render();",
+    ctx
+  );
+} catch (e) { renderThrew = e && e.message; }
+assert(renderThrew === null, "render() does not throw when ML is trained and rows are empty, got: " + renderThrew);
+assert(vm.runInContext("document.getElementById('root').innerHTML", ctx) !== "", "render still writes the shell around a loading state");
+vm.runInContext("mlModel.trained = " + mlBefore.trained + "; mlModel.n = " + mlBefore.n + "; mlModel.minSamples = " + mlBefore.minSamples + ";", ctx);
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
