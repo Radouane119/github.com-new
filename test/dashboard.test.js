@@ -571,6 +571,96 @@ ctx.fetchFxIntradayCross = realFxIntraday;
 ctx.fetch = () => new Promise(() => {});
 
 console.log("");
+console.log("--- M28: live FX prices move instead of freezing on daily ECB ---");
+// fetchTwelveDataPrice: the 1-credit /price feed used for Binance-uncovered FX.
+vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = '';", ctx);
+assert(await ctx.fetchTwelveDataPrice("EUR", "JPY") === null, "a disabled price feed returns null");
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = 'TPKEY';", ctx);
+ctx.fetch = (url) => {
+  const u = String(url);
+  if (u.includes("api.twelvedata.com/price")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ status: "ok", price: "169.12" }) });
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const tp1 = await ctx.fetchTwelveDataPrice("EUR", "JPY");
+assert(tp1 && tp1.price === 169.12, "Twelve Data /price maps to a number, got " + (tp1 && tp1.price));
+const tp2 = await ctx.fetchTwelveDataPrice("EUR", "JPY");
+assert(tp2 === null, "price re-quotes at most once a minute (throttled), got " + tp2);
+
+// Regression: a missing quote leg (JPY/CHF/NZD/CAD) must not divide by 1 and
+// silently present EUR/USD as EUR/JPY. With Twelve Data off, a leg-less pair
+// must fall through to the Frankfurter daily rate instead of a ~1.09 ratio.
+vm.runInContext("fxApiPrefs.enabled = false;", ctx);
+const realLegFn = ctx.fetchFxUsdLegSeries;
+ctx.fetchFxUsdLegSeries = async (cur, interval) =>
+  cur === "EUR" ? [{ time: "2026-10-08T14:00:00Z", close: 1.09 }, { time: "2026-10-08T14:01:00Z", close: 1.09 }] : null;
+ctx.fetch = (url) => {
+  const u = String(url);
+  if (u.includes("frankfurter.dev/v1/latest")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ base: "EUR", rates: { JPY: 169.5, CHF: 0.94 } }) });
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const euroJpy = await ctx.fetchLivePrice("EUR", "JPY");
+assert(euroJpy && euroJpy.price === 169.5, "leg-less EUR/JPY falls back to the 169.x daily rate, not the EUR/USD ratio, got " + (euroJpy && euroJpy.price));
+const eurChf = await ctx.fetchLivePrice("EUR", "CHF");
+assert(eurChf && eurChf.price === 0.94, "same fallback applies to other missing legs (EUR/CHF), got " + (eurChf && eurChf.price));
+
+// refreshFxPositionPrices writes a live marker but keeps the daily vault intact.
+vm.runInContext(
+  `positions.push({ id: 99001, pair: "EUR/JPY", direction: "SELL", entry: 170, stop: 171, target: 169, openedAt: new Date(), closedAt: null, pnl: null, pnlPct: null });`,
+  ctx
+);
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = 'TPKEY';", ctx);
+const beforeSlots = vm.runInContext("Object.keys(multiScan.results).length", ctx);
+await ctx.refreshFxPositionPrices();
+const slot = vm.runInContext("multiScan.results['EUR/JPY']", ctx);
+assert(slot && Number.isFinite(slot.price) && slot.price > 0, "open EUR/JPY position gets a live price slot, got " + (slot && slot.price));
+assert(slot.priceUpdatedAt > 0, "the position slot records when it was last re-quoted");
+vm.runInContext("positions = positions.filter(p => p.id !== 99001);", ctx);
+ctx.fetchFxUsdLegSeries = realLegFn;
+ctx.fetch = () => new Promise(() => {});
+
+console.log("");
+console.log("--- M29: scan-all honours a per-timeframe option (1M..1D) ---");
+assert(vm.runInContext("multiScan.timeframe", ctx) === "1d", "scan-all defaults to daily");
+ls.set("overviewPrefs", JSON.stringify({ sortMode: "name", filter: "SELL", timeframe: "15m" }));
+vm.runInContext("loadOverviewPrefs()", ctx);
+assert(vm.runInContext("multiScan.timeframe", ctx) === "15m", "a persisted scan timeframe is restored");
+vm.runInContext("multiScan.timeframe = '1h'; saveOverviewPrefs();", ctx);
+assert(JSON.parse(ls.get("overviewPrefs")).timeframe === "1h", "the scan timeframe is persisted");
+ls.set("overviewPrefs", JSON.stringify({ timeframe: "9z" }));
+vm.runInContext("loadOverviewPrefs()", ctx);
+assert(vm.runInContext("multiScan.timeframe", ctx) === "1h", "an invalid timeframe value is rejected");
+
+const realBinRows = ctx.fetchBinanceRows;
+const realFxRows = ctx.fetchFxRows;
+const realForexRows = ctx.fetchForexRows;
+const binTfs = [];
+ctx.fetchBinanceRows = async (b, q, tf) => { binTfs.push(tf || "1d"); return [{ time: "t", close: 100 }]; };
+let fxDay = 0;
+const forexCalls = [];
+ctx.fetchFxRows = async () => { fxDay++; return [{ time: "t", close: 169 }]; };
+ctx.fetchForexRows = async (b, q, tf) => { forexCalls.push([b, q, tf]); return [{ time: "t", close: 169 }]; };
+await ctx.fetchOverviewRows("BTC/USD", "15m");
+await ctx.fetchOverviewRows("BTC/USD", "1d");
+assert(binTfs[0] === "15m" && binTfs[1] === "1d", "crypto scans use the selected timeframe, got " + binTfs.join(","));
+await ctx.fetchOverviewRows("EUR/JPY", "1d");
+await ctx.fetchOverviewRows("EUR/JPY", "15m");
+assert(fxDay === 1, "daily FX scans use ECB daily rows, got " + fxDay + " daily fetches");
+assert(forexCalls.length === 1 && forexCalls[0][0] === "EUR" && forexCalls[0][2] === "15m", "intraday FX scans route through fetchForexRows, got " + JSON.stringify(forexCalls));
+
+ctx.fetchBinanceRows = async (b, q, tf) => Array.from({ length: 200 }, (_, i) => { const close = 100 + i * 0.2; return { time: "t" + i, open: close - 0.1, high: close + 0.2, low: close - 0.2, close, volume: 1000 }; });
+const realAnalyze = ctx.analyze;
+ctx.analyze = () => ({ direction: "BUY", confidence: 80 });
+const cfg = vm.runInContext("loadStrategyConfig()", ctx);
+const mtfAdj = await ctx.computeMtfAdjustment("BTC", "USD", cfg, "BUY", ["1d", "4h"]);
+assert(mtfAdj.score === 30 && mtfAdj.matched === 2, "aligned contexts boost the MTF score, got " + JSON.stringify(mtfAdj));
+const mtfAdjN = await ctx.computeMtfAdjustment("BTC", "USD", cfg, "SELL", ["1d", "4h"]);
+assert(mtfAdjN.score === -30 && mtfAdjN.matched === 0, "misaligned contexts subtract from the MTF score, got " + JSON.stringify(mtfAdjN));
+ctx.analyze = realAnalyze;
+ctx.fetchBinanceRows = realBinRows;
+ctx.fetchFxRows = realFxRows;
+ctx.fetchForexRows = realForexRows;
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
 })().catch((e) => { console.error("FAIL: unhandled error", e && e.message); process.exit(1); });

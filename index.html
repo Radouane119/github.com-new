@@ -834,17 +834,18 @@ const multiScan = {
   watchlistOnly: false,
   sortMode: "conf",
   filter: "all",
+  timeframe: "1d",
 };
 
 function loadOverviewPrefs() {
   try {
     const s = localStorage.getItem("overviewPrefs");
-    if (s) { const p = JSON.parse(s); if (p.sortMode === "conf" || p.sortMode === "dir" || p.sortMode === "name") multiScan.sortMode = p.sortMode; if (p.filter === "all" || p.filter === "BUY" || p.filter === "SELL" || p.filter === "WAIT") multiScan.filter = p.filter; }
+    if (s) { const p = JSON.parse(s); if (p.sortMode === "conf" || p.sortMode === "dir" || p.sortMode === "name") multiScan.sortMode = p.sortMode; if (p.filter === "all" || p.filter === "BUY" || p.filter === "SELL" || p.filter === "WAIT") multiScan.filter = p.filter; if (["1m","5m","15m","30m","1h","4h","1d"].includes(p.timeframe)) multiScan.timeframe = p.timeframe; }
   } catch {}
 }
 
 function saveOverviewPrefs() {
-  try { localStorage.setItem("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter })); } catch {}
+  try { localStorage.setItem("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter, timeframe: multiScan.timeframe })); } catch {}
 }
 
 function overviewFilteredPairs() {
@@ -1176,16 +1177,16 @@ function mtfAgreementBonus(mtf, dir) {
   return total > 0 ? Math.round(adj / total * 25) : 0;
 }
 
-async function computeMtfAdjustment(base, quote, cfg, dir) {
+async function computeMtfAdjustment(base, quote, cfg, dir, contextTfs = ["4h", "1h"]) {
   try {
-    const tfs = [{ tf: "4h", w: 12 }, { tf: "1h", w: 6 }];
     let adj = 0;
     let matched = 0;
     let total = 0;
-    for (const { tf, w } of tfs) {
+    for (const tf of contextTfs) {
       const rows = await fetchBinanceRows(base, quote, tf);
       const a = rows.length >= 80 ? analyze(rows, cfg) : null;
       if (!a || a.direction === "WAIT") continue;
+      const w = mtfWeightOf(tf);
       total += w;
       if (a.direction === dir) { adj += w; matched++; }
       else adj -= w;
@@ -1444,6 +1445,26 @@ async function fetchTwelveDataRows(base, quote, interval) {
   return interval === "4h" ? bucketTo4h(rows) : rows;
 }
 
+// Lightweight live price from Twelve Data. The free plan allows 800 requests/day,
+// so each pair is re-quoted at most once a minute and the 30s live loop stays far
+// under budget. change is recomputed by the caller from the previous tick.
+const fxLiveThrottle = new Map();
+async function fetchTwelveDataPrice(base, quote) {
+  if (!fxApiPrefs.enabled || !fxApiPrefs.key) return null;
+  const key = `${base}/${quote}`;
+  const now = Date.now();
+  if (now - (fxLiveThrottle.get(key) || 0) < 60000) return null;
+  fxLiveThrottle.set(key, now);
+  const url = `https://api.twelvedata.com/price?symbol=${base}/${quote}&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
+  const price = Number(data.price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return { price, change: null };
+}
+
 const barStepMs = { "1m": 60000, "5m": 300000, "15m": 900000, "30m": 1800000, "1h": 3600000, "4h": 14400000, "1d": 86400000 };
 
 // Some exchange books are technically "live" but effectively dead. Binance's
@@ -1536,16 +1557,19 @@ async function fetchLivePrice(base, quote) {
     if (fxIntradayable(base, quote)) {
       // Intraday FX live price: derive from Binance USDT legs, which are
       // browser-readable. Yahoo is intentionally not used here (no CORS header).
+      // Only EUR, GBP and AUD have USDT legs, so quote legs like JPY/CHF/NZD/CAD
+      // are missing: dividing by 1 would silently present EUR/USD as EUR/JPY, so
+      // the ratio is used only when every non-USD leg resolves.
       try {
         const [legBase, legQuote] = await Promise.all([
           base === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(base, "1m").catch(() => null),
           quote === "USD" ? Promise.resolve(null) : fetchFxUsdLegSeries(quote, "1m").catch(() => null),
         ]);
-        if (base !== "USD" && legBase && legBase.length > 1) {
+        if (base !== "USD" && legBase && legBase.length > 1 && (quote === "USD" || (legQuote && legQuote.length > 1))) {
           const lastBase = legBase[legBase.length - 1].close;
           const priorBase = legBase[legBase.length - 2].close;
           const lastQuote = legQuote ? legQuote[legQuote.length - 1].close : 1;
-          const priorQuote = legQuote ? legQuote[legQuote.length - 1].close : 1;
+          const priorQuote = legQuote ? legQuote[legQuote.length - 2].close : 1;
           const price = lastBase / lastQuote;
           const prior = priorBase / priorQuote;
           if (Number.isFinite(price) && price > 0) {
@@ -1553,6 +1577,10 @@ async function fetchLivePrice(base, quote) {
           }
         }
       } catch {}
+      // No Binance legs (or a missing quote leg): the optional Twelve Data feed
+      // serves a live FX price for exactly these pairs.
+      const twelve = await fetchTwelveDataPrice(base, quote).catch(() => null);
+      if (twelve) return twelve;
     }
     try {
       const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`);
@@ -2594,6 +2622,9 @@ function render() {
             <button class="ov-wl-filter" style="background:${multiScan.watchlistOnly?'#1a3a2a':'#1a2533'};border:1px solid ${multiScan.watchlistOnly?'#2ea043':'#1f2a36'};color:${multiScan.watchlistOnly?'#3fb950':'#8c98a5'};padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">${multiScan.watchlistOnly ? '★ On' : '☆ All'}</button>
             <button class="icon-button" id="toggleScanConfig" title="Configure pairs">⚙</button>
             <button class="scan-button" id="scanAll" ${multiScan.scanning ? "disabled" : ""}><span class="dot ${multiScan.scanning ? 'active pulse' : ''}"></span>Scan all</button>
+            <select id="scanTfSel" title="Scan timeframe" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:2px 6px;color:#8c98a5;font-size:.62rem;font-family:inherit">
+              ${[["1m","1M"],["5m","5M"],["15m","15M"],["30m","30M"],["1h","1H"],["4h","4H"],["1d","1D"]].map(([v,l]) => `<option value="${v}" ${multiScan.timeframe === v ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
           </div>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:8px 12px 0">
@@ -2605,7 +2636,7 @@ function render() {
           </select>
         </div>
         ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
-        <div class="overview-grid">${(() => { const best = overviewBestPair(); return overviewFilteredPairs().sort(overviewSort).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const isBest = pair === best; const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}${isBest ? " ov-best" : ""}">${isBest && !r.loading ? `<div class="ov-best-badge">BEST</div>` : ""}<div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="4H: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} 4H</span>` : ''}${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join(""); })()}</div></div>
+        <div class="overview-grid">${(() => { const best = overviewBestPair(); return overviewFilteredPairs().sort(overviewSort).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const isBest = pair === best; const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}${isBest ? " ov-best" : ""}">${isBest && !r.loading ? `<div class="ov-best-badge">BEST</div>` : ""}<div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="${r.mtfTf || '4H'}: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} ${r.mtfTf || '4H'}</span>` : ''}${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join(""); })()}</div></div>
       </section>
 
       ${(() => { var pa = priceLevelAlerts; return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="priceAlertToggle"><div class="history-toggle-left"><h3>Price Level Alerts</h3><span class="history-count">' + pa.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="priceAlertBody"><div style="padding:10px 12px"><div class="price-alert-row"><select id="paPair" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem">' + scanPairs.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('') + '</select><select id="paDir"><option value="above">Above</option><option value="below">Below</option></select><input type="number" id="paPrice" placeholder="Price" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"><button class="scan-button" id="addPriceAlert" style="font-size:.7rem">+ Add</button></div>' + pa.map(function(a, i) { return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0e151e;font-size:.7rem"><span style="width:56px;color:#e6edf3;font-weight:600">' + a.pair + '</span><span style="color:' + (a.dir === 'above' ? '#3fb950' : '#f85149') + '">' + (a.dir === 'above' ? '\u2191' : '\u2193') + '</span><span style="color:#8c98a5">' + formatPrice(a.price, a.pair) + '</span><button data-rm-pa="' + i + '" style="background:transparent;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;margin-left:auto">\u2715</button></div>'; }).join('') + '</div></div></section>'; })()}
@@ -3533,23 +3564,39 @@ function scheduleRender() {
   requestAnimationFrame(flush);
 }
 
+async function fetchOverviewRows(pair, tf) {
+  const [base, quote] = pair.split("/");
+  if (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) {
+    return tf && tf !== "1d" ? await fetchBinanceRows(base, quote, tf) : await fetchBinanceRows(base, quote);
+  }
+  if (!tf || tf === "1d") return await fetchFxRows(base, quote);
+  return await fetchForexRows(base, quote, tf);
+}
+
+function mtfWeightOf(tf) {
+  return tf === "1d" ? 12 : tf === "4h" ? 10 : tf === "1h" ? 8 : 6;
+}
+
 async function scanPairForOverview(pair) {
   const [base, quote] = pair.split("/");
   try {
     const prevDir = multiScan.results[pair] && !multiScan.results[pair].loading ? multiScan.results[pair].direction : null;
     multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
     scheduleRender();
-    const rows = (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) ? await fetchBinanceRows(base, quote) : await fetchFxRows(base, quote);
+    const scanTf = multiScan.timeframe || "1d";
+    const ctxTfs = mtfContextTfs(scanTf).filter(t => t !== scanTf);
+    const ctxTf = ctxTfs[0] || "4h";
+    const rows = await fetchOverviewRows(pair, scanTf);
     const cfg = loadStrategyConfig();
     const analysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
     let mtfConf = 0;
     let a4h = null;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
-      const mtfAdj = await computeMtfAdjustment(base, quote, cfg, analysis.direction);
+      const mtfAdj = await computeMtfAdjustment(base, quote, cfg, analysis.direction, ctxTfs);
       mtfConf = mtfAdj.score;
       try {
-        const rows4h = await fetchBinanceRows(base, quote, "4h");
-        a4h = rows4h.length >= 80 ? analyze(rows4h, cfg, pair) : null;
+        const rowsCtx = await fetchBinanceRows(base, quote, ctxTf);
+        a4h = rowsCtx.length >= 80 ? analyze(rowsCtx, cfg, pair) : null;
       } catch {}
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
@@ -3564,7 +3611,7 @@ async function scanPairForOverview(pair) {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: conf,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
       entry: analysis?.entry, stop: analysis?.stop, target: analysis?.target,
-      mtf4h: analysis ? (a4h ? a4h.direction : null) : null,
+      mtf4h: analysis ? (a4h ? a4h.direction : null) : null, mtfTf: ctxTf,
     };
     if (isNew && task && task.direction !== "WAIT") notifySignal({ direction: task.direction, pair, confidence: task.confidence, risk: task.risk, entry: task.entry });
   } catch {
@@ -3644,6 +3691,7 @@ async function updateLivePrice() {
     livePrice.timestamp = new Date();
     if (multiScan.results[pair]) {
       multiScan.results[pair].price = result.price;
+      multiScan.results[pair].priceUpdatedAt = Date.now();
       if (result.change != null) multiScan.results[pair].change = result.change;
     }
     const pEl = document.getElementById(`op-${pair.replace("/","-")}`);
@@ -3656,6 +3704,26 @@ async function updateLivePrice() {
   }
   const el = document.getElementById("livePrice");
   if (el) renderLivePrice(el);
+  refreshFxPositionPrices().catch(() => {});
+}
+
+// The overview scanner prices FX from daily ECB candles, which update once a
+// day, while crypto's Binance candles move all day. So an open FX position would
+// sit frozen between scans. Seed those slots from a live-capable source at most
+// every two minutes: Binance legs (free) when the pair has both, otherwise the
+// optional Twelve Data price feed.
+async function refreshFxPositionPrices() {
+  const open = positions.filter(p => !p.closedAt);
+  for (const pos of open) {
+    const [b, q] = pos.pair.split("/");
+    if (!fxIntradayable(b, q)) continue;
+    const slot = multiScan.results[pos.pair] || {};
+    if (Date.now() - (slot.priceUpdatedAt || 0) < 120000) continue;
+    const r = await fetchLivePrice(b, q).catch(() => null);
+    if (r && Number.isFinite(r.price) && r.price > 0) {
+      multiScan.results[pos.pair] = Object.assign({}, slot, { price: r.price, priceUpdatedAt: Date.now() });
+    }
+  }
 }
 
 function renderLivePrice(el) {
@@ -4348,6 +4416,12 @@ function setupEvents() {
       multiScan.sortMode = event.target.value;
       saveOverviewPrefs();
       render();
+      return;
+    }
+    if (event.target.id === "scanTfSel") {
+      multiScan.timeframe = event.target.value;
+      saveOverviewPrefs();
+      scanAllPairs();
       return;
     }
     if (event.target.id === "fxApiEnable") {
