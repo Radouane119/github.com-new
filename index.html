@@ -722,6 +722,22 @@ let webhookUrl = "";
 function loadWebhook() { try { const s = localStorage.getItem("webhookUrl"); if (s) webhookUrl = s; } catch {} }
 function saveWebhook() { try { localStorage.setItem("webhookUrl", webhookUrl); } catch {} }
 
+// Optional browser-readable intraday FX feed. Twelve Data is the only free
+// source we found that serves intraday FX (down to 1 minute, EUR/JPY included)
+// with a real Access-Control-Allow-Origin header, so it reads directly from
+// fetch() with no proxy. The free plan allows 800 requests/day, ample for
+// interactive use. Without a key, FX pairs Binance cannot cover (JPY, CHF, CAD,
+// NZD crosses) keep degrading to daily ECB rates.
+const fxApiPrefs = { enabled: false, key: "" };
+let fxApiLastUsed = null;
+function loadFxApiPrefs() {
+  try {
+    const s = localStorage.getItem("fxApiPrefs");
+    if (s) { const p = JSON.parse(s); fxApiPrefs.enabled = !!p.enabled; fxApiPrefs.key = typeof p.key === "string" ? p.key : ""; }
+  } catch {}
+}
+function saveFxApiPrefs() { try { localStorage.setItem("fxApiPrefs", JSON.stringify(fxApiPrefs)); } catch {} }
+
 function loadRiskConfig() {
   try {
     const s = localStorage.getItem("riskConfig");
@@ -1315,6 +1331,7 @@ const fxUsdLegs = { EUR: "EURUSDT", GBP: "GBPUSDT", AUD: "AUDUSDT" };
 const fxUsdLegCache = new Map();
 
 function fxSourceLabel(base, quote) {
+  if (fxApiLastUsed) return fxApiLastUsed;
   const legs = [base, quote].filter((c) => c !== "USD" && fxUsdLegs[c]);
   return legs.length > 0 ? `Derived from Binance ${legs.map((c) => fxUsdLegs[c]).join("/")}` : "Binance";
 }
@@ -1385,16 +1402,46 @@ async function fetchFxIntradayCross(base, quote, interval) {
 
 async function fetchForexRows(base, quote, interval = "1d") {
   if (interval === "1d") return fetchFxRows(base, quote);
+  loadFxApiPrefs();
+  fxApiLastUsed = null;
   const binanceInterval = interval === "4h" ? "1h" : interval;
-  const derived = await fetchFxIntradayCross(base, quote, binanceInterval);
+  let derived = [];
+  try { derived = await fetchFxIntradayCross(base, quote, binanceInterval); } catch {}
   if (derived.length >= 80) return interval === "4h" ? bucketTo4h(derived) : derived;
-  // Both currencies must be quotable against USDT to build an intraday cross.
+  // Both currencies must be quotable against USDT to build a cross. When they are
+  // not, fall back to the optional Twelve Data feed before giving up.
+  const vendor = await fetchTwelveDataRows(base, quote, interval).catch(() => null);
+  if (vendor && vendor.length >= 80) return vendor;
   const missing = [base, quote].filter((c) => c !== "USD" && !fxUsdLegs[c]);
   throw new Error(
     missing.length > 0
-      ? `No browser-readable intraday feed for ${missing.join("/")} (Binance USDT legs cover ${Object.keys(fxUsdLegs).join(", ")}).`
+      ? `No browser-readable intraday feed for ${missing.join("/")} (Binance USDT legs cover ${Object.keys(fxUsdLegs).join(", ")}${fxApiPrefs.enabled && fxApiPrefs.key ? " and Twelve Data returned nothing usable" : "; add a Twelve Data key in Settings to enable it"}).`
       : `No intraday cross data for ${base}/${quote}.`
   );
+}
+
+const fxApiIntervalMap = { "1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "1h" };
+
+async function fetchTwelveDataRows(base, quote, interval) {
+  if (!fxApiPrefs.enabled || !fxApiPrefs.key) return null;
+  const apiInterval = fxApiIntervalMap[interval] || "1h";
+  const url = `https://api.twelvedata.com/time_series?symbol=${base}/${quote}&interval=${apiInterval}&outputsize=1000&timezone=UTC&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
+  const rows = [];
+  for (const v of Array.isArray(data.values) ? data.values : []) {
+    const t = v && v.datetime;
+    if (!t) continue;
+    const open = Number(v.open), high = Number(v.high), low = Number(v.low), close = Number(v.close);
+    if (![open, high, low, close].every((n) => Number.isFinite(n) && n > 0)) continue;
+    rows.push({ date: String(t).slice(0, 10), time: t, open, high, low, close, volume: Number(v.volume) || 0 });
+  }
+  rows.reverse();
+  if (rows.length < 80) return null;
+  fxApiLastUsed = "Twelve Data";
+  return interval === "4h" ? bucketTo4h(rows) : rows;
 }
 
 const barStepMs = { "1m": 60000, "5m": 300000, "15m": 900000, "30m": 1800000, "1h": 3600000, "4h": 14400000, "1d": 86400000 };
@@ -2445,6 +2492,15 @@ function render() {
           <div style="display:flex;gap:6px">
             <input type="url" id="webhookInput" value="${webhookUrl}" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
             <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
+          </div>
+          <div style="border-top:1px solid #1f2a36;padding-top:6px;margin-top:4px">
+            <label style="font-size:.72rem;color:#8c98a5">FX intraday feed (Twelve Data)</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input type="checkbox" id="fxApiEnable" ${fxApiPrefs.enabled ? "checked" : ""} title="Enable browser-readable intraday FX (EUR/JPY and other Binance-uncovered pairs)" style="accent-color:#33c2ff">
+              <input type="text" id="fxApiKey" value="${fxApiPrefs.key}" placeholder="Free key from twelvedata.com" spellcheck="false" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+              <button class="scan-button" id="testFxApi" style="white-space:nowrap">Test</button>
+            </div>
+            <div style="font-size:.66rem;color:#5a6673;margin-top:3px">Optional. Unlocks 1m–4h for FX pairs Binance cannot cover (JPY, CHF, CAD, NZD crosses). Without a key those pairs keep showing daily rates.</div>
           </div>
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="scan-button" id="exportData" style="font-size:.7rem">⬇ Export data</button>
@@ -4204,6 +4260,10 @@ function setupEvents() {
       webhookUrl = event.target.value;
       saveWebhook();
     }
+    if (event.target.id === "fxApiKey") {
+      fxApiPrefs.key = event.target.value;
+      saveFxApiPrefs();
+    }
     if (event.target.id === "strategyNameInput") {
       strategyName = event.target.value;
       saveStrategyName();
@@ -4287,6 +4347,12 @@ function setupEvents() {
     if (event.target.id === "ovSort") {
       multiScan.sortMode = event.target.value;
       saveOverviewPrefs();
+      render();
+      return;
+    }
+    if (event.target.id === "fxApiEnable") {
+      fxApiPrefs.enabled = event.target.checked;
+      saveFxApiPrefs();
       render();
       return;
     }
@@ -4430,6 +4496,26 @@ function setupEvents() {
         saveWebhook();
         sendWebhook({ direction: "TEST", pair: "Webhook", confidence: 100, risk: "Test", entry: null, stop: null, target: null });
       }
+      return;
+    }
+    if (target.id === "testFxApi") {
+      const keyInput = document.getElementById("fxApiKey");
+      const enableBox = document.getElementById("fxApiEnable");
+      if (keyInput) fxApiPrefs.key = keyInput.value;
+      if (enableBox) fxApiPrefs.enabled = enableBox.checked;
+      saveFxApiPrefs();
+      (async () => {
+        try {
+          const rows = await fetchTwelveDataRows("EUR", "JPY", "1h");
+          if (rows && rows.length >= 80) {
+            if (window.showToast) showToast(`Twelve Data OK: ${rows.length} EUR/JPY 1h bars`, "ok");
+          } else {
+            throw new Error(rows ? "No usable bars returned" : "Enter a key or tick enable first");
+          }
+        } catch (e) {
+          if (window.showToast) showToast("Twelve Data failed: " + (e && e.message ? e.message : e), "error");
+        }
+      })();
       return;
     }
     if (target.id === "exportData") { exportAllData(); return; }
@@ -4636,6 +4722,7 @@ document.addEventListener("keydown", (e) => {
 loadHistory();
 loadPositions();
 loadWebhook();
+loadFxApiPrefs();
 loadAlertConditions();
 loadBacktestMulti();
 loadAlertHistory();

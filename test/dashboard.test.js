@@ -521,5 +521,56 @@ assert(vm.runInContext("document.getElementById('root').innerHTML", ctx) !== "",
 vm.runInContext("mlModel.trained = " + mlBefore.trained + "; mlModel.n = " + mlBefore.n + "; mlModel.minSamples = " + mlBefore.minSamples + ";", ctx);
 
 console.log("");
+console.log("--- M27: Twelve Data intraday FX feed ---");
+(async () => {
+// The only browser-readable intraday FX source (EUR/JPY etc. down to 1m), used
+// when Binance USDT legs cannot build a cross. Free tier: 800 requests/day.
+vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = '';", ctx);
+assert(await ctx.fetchTwelveDataRows("EUR", "JPY", "1h") === null, "a disabled feed returns null without fetching");
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = '';", ctx);
+assert(await ctx.fetchTwelveDataRows("EUR", "JPY", "1h") === null, "a feed with no key returns null");
+
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = 'TESTKEY';", ctx);
+const tdRequests = [];
+ctx.fetch = (url) => {
+  tdRequests.push(String(url));
+  const o = 100.62, h = 100.67, l = 100.57, c = 100.63;
+  const t = (k) => new Date(Date.UTC(2026, 9, 8, 15, 0, 0) - k * 60000).toISOString().replace(".000Z", "").replace("T", " ");
+  const values = Array.from({ length: 85 }, (_, i) => ({ datetime: t(i), open: String(o), high: String(h), low: String(l), close: String(c), volume: String(100 + i) }));
+  return Promise.resolve({ ok: true, status: 200, json: async () => ({ status: "ok", values }) });
+};
+const mapped = await ctx.fetchTwelveDataRows("EUR", "JPY", "1h");
+assert(tdRequests.length === 1 && tdRequests[0].includes("EUR/JPY") && tdRequests[0].includes("interval=1h") && tdRequests[0].includes("TESTKEY"), "the Twelve Data URL carries symbol, interval and key");
+assert(mapped && mapped.length === 85, "85 percentile bars are mapped, got " + (mapped && mapped.length));
+assert(mapped[84].time.startsWith("2026-10-08 15:00") || mapped[0].time.startsWith("2026-10-08 15:00"), "bars are sorted ascending (oldest first)");
+assert(Number(mapped[0].close) >= 99 && Number(mapped[0].close) <= 103, "close is parsed to a number");
+assert(mapped.every((r) => r.open > 0 && r.high > 0 && r.low > 0 && r.high >= Math.max(r.open, r.close) && r.low <= Math.min(r.open, r.close)), "every mapped bar has valid OHLC geometry");
+assert(vm.runInContext("fxApiLastUsed", ctx) === "Twelve Data", "fxApiLastUsed is set so the source label reports Twelve Data");
+
+// A clean entry with the key cleared still refuses the call.
+vm.runInContext("fxApiPrefs.key = '';", ctx);
+assert(await ctx.fetchTwelveDataRows("EUR", "JPY", "1h") === null, "a cleared key is not sent");
+vm.runInContext("fxApiPrefs.key = 'TESTKEY';", ctx);
+
+// fetchForexRows: Binance-derived cross is empty for JPY, so the vendor must
+// supply the intraday series; without a key the pair degrades to a thrown error
+// whose message points the user at Settings rather than at fake data.
+const realFxIntraday = ctx.fetchFxIntradayCross;
+ctx.fetchFxIntradayCross = async () => [];
+let vendorRows = null;
+let vendorErr = null;
+vm.runInContext("fxApiLastUsed = null;", ctx);
+try { vendorRows = await ctx.fetchForexRows("EUR", "JPY", "1h"); } catch (e) { vendorErr = e && e.message; }
+assert(vendorRows && vendorRows.length === 85, "fetchForexRows falls through to the vendor cross, got " + (vendorErr || (vendorRows && vendorRows.length)));
+assert(vm.runInContext("fxSourceLabel('EUR','JPY',null)", ctx) === "Twelve Data", "the source label reports Twelve Data for a vendor-fed cross");
+vm.runInContext("fxApiPrefs.enabled = false;", ctx);
+try { await ctx.fetchForexRows("EUR", "JPY", "1h"); vendorRows = "FAILED"; } catch (e) { vendorErr = e && e.message; }
+assert(vendorErr && vendorErr.includes("Twelve Data"), "without a key the EUR/JPY error points to the Twelve Data setting, got: " + vendorErr);
+vm.runInContext("fxApiPrefs.enabled = true;", ctx);
+ctx.fetchFxIntradayCross = realFxIntraday;
+ctx.fetch = () => new Promise(() => {});
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
+})().catch((e) => { console.error("FAIL: unhandled error", e && e.message); process.exit(1); });
