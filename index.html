@@ -354,7 +354,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 <body>
 <div id="root"></div>
 <script>
-const currencies = ["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD"];
+const currencies = ["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX",
+  "LTC", "BCH", "XLM", "TRX", "ETC", "FIL", "HBAR", "ICP", "VET", "ALGO", "GRT", "SAND", "MANA", "IMX", "THETA", "RUNE", "FLOKI", "WLD", "TON", "EOS", "XTZ", "CHZ", "GALA", "APE", "DYDX", "PYTH", "JTO", "ORDI", "PENDLE", "EIGEN",
+  "EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD", "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RON", "ISK", "BGN", "TRY", "ZAR", "MXN", "BRL", "CNY", "HKD", "THB", "INR", "KRW", "ILS"];
 const names = {
   XAU: "Gold",
   BTC: "Bitcoin",
@@ -366,6 +368,66 @@ const names = {
   DOT: "Polkadot",
   LINK: "Chainlink",
   AVAX: "Avalanche",
+  LTC: "Litecoin",
+  BCH: "Bitcoin Cash",
+  XLM: "Stellar",
+  TRX: "TRON",
+  ETC: "Ethereum Classic",
+  FIL: "Filecoin",
+  HBAR: "Hedera",
+  ICP: "Internet Computer",
+  VET: "VeChain",
+  ALGO: "Algorand",
+  GRT: "The Graph",
+  SAND: "The Sandbox",
+  MANA: "Decentraland",
+  IMX: "Immutable",
+  THETA: "Theta",
+  RUNE: "THORChain",
+  FLOKI: "Floki",
+  WLD: "Worldcoin",
+  TON: "Toncoin",
+  EOS: "EOS",
+  XTZ: "Tezos",
+  CHZ: "Chiliz",
+  GALA: "Gala",
+  APE: "ApeCoin",
+  DYDX: "dYdX",
+  PYTH: "Pyth Network",
+  JTO: "Jito",
+  ORDI: "ORDI",
+  PENDLE: "Pendle",
+  EIGEN: "EigenLayer",
+  SHIB: "Shiba Inu",
+  MATIC: "Polygon",
+  POL: "Polygon Ecosystem",
+  UNI: "Uniswap",
+  ATOM: "Cosmos",
+  LUNC: "Terra Classic",
+  NEAR: "NEAR Protocol",
+  APT: "Aptos",
+  ARB: "Arbitrum",
+  OP: "Optimism",
+  INJ: "Injective",
+  SUI: "Sui",
+  FET: "Artificial Superintelligence",
+  WIF: "dogwifhat",
+  PEPE: "Pepe",
+  BONK: "Bonk",
+  ETHFI: "Ether.fi",
+  TIA: "Celestia",
+  SEI: "Sei",
+  JUP: "Jupiter",
+  RENDER: "Render",
+  ONDO: "Ondo",
+  TAO: "Bittensor",
+  JASMY: "JasmyCoin",
+  ENA: "Ethena",
+  AAVE: "Aave",
+  MKR: "Maker",
+  CRV: "Curve DAO",
+  LDO: "Lido DAO",
+  STX: "Stacks",
   EUR: "Euro",
   USD: "US Dollar",
   GBP: "British Pound",
@@ -375,9 +437,28 @@ const names = {
   CHF: "Swiss Franc",
   NZD: "New Zealand Dollar",
   SGD: "Singapore Dollar",
+  NOK: "Norwegian Krone",
+  SEK: "Swedish Krona",
+  DKK: "Danish Krone",
+  PLN: "Polish Zloty",
+  CZK: "Czech Koruna",
+  HUF: "Hungarian Forint",
+  RON: "Romanian Leu",
+  ISK: "Icelandic Krona",
+  BGN: "Bulgarian Lev",
+  TRY: "Turkish Lira",
+  ZAR: "South African Rand",
+  MXN: "Mexican Peso",
+  BRL: "Brazilian Real",
+  CNY: "Chinese Yuan",
+  HKD: "Hong Kong Dollar",
+  THB: "Thai Baht",
+  INR: "Indian Rupee",
+  KRW: "South Korean Won",
+  ILS: "Israeli Shekel",
 };
 
-const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "SHIB", "LTC", "MATIC", "POL", "UNI", "ATOM", "LUNC", "NEAR", "APT", "ARB", "OP", "INJ", "SUI", "FET", "WIF", "PEPE", "BONK", "ETHFI", "TIA", "SEI", "JUP", "RENDER", "ONDO", "TAO", "JASMY", "ENA", "AAVE", "MKR", "CRV", "LDO", "STX"]);
+const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "SHIB", "LTC", "MATIC", "POL", "UNI", "ATOM", "LUNC", "NEAR", "APT", "ARB", "OP", "INJ", "SUI", "FET", "WIF", "PEPE", "BONK", "ETHFI", "TIA", "SEI", "JUP", "RENDER", "ONDO", "TAO", "JASMY", "ENA", "AAVE", "MKR", "CRV", "LDO", "STX", "BCH", "XLM", "TRX", "ETC", "FIL", "HBAR", "ICP", "VET", "ALGO", "GRT", "SAND", "MANA", "IMX", "THETA", "RUNE", "FLOKI", "WLD", "TON", "EOS", "XTZ", "CHZ", "GALA", "APE", "DYDX", "PYTH", "JTO", "ORDI", "PENDLE", "EIGEN"]);
 const binanceFiat = new Set(["EUR", "GBP", "AUD", "NZD"]);
 
 const state = {
@@ -818,9 +899,11 @@ async function sendWebhook(entry) {
 const allScanPairs = [
   "EUR/USD","USD/EUR","GBP/USD","USD/GBP","USD/JPY","JPY/USD","AUD/USD","USD/AUD","USD/CAD","CAD/USD","NZD/USD","USD/NZD","USD/CHF","CHF/USD",
   "EUR/GBP","GBP/EUR","EUR/JPY","JPY/EUR","GBP/JPY","JPY/GBP","EUR/AUD","AUD/EUR","EUR/CHF","CHF/EUR",
+  "USD/SGD","SGD/USD","USD/NOK","NOK/USD","USD/SEK","SEK/USD","USD/DKK","DKK/USD","USD/PLN","PLN/USD","USD/CZK","CZK/USD","USD/HUF","HUF/USD","USD/RON","RON/USD","USD/ISK","ISK/USD","USD/BGN","BGN/USD","USD/TRY","TRY/USD","USD/ZAR","ZAR/USD","USD/MXN","MXN/USD","USD/BRL","BRL/USD","USD/CNY","CNY/USD","USD/HKD","HKD/USD","USD/THB","THB/USD","USD/INR","INR/USD","USD/KRW","KRW/USD","USD/ILS","ILS/USD",
   "XAU/USD",
   "BTC/USD","ETH/USD","SOL/USD","XRP/USD","ADA/USD","DOGE/USD","DOT/USD","LINK/USD","AVAX/USD",
   "SHIB/USD","LTC/USD","MATIC/USD","UNI/USD","ATOM/USD","LUNC/USD","NEAR/USD","APT/USD","ARB/USD","OP/USD","INJ/USD","SUI/USD","FET/USD","WIF/USD","PEPE/USD","BONK/USD","TIA/USD","SEI/USD","JUP/USD","RENDER/USD","ONDO/USD","TAO/USD","JASMY/USD","ENA/USD","AAVE/USD","MKR/USD","CRV/USD","LDO/USD","STX/USD",
+  "BCH/USD","XLM/USD","TRX/USD","ETC/USD","FIL/USD","HBAR/USD","ICP/USD","VET/USD","ALGO/USD","GRT/USD","SAND/USD","MANA/USD","IMX/USD","THETA/USD","RUNE/USD","FLOKI/USD","WLD/USD","TON/USD","EOS/USD","XTZ/USD","CHZ/USD","GALA/USD","APE/USD","DYDX/USD","PYTH/USD","JTO/USD","ORDI/USD","PENDLE/USD","EIGEN/USD",
   "BTC/ETH",
 ];
 
@@ -1303,7 +1386,7 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
     .slice(-limit);
 }
 
-const fxMajors = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD"]);
+const fxMajors = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SGD", "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RON", "ISK", "BGN", "TRY", "ZAR", "MXN", "BRL", "CNY", "HKD", "THB", "INR", "KRW", "ILS"]);
 function fxIntradayable(base, quote) { return !nonFiat.has(base) && fxMajors.has(base) && fxMajors.has(quote); }
 
 
@@ -1620,10 +1703,40 @@ function fallbackStartPrice(base, quote) {
   if (base === "DOT") return 7.00;
   if (base === "LINK") return 15.00;
   if (base === "AVAX") return 35.00;
+  if (base === "LTC") return 85.00;
+  if (base === "BCH") return 350.00;
+  if (base === "XLM") return 0.11;
+  if (base === "TRX") return 0.25;
+  if (base === "ETC") return 22.00;
+  if (base === "FIL") return 5.00;
+  if (base === "HBAR") return 0.08;
+  if (base === "ICP") return 10.00;
+  if (base === "VET") return 0.03;
+  if (base === "ALGO") return 0.15;
+  if (base === "GRT") return 0.18;
+  if (base === "SAND") return 0.35;
+  if (base === "MANA") return 0.40;
+  if (base === "IMX") return 1.50;
+  if (base === "THETA") return 1.40;
+  if (base === "RUNE") return 4.00;
+  if (base === "FLOKI") return 0.00015;
+  if (base === "WLD") return 2.20;
+  if (base === "TON") return 5.00;
+  if (base === "EOS") return 0.70;
+  if (base === "XTZ") return 0.90;
+  if (base === "CHZ") return 0.06;
+  if (base === "GALA") return 0.03;
+  if (base === "APE") return 1.20;
+  if (base === "DYDX") return 1.30;
+  if (base === "PYTH") return 0.35;
+  if (base === "JTO") return 2.50;
+  if (base === "ORDI") return 40.00;
+  if (base === "PENDLE") return 5.00;
+  if (base === "EIGEN") return 3.50;
   if (quote === "JPY") return 160;
   if (base === "GBP") return 1.27;
   if (base === "EUR") return 1.08;
-  if (base === "USD" && quote === "CHF") return 0.89;
+  if (base === "USD") { const q = { CHF: 0.89, SGD: 1.35, NOK: 10.8, SEK: 10.5, DKK: 6.9, PLN: 4.0, CZK: 23.0, HUF: 360, RON: 4.6, ISK: 138, BGN: 1.8, TRY: 34, ZAR: 18, MXN: 18.5, BRL: 5.4, CNY: 7.2, HKD: 7.8, THB: 35, INR: 84, KRW: 1370, ILS: 3.7 }[quote]; if (q) return q; }
   if (base === "AUD") return 0.66;
   if (base === "NZD") return 0.61;
   return 1.0;
