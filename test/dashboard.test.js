@@ -682,6 +682,63 @@ assert(nonFiatMajors.length === 0, "fxMajors contains only fiat symbols, bad: " 
 assert(fiatMajors.has("NOK") && fiatMajors.has("SEK") && fiatMajors.has("ZAR") && fiatMajors.has("SGD"), "new FX majors are intraday-eligible");
 assert(nonFiatSet.has("TON") && nonFiatSet.has("XLM") && nonFiatSet.has("TRX") && nonFiatSet.has("BCH"), "new cryptos are classified as non-fiat");
 assert(ctx.fallbackStartPrice("USD", "HUF") > 100 && ctx.fallbackStartPrice("BCH") > 100, "fallback seed prices exist for new symbols");
+const scanSyms = new Set();
+scanList.forEach((p) => p.split("/").forEach((s) => scanSyms.add(s)));
+const notSelectable = [...scanSyms].filter((s) => !universe.includes(s));
+assert(notSelectable.length === 0, "every scannable symbol is selectable in the chart, missing: " + notSelectable.join(","));
+assert(Math.abs(ctx.fallbackStartPrice("NOK", "USD") - 0.093) < 0.02, "inverted FX seed prices are rate-based, got " + ctx.fallbackStartPrice("NOK", "USD"));
+assert(ctx.fallbackStartPrice("JPY", "USD") < 0.02, "the JPY/USD seed is not stuck at 1.0, got " + ctx.fallbackStartPrice("JPY", "USD"));
+
+console.log("");
+console.log("--- M31: Twelve Data requests are paced, budget-capped and 429-retried ---");
+vm.runInContext("tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = '';", ctx);
+const t0 = Date.UTC(2026, 0, 15, 12, 0, 0);
+let admitted = 0;
+for (let i = 0; i < 6; i++) { if (vm.runInContext(`tdReserve(${t0})`, ctx) === 0) admitted++; }
+assert(admitted === 6, "the first six requests in a minute are admitted, got " + admitted);
+assert(vm.runInContext(`tdReserve(${t0})`, ctx) > 0, "the seventh request in the same minute is held back");
+assert(vm.runInContext(`tdReserve(${t0 + 61000})`, ctx) === 0, "a slot reopens after the minute rolls over");
+assert(vm.runInContext("tdGate.used", ctx) === 7, "the request counter tracks admissions, got " + vm.runInContext("tdGate.used", ctx));
+vm.runInContext("tdGate.used = TD_PER_DAY;", ctx);
+assert(vm.runInContext(`tdReserve(${t0 + 120000})`, ctx) === -1, "the daily credit budget is enforced");
+vm.runInContext("tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = ''; tdRetryDelayMs = 0;", ctx);
+assert(vm.runInContext("tdNoteRateLimit(1000) === undefined && tdGate.pausedUntil", ctx) === 21000, "a 429 schedules a backoff window");
+assert(vm.runInContext("tdReserve(15000) > 0", ctx), "requests during the 429 backoff are held");
+assert(vm.runInContext("tdReserve(22000) === 0", ctx), "requests resume after the backoff window");
+let n429 = 0;
+const realFetch429 = ctx.fetch;
+// The harness stubs setTimeout to a no-op so the app's timers never keep the
+// process alive. The 429 retry path legitimately awaits a backoff timer, so
+// hand it a working one for the duration of this check only.
+const realTimeoutForRetry = ctx.setTimeout;
+ctx.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = 'TDRL'; tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; tdRetryDelayMs = 0;", ctx);
+ctx.fetch = () => { n429++; return Promise.resolve({ ok: false, status: 429, json: async () => ({}) }); };
+let rlErr = null;
+try { await ctx.fetchTwelveDataRows("EUR", "JPY", "1h"); } catch (e) { rlErr = e && e.message; }
+ctx.setTimeout = realTimeoutForRetry;
+assert(n429 === 2, "a 429 is retried exactly once, got " + n429 + " attempts");
+assert(rlErr && rlErr.includes("429"), "a persistent 429 surfaces an error, got: " + rlErr);
+ctx.fetch = realFetch429;
+vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = ''; tdRetryDelayMs = 1500; tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = '';", ctx);
+
+console.log("");
+console.log("--- M32: scan-pair selection is versioned and has bulk controls ---");
+vm.runInContext("scanPairs = [...allScanPairs]; saveScanConfig();", ctx);
+const savedCfg = JSON.parse(ls.get("scanConfig"));
+assert(Array.isArray(savedCfg.pairs) && Array.isArray(savedCfg.known), "the scan config stores pairs plus the known universe");
+assert(savedCfg.known.length === vm.runInContext("allScanPairs.length", ctx), "the saved universe matches the current one");
+// A config saved against a smaller universe must pull the new pairs back in.
+ls.set("scanConfig", JSON.stringify({ pairs: ["BTC/USD", "EUR/USD"], known: ["BTC/USD", "EUR/USD"] }));
+vm.runInContext("scanPairs = []; loadScanConfig();", ctx);
+const migrated = vm.runInContext("scanPairs", ctx);
+assert(migrated.includes("TON/USD") && migrated.includes("USD/NOK"), "pairs added since the last save are restored automatically");
+assert(migrated.includes("BTC/USD") && migrated.includes("EUR/USD"), "the user's existing selection is preserved");
+// A legacy (unversioned) array must still load without crashing.
+ls.set("scanConfig", JSON.stringify(["BTC/USD", "USD/JPY"]));
+vm.runInContext("scanPairs = []; loadScanConfig();", ctx);
+assert(JSON.parse(JSON.stringify(vm.runInContext("scanPairs", ctx))).join(",") === "BTC/USD,USD/JPY", "a legacy array config still loads");
+vm.runInContext("scanPairs = [...allScanPairs]; saveScanConfig();", ctx);
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);

@@ -356,6 +356,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#0b1117;c
 <script>
 const currencies = ["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX",
   "LTC", "BCH", "XLM", "TRX", "ETC", "FIL", "HBAR", "ICP", "VET", "ALGO", "GRT", "SAND", "MANA", "IMX", "THETA", "RUNE", "FLOKI", "WLD", "TON", "EOS", "XTZ", "CHZ", "GALA", "APE", "DYDX", "PYTH", "JTO", "ORDI", "PENDLE", "EIGEN",
+  "SHIB", "MATIC", "POL", "UNI", "ATOM", "LUNC", "NEAR", "APT", "ARB", "OP", "INJ", "SUI", "FET", "WIF", "PEPE", "BONK", "ETHFI", "TIA", "SEI", "JUP", "RENDER", "ONDO", "TAO", "JASMY", "ENA", "AAVE", "MKR", "CRV", "LDO", "STX",
   "EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "SGD", "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RON", "ISK", "BGN", "TRY", "ZAR", "MXN", "BRL", "CNY", "HKD", "THB", "INR", "KRW", "ILS"];
 const names = {
   XAU: "Gold",
@@ -978,12 +979,24 @@ function overviewBestPair() {
 function loadScanConfig() {
   try {
     const saved = localStorage.getItem("scanConfig");
-    if (saved) { const p = JSON.parse(saved); if (Array.isArray(p) && p.length > 0) scanPairs = p; }
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    const savedPairs = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.pairs) ? parsed.pairs : null);
+    if (!savedPairs) return;
+    let list = savedPairs.filter((p) => allScanPairs.includes(p));
+    const known = Array.isArray(parsed) ? null : (Array.isArray(parsed.known) ? parsed.known : null);
+    // Pairs introduced after the user last saved were never offered to them, so
+    // fold them in automatically instead of leaving the expanded universe hidden.
+    if (known) {
+      const fresh = allScanPairs.filter((p) => !known.includes(p) && !list.includes(p));
+      list = list.concat(fresh);
+    }
+    if (list.length > 0) scanPairs = list;
   } catch {}
 }
 
 function saveScanConfig() {
-  try { localStorage.setItem("scanConfig", JSON.stringify(scanPairs)); } catch {}
+  try { localStorage.setItem("scanConfig", JSON.stringify({ pairs: scanPairs, known: [...allScanPairs] })); } catch {}
 }
 
 function loadAlertConditions() {
@@ -1387,7 +1400,19 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
 }
 
 const fxMajors = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SGD", "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RON", "ISK", "BGN", "TRY", "ZAR", "MXN", "BRL", "CNY", "HKD", "THB", "INR", "KRW", "ILS"]);
-function fxIntradayable(base, quote) { return !nonFiat.has(base) && fxMajors.has(base) && fxMajors.has(quote); }
+// GBP and AUD have Binance USDT books, but their last real trades are from 2023
+// (see rowsAreStale), so they cannot seed a live cross. Only EUR is usable free.
+const fxLegStale = new Set(["GBP", "AUD"]);
+function hasLiveFxLeg(cur) { return cur === "USD" || (fxUsdLegs[cur] && !fxLegStale.has(cur)); }
+// Intraday is only advertised when a browser-readable source can actually serve
+// it: a Binance USDT cross is possible, or a Twelve Data key is configured. This
+// stops the UI from lighting up 1m/1h buttons for pairs that would silently
+// degrade to daily.
+function fxIntradayable(base, quote) {
+  if (nonFiat.has(base) || !fxMajors.has(base) || !fxMajors.has(quote)) return false;
+  if (fxApiPrefs.enabled && fxApiPrefs.key) return true;
+  return hasLiveFxLeg(base) && hasLiveFxLeg(quote);
+}
 
 
 function bucketTo4h(hourlyRows) {
@@ -1497,22 +1522,78 @@ async function fetchForexRows(base, quote, interval = "1d") {
   const vendor = await fetchTwelveDataRows(base, quote, interval).catch(() => null);
   if (vendor && vendor.length >= 80) return vendor;
   const missing = [base, quote].filter((c) => c !== "USD" && !fxUsdLegs[c]);
+  const reason = fxApiStatus ? ` (${fxApiStatus})` : "";
   throw new Error(
     missing.length > 0
-      ? `No browser-readable intraday feed for ${missing.join("/")} (Binance USDT legs cover ${Object.keys(fxUsdLegs).join(", ")}${fxApiPrefs.enabled && fxApiPrefs.key ? " and Twelve Data returned nothing usable" : "; add a Twelve Data key in Settings to enable it"}).`
-      : `No intraday cross data for ${base}/${quote}.`
+      ? `No browser-readable intraday feed for ${missing.join("/")} (Binance USDT legs cover ${Object.keys(fxUsdLegs).join(", ")}${fxApiPrefs.enabled && fxApiPrefs.key ? " and Twelve Data returned nothing usable" : "; add a Twelve Data key in Settings to enable it"})${reason}.`
+      : `No intraday cross data for ${base}/${quote}${reason}.`
   );
 }
 
 const fxApiIntervalMap = { "1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "1h" };
 
+// Twelve Data's free tier allows about 8 requests/minute and 800/day. An overview
+// scan touches every FX pair that lacks Binance USDT legs, so without client-side
+// pacing it trips HTTP 429 (pairs silently fall back to WAIT even with a valid
+// key) and burns the whole daily budget in a handful of intraday scans. Reserve a
+// slot per request, back off on 429, and expose the counter so Settings can report
+// usage. 6/min and 760/day leave headroom under the real limits.
+const TD_PER_MIN = 6;
+const TD_PER_DAY = 760;
+let tdRetryDelayMs = 1500;
+const tdGate = { stamps: [], day: "", used: 0, pausedUntil: 0 };
+let fxApiStatus = "";
+
+function tdReserve(now, ignorePause) {
+  if (now == null) now = Date.now();
+  const today = new Date(now).toISOString().slice(0, 10);
+  if (tdGate.day !== today) { tdGate.day = today; tdGate.used = 0; tdGate.stamps = []; }
+  if (tdGate.used >= TD_PER_DAY) { fxApiStatus = "daily credit budget reached"; return -1; }
+  if (!ignorePause && now < tdGate.pausedUntil) return tdGate.pausedUntil - now;
+  tdGate.stamps = tdGate.stamps.filter((t) => now - t < 60000);
+  if (tdGate.stamps.length >= TD_PER_MIN) return 60000 - (now - tdGate.stamps[0]);
+  tdGate.stamps.push(now);
+  tdGate.used++;
+  return 0;
+}
+
+function tdNoteRateLimit(now) {
+  if (now == null) now = Date.now();
+  tdGate.pausedUntil = now + 20000;
+  fxApiStatus = "provider rate limit (429) - backing off";
+}
+
+async function tdAcquire(ignorePause) {
+  for (let i = 0; i < 90; i++) {
+    const wait = tdReserve(undefined, ignorePause);
+    if (wait === -1) return false;
+    if (wait <= 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(wait, 20000) + 25));
+  }
+  return true;
+}
+
+async function tdFetchJson(url) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!(await tdAcquire(attempt > 0))) throw new Error("Twelve Data daily credit budget is used up (free tier is about 800/day).");
+    const res = await fetch(url);
+    if (res.status === 429) {
+      tdNoteRateLimit();
+      if (attempt === 0) await new Promise((r) => setTimeout(r, tdRetryDelayMs));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
+    fxApiStatus = "";
+    return await res.json();
+  }
+  throw new Error("Twelve Data kept returning 429 (rate limit); retry in a minute.");
+}
+
 async function fetchTwelveDataRows(base, quote, interval) {
   if (!fxApiPrefs.enabled || !fxApiPrefs.key) return null;
   const apiInterval = fxApiIntervalMap[interval] || "1h";
   const url = `https://api.twelvedata.com/time_series?symbol=${base}/${quote}&interval=${apiInterval}&outputsize=1000&timezone=UTC&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await tdFetchJson(url);
   if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
   const rows = [];
   for (const v of Array.isArray(data.values) ? data.values : []) {
@@ -1539,10 +1620,9 @@ async function fetchTwelveDataPrice(base, quote) {
   if (now - (fxLiveThrottle.get(key) || 0) < 60000) return null;
   fxLiveThrottle.set(key, now);
   const url = `https://api.twelvedata.com/price?symbol=${base}/${quote}&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
+  let data;
+  try { data = await tdFetchJson(url); } catch { return null; }
+  if (!data || data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
   const price = Number(data.price);
   if (!Number.isFinite(price) || price <= 0) return null;
   return { price, change: null };
@@ -1739,6 +1819,12 @@ function fallbackStartPrice(base, quote) {
   if (base === "USD") { const q = { CHF: 0.89, SGD: 1.35, NOK: 10.8, SEK: 10.5, DKK: 6.9, PLN: 4.0, CZK: 23.0, HUF: 360, RON: 4.6, ISK: 138, BGN: 1.8, TRY: 34, ZAR: 18, MXN: 18.5, BRL: 5.4, CNY: 7.2, HKD: 7.8, THB: 35, INR: 84, KRW: 1370, ILS: 3.7 }[quote]; if (q) return q; }
   if (base === "AUD") return 0.66;
   if (base === "NZD") return 0.61;
+  // Any pair left over is fiat-vs-fiat (e.g. NOK/USD, JPY/USD). Derive it from a
+  // USD-per-unit table so the inverted direction is not stuck at 1.0.
+  const usdPerUnit = { USD: 1, EUR: 1.08, GBP: 1.27, AUD: 0.66, NZD: 0.61, JPY: 0.0063, CHF: 1.12, SGD: 0.74, NOK: 0.093, SEK: 0.095, DKK: 0.145, PLN: 0.25, CZK: 0.043, HUF: 0.0028, RON: 0.217, ISK: 0.0072, BGN: 0.556, TRY: 0.029, ZAR: 0.055, MXN: 0.054, BRL: 0.18, CNY: 0.139, HKD: 0.128, THB: 0.029, INR: 0.0119, KRW: 0.00073, ILS: 0.27 };
+  const bRate = usdPerUnit[base];
+  const qRate = usdPerUnit[quote];
+  if (bRate && qRate) return bRate / qRate;
   return 1.0;
 }
 
@@ -2641,7 +2727,8 @@ function render() {
               <input type="text" id="fxApiKey" value="${fxApiPrefs.key}" placeholder="Free key from twelvedata.com" spellcheck="false" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
               <button class="scan-button" id="testFxApi" style="white-space:nowrap">Test</button>
             </div>
-            <div style="font-size:.66rem;color:#5a6673;margin-top:3px">Optional. Unlocks 1m–4h for FX pairs Binance cannot cover (JPY, CHF, CAD, NZD crosses). Without a key those pairs keep showing daily rates.</div>
+            <div style="font-size:.66rem;color:#5a6673;margin-top:3px">Optional. Unlocks 1m–4h for FX pairs Binance cannot cover (JPY, CHF, CAD, NZD and the added crosses). Without a key those pairs keep showing daily rates.</div>
+            <div id="fxApiUsage" style="font-size:.62rem;color:${fxApiStatus ? '#d29922' : '#5a6673'};margin-top:3px">Free tier budget: ${tdGate.used}/${TD_PER_DAY} requests used today${fxApiStatus ? " · " + fxApiStatus : ""}</div>
           </div>
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="scan-button" id="exportData" style="font-size:.7rem">⬇ Export data</button>
@@ -2748,7 +2835,7 @@ function render() {
             <option value="name" ${multiScan.sortMode === "name" ? "selected" : ""}>Sort: Pair</option>
           </select>
         </div>
-        ${multiScan.configOpen ? `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
+        ${multiScan.configOpen ? `<div style="padding:8px 12px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="scan-button" id="scanSelAll" style="font-size:.62rem">All</button><button class="scan-button" id="scanSelNone" style="font-size:.62rem">None</button><button class="scan-button" id="scanSelCrypto" style="font-size:.62rem">Crypto</button><button class="scan-button" id="scanSelFx" style="font-size:.62rem">FX</button><span style="font-size:.62rem;color:#5c6a7a">${scanPairs.length}/${allScanPairs.length} pairs selected</span></div><div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin-bottom:10px">${allScanPairs.map(p => { const on = scanPairs.includes(p); return `<label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#8c98a5;cursor:pointer;padding:3px 8px;border-radius:4px;background:${on ? '#1a2533' : 'transparent'};border:1px solid ${on ? '#1f2a36' : 'transparent'}"><input type="checkbox" ${on ? "checked" : ""} data-scan-pair="${p}" style="accent-color:#3fb950">${p}</label>`; }).join("")}</div>` : ""}
         <div class="overview-grid">${(() => { const best = overviewBestPair(); return overviewFilteredPairs().sort(overviewSort).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const isBest = pair === best; const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}${isBest ? " ov-best" : ""}">${isBest && !r.loading ? `<div class="ov-best-badge">BEST</div>` : ""}<div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="${r.mtfTf || '4H'}: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} ${r.mtfTf || '4H'}</span>` : ''}${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join(""); })()}</div></div>
       </section>
 
@@ -3742,12 +3829,16 @@ async function scanAllPairs() {
   const slow = scanPairs.filter(p => !fast.includes(p));
   multiScan.progress = `0/${scanPairs.length}`;
   render();
-  if (fast.length > 0) { const limit = 3; for (let i = 0; i < fast.length; i += limit) { multiScan.progress = `${i}/${scanPairs.length}`; scheduleRender(); await Promise.all(fast.slice(i, i + limit).map(p => scanPairForOverview(p))); } }
-  for (let i = 0; i < slow.length; i++) {
+  if (fast.length > 0) { const limit = 6; for (let i = 0; i < fast.length; i += limit) { multiScan.progress = `${i}/${scanPairs.length}`; scheduleRender(); await Promise.all(fast.slice(i, i + limit).map(p => scanPairForOverview(p))); } }
+  // FX pairs run in small parallel batches instead of strictly one-by-one. The
+  // daily path is two Frankfurter requests per pair; intraday pairs self-pace at
+  // the Twelve Data gate, so batching does not exceed the provider budget.
+  const slowBatch = 4;
+  for (let i = 0; i < slow.length; i += slowBatch) {
     if (!multiScan.scanning) break;
-    multiScan.progress = `${fast.length + i}/${scanPairs.length}`;
+    multiScan.progress = `${Math.min(fast.length + i, scanPairs.length)}/${scanPairs.length}`;
     scheduleRender();
-    await scanPairForOverview(slow[i]);
+    await Promise.all(slow.slice(i, i + slowBatch).map(p => scanPairForOverview(p)));
   }
   multiScan.scanning = false;
   multiScan.progress = "";
@@ -3829,7 +3920,10 @@ async function refreshFxPositionPrices() {
   const open = positions.filter(p => !p.closedAt);
   for (const pos of open) {
     const [b, q] = pos.pair.split("/");
-    if (!fxIntradayable(b, q)) continue;
+    // Crypto is streamed over the Binance WebSocket; every fiat pair can still be
+    // marked to a live-ish price (Binance cross or the daily ECB reference), so
+    // seed them all rather than leaving non-cross pairs frozen.
+    if (nonFiat.has(b)) continue;
     const slot = multiScan.results[pos.pair] || {};
     if (Date.now() - (slot.priceUpdatedAt || 0) < 120000) continue;
     const r = await fetchLivePrice(b, q).catch(() => null);
@@ -4096,10 +4190,12 @@ async function loadDataOnly() {
         source = "Frankfurter.dev daily ECB reference rates";
       }
     } else if (!gotExchange) {
+      const wantedTf = timeframe;
       state.timeframe = "1d";
       timeframe = "1d";
       rows = await fetchFxRows(base, quote);
       source = "Frankfurter.dev daily ECB reference rates";
+      if (wantedTf !== "1d") state.notice = `Intraday ${base}/${quote} needs a browser-readable feed. Add a free Twelve Data key in Settings for 1m–1h candles; showing daily rates instead.`;
     }
     if (rows.length < 80) throw new Error("Not enough history for strict signal mode.");
     if (requestId !== activeDataRequestId || base !== state.base || quote !== state.quote || timeframe !== state.timeframe) return false;
@@ -4811,6 +4907,10 @@ function setupEvents() {
     if (target.id === "scanAll") {
       scanAllPairs();
     }
+    if (target.id === "scanSelAll") { scanPairs = [...allScanPairs]; saveScanConfig(); render(); return; }
+    if (target.id === "scanSelNone") { scanPairs = []; saveScanConfig(); render(); return; }
+    if (target.id === "scanSelCrypto") { scanPairs = allScanPairs.filter(p => nonFiat.has(p.split("/")[0])); saveScanConfig(); render(); return; }
+    if (target.id === "scanSelFx") { scanPairs = allScanPairs.filter(p => !nonFiat.has(p.split("/")[0])); saveScanConfig(); render(); return; }
     if (target.id === "exportCSV") {
       exportCSV();
     }
