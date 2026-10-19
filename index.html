@@ -1275,11 +1275,22 @@ function mtfAgreementBonus(mtf, dir) {
 
 async function computeMtfAdjustment(base, quote, cfg, dir, contextTfs = ["4h", "1h"]) {
   try {
+    // Fetch every context timeframe in parallel; a scan-all call fans these out
+    // for dozens of pairs, so sequential awaits dominated the wall clock.
+    const fetched = await Promise.all(contextTfs.map(async (tf) => {
+      try {
+        const rows = await fetchBinanceRows(base, quote, tf);
+        return { tf, rows };
+      } catch {
+        return { tf, rows: [] };
+      }
+    }));
+    const rowsByTf = {};
     let adj = 0;
     let matched = 0;
     let total = 0;
-    for (const tf of contextTfs) {
-      const rows = await fetchBinanceRows(base, quote, tf);
+    for (const { tf, rows } of fetched) {
+      rowsByTf[tf] = rows;
       const a = rows.length >= 80 ? analyze(rows, cfg) : null;
       if (!a || a.direction === "WAIT") continue;
       const w = mtfWeightOf(tf);
@@ -1288,9 +1299,9 @@ async function computeMtfAdjustment(base, quote, cfg, dir, contextTfs = ["4h", "
       else adj -= w;
     }
     const score = total > 0 ? Math.round(adj / total * 30) : 0;
-    return { score, matched };
+    return { score, matched, rowsByTf };
   } catch {
-    return { score: 0, matched: 0 };
+    return { score: 0, matched: 0, rowsByTf: {} };
   }
 }
 
@@ -1315,19 +1326,17 @@ async function fetchFxRows(base, quote) {
   const start = new Date();
   start.setDate(start.getDate() - 180);
   const fmt = (date) => date.toISOString().slice(0, 10);
-  const mid = new Date(start.getTime() + (end.getTime() - start.getTime()) / 2);
-  const url1 = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(mid)}?from=${base}&to=${quote}`;
-  const url2 = `https://api.frankfurter.dev/v1/${fmt(mid)}..${fmt(end)}?from=${base}&to=${quote}`;
+  // Frankfurter serves the whole 180-day window in one response, so there is no
+  // need to split the range and merge two payloads - scan-all issues one request
+  // per FX pair instead of two.
+  const url = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(end)}?from=${base}&to=${quote}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const [res1, res2] = await Promise.all([
-      fetch(url1, { signal: controller.signal }),
-      fetch(url2, { signal: controller.signal }),
-    ]);
-    if (!res1.ok || !res2.ok) throw new Error("FX data not available for this pair.");
-    const [data1, data2] = await Promise.all([res1.json(), res2.json()]);
-    const allRates = { ...data1.rates, ...data2.rates };
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error("FX data not available for this pair.");
+    const data = await res.json();
+    const allRates = data.rates || {};
     const dates = Object.keys(allRates).sort();
     // Drop gaps/partial rows: a missing quote yields undefined closes -> NaN indicators -> silent all-WAIT.
     const valid = dates.filter((date) => {
@@ -1509,7 +1518,7 @@ async function fetchFxIntradayCross(base, quote, interval) {
   return deriveCrossSeries(baseLeg, quoteLeg);
 }
 
-async function fetchForexRows(base, quote, interval = "1d") {
+async function fetchForexRows(base, quote, interval = "1d", allowVendor = true) {
   if (interval === "1d") return fetchFxRows(base, quote);
   loadFxApiPrefs();
   fxApiLastUsed = null;
@@ -1518,9 +1527,20 @@ async function fetchForexRows(base, quote, interval = "1d") {
   try { derived = await fetchFxIntradayCross(base, quote, binanceInterval); } catch {}
   if (derived.length >= 80) return interval === "4h" ? bucketTo4h(derived) : derived;
   // Both currencies must be quotable against USDT to build a cross. When they are
-  // not, fall back to the optional Twelve Data feed before giving up.
-  const vendor = await fetchTwelveDataRows(base, quote, interval).catch(() => null);
-  if (vendor && vendor.length >= 80) return vendor;
+  // not, fall back to the optional Twelve Data feed before giving up - unless this
+  // is an overview scan, where paying the vendor would stall the whole run.
+  if (allowVendor) {
+    const vendor = await fetchTwelveDataRows(base, quote, interval).catch(() => null);
+    if (vendor && vendor.length >= 80) return vendor;
+  } else {
+    // An overview scan fans out to every FX pair lacking Binance USDT legs. Twelve
+    // Data only serves 6 per minute, so buying a series for each one would take
+    // minutes and burn most of the free daily budget. ECB daily rates are the
+    // honest data for these crosses anyway, so scan them from Frankfurter instead;
+    // the single-chart view keeps paying the vendor per request.
+    const daily = await fetchFxRows(base, quote).catch(() => null);
+    if (daily && daily.length >= 80) return daily;
+  }
   const missing = [base, quote].filter((c) => c !== "USD" && !fxUsdLegs[c]);
   const reason = fxApiStatus ? ` (${fxApiStatus})` : "";
   throw new Error(
@@ -3770,7 +3790,8 @@ async function fetchOverviewRows(pair, tf) {
     return tf && tf !== "1d" ? await fetchBinanceRows(base, quote, tf) : await fetchBinanceRows(base, quote);
   }
   if (!tf || tf === "1d") return await fetchFxRows(base, quote);
-  return await fetchForexRows(base, quote, tf);
+  // Scans must not spend Twelve Data credits (6/min) on every leg-less FX pair.
+  return await fetchForexRows(base, quote, tf, false);
 }
 
 function mtfWeightOf(tf) {
@@ -3794,10 +3815,10 @@ async function scanPairForOverview(pair) {
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
       const mtfAdj = await computeMtfAdjustment(base, quote, cfg, analysis.direction, ctxTfs);
       mtfConf = mtfAdj.score;
-      try {
-        const rowsCtx = await fetchBinanceRows(base, quote, ctxTf);
-        a4h = rowsCtx.length >= 80 ? analyze(rowsCtx, cfg, pair) : null;
-      } catch {}
+      // ctxTf is one of the context timeframes, so its rows already came back
+      // with the MTF pass - reuse them instead of issuing a duplicate request.
+      const rowsCtx = (mtfAdj.rowsByTf && mtfAdj.rowsByTf[ctxTf]) || [];
+      a4h = rowsCtx.length >= 80 ? analyze(rowsCtx, cfg, pair) : null;
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
     const mtf4hDir = a4h ? a4h.direction : null;
@@ -3827,19 +3848,24 @@ async function scanAllPairs() {
   render();
   const fast = scanPairs.filter(p => nonFiat.has(p.split("/")[0]) || (binanceFiat.has(p.split("/")[0]) && p.split("/")[1] === "USD"));
   const slow = scanPairs.filter(p => !fast.includes(p));
-  multiScan.progress = `0/${scanPairs.length}`;
+  const total = scanPairs.length;
+  let done = 0;
+  const bump = () => { done++; multiScan.progress = `${done}/${total}`; scheduleRender(); };
+  multiScan.progress = `0/${total}`;
   render();
-  if (fast.length > 0) { const limit = 6; for (let i = 0; i < fast.length; i += limit) { multiScan.progress = `${i}/${scanPairs.length}`; scheduleRender(); await Promise.all(fast.slice(i, i + limit).map(p => scanPairForOverview(p))); } }
-  // FX pairs run in small parallel batches instead of strictly one-by-one. The
-  // daily path is two Frankfurter requests per pair; intraday pairs self-pace at
-  // the Twelve Data gate, so batching does not exceed the provider budget.
-  const slowBatch = 4;
-  for (let i = 0; i < slow.length; i += slowBatch) {
-    if (!multiScan.scanning) break;
-    multiScan.progress = `${Math.min(fast.length + i, scanPairs.length)}/${scanPairs.length}`;
-    scheduleRender();
-    await Promise.all(slow.slice(i, i + slowBatch).map(p => scanPairForOverview(p)));
-  }
+  // Crypto and FX tiers are independent, so run them at the same time instead of
+  // one after the other - the scan finishes in roughly the slower tier rather than
+  // the sum. Crypto gets a wider fan-out (Binance multiplexes many streams); FX
+  // batches stay smaller. The daily FX path is one Frankfurter request per pair
+  // and intraday FX no longer calls Twelve Data during a scan, so neither tier can
+  // run away with the provider budget.
+  const runTier = async (list, limit) => {
+    for (let i = 0; i < list.length; i += limit) {
+      if (!multiScan.scanning) return;
+      await Promise.all(list.slice(i, i + limit).map(async (p) => { await scanPairForOverview(p); bump(); }));
+    }
+  };
+  await Promise.all([runTier(fast, 10), runTier(slow, 10)]);
   multiScan.scanning = false;
   multiScan.progress = "";
   render();

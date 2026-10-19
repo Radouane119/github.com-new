@@ -741,6 +741,53 @@ assert(JSON.parse(JSON.stringify(vm.runInContext("scanPairs", ctx))).join(",") =
 vm.runInContext("scanPairs = [...allScanPairs]; saveScanConfig();", ctx);
 
 console.log("");
+console.log("--- M33: overview scans price leg-less intraday FX from daily, not the vendor ---");
+// A scan fans out to every FX pair, so it must not spend Twelve Data credits on
+// pairs that have no Binance USDT leg - that both stalls the scan (6/min) and
+// drains the free daily budget. The chart path keeps paying the vendor.
+// The real FX fetch path needs AbortController, which the harness does not stub
+// (earlier tests only ever hit stubbed fetch functions), so provide it here.
+const realAbortScan = ctx.AbortController;
+ctx.AbortController = AbortController;
+vm.runInContext("fxApiPrefs.enabled = true; fxApiPrefs.key = 'TPKEY'; fxUsdLegCache.clear(); tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0;", ctx);
+const realFetchScan = ctx.fetch;
+let tdHitsScan = 0, ffHitsScan = 0;
+ctx.fetch = (url) => {
+  const u = String(url);
+  if (u.includes("twelvedata")) { tdHitsScan++; return Promise.resolve({ ok: true, status: 200, json: async () => ({ status: "ok", values: [] }) }); }
+  if (u.includes("frankfurter")) {
+    ffHitsScan++;
+    const q = (u.match(/to=([A-Z]+)/) || [])[1] || "JPY";
+    const rates = {};
+    for (let i = 0; i < 200; i++) rates[new Date(Date.now() - (200 - i) * 864e5).toISOString().slice(0, 10)] = { [q]: 1.1 + i * 0.001 };
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ rates }) });
+  }
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const scanRows = await ctx.fetchOverviewRows("EUR/JPY", "1h");
+assert(scanRows && scanRows.length >= 80, "an intraday scan FX pair still returns rows, got " + (scanRows && scanRows.length));
+assert(tdHitsScan === 0, "an overview scan never spends Twelve Data credits, got " + tdHitsScan);
+assert(ffHitsScan >= 1, "an overview scan falls back to daily Frankfurter, got " + ffHitsScan);
+// The single-chart path (allowVendor defaults true) still prefers the vendor.
+let tdHitsChart = 0;
+vm.runInContext("fxUsdLegCache.clear();", ctx);
+ctx.fetch = (url) => {
+  const u = String(url);
+  if (u.includes("twelvedata")) {
+    tdHitsChart++;
+    const values = Array.from({ length: 100 }, (_, i) => ({ datetime: new Date(Date.now() - (100 - i) * 36e5).toISOString().slice(0, 19).replace("T", " "), open: "1", high: "2", low: "0.5", close: "1.5", volume: "0" }));
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ status: "ok", values }) });
+  }
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const chartRows = await ctx.fetchForexRows("EUR", "JPY", "1h");
+assert(tdHitsChart === 1, "the chart path still calls the vendor, got " + tdHitsChart);
+assert(chartRows && chartRows.length >= 80, "the chart path returns vendor rows, got " + (chartRows && chartRows.length));
+ctx.fetch = realFetchScan;
+ctx.AbortController = realAbortScan;
+vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = ''; fxUsdLegCache.clear(); tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = '';", ctx);
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
 })().catch((e) => { console.error("FAIL: unhandled error", e && e.message); process.exit(1); });
