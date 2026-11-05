@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-G3jPdZIrh0vj8Ae9BF68kUcPy69PVK2lKkVEqGv4WWw='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -473,6 +474,7 @@ const state = {
   mtf: {},
   notice: "",
   isDemo: false,
+  cacheLabel: "",
 };
 
 let activeDataRequestId = 0;
@@ -501,12 +503,506 @@ let macdHistVote = false;
 let kellyEnabled = false;
 let vwapOverlay = false;
 let mlFilterEnabled = false;
-let fxCache = {};
 let priceLevelAlerts = [];
 let slippageConfig = { spreadPips: 0, slippagePips: 0 };
 let trailingAtrMult = 3;
 let initialRrMult = 1.5;
 const lastSignals = new Map();
+
+// ---------------------------------------------------------------------------
+// Input safety
+// Every dynamic string that reaches innerHTML is escaped. Local storage,
+// imported backups and third-party APIs are all treated as untrusted.
+// ---------------------------------------------------------------------------
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+// Same escaping, named for call sites that place a value inside an attribute.
+const escapeAttr = escapeHtml;
+
+function cleanText(value, maxLength = 64) {
+  return typeof value === "string" ? value.slice(0, maxLength) : "";
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function numOrNull(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clampNum(value, min, max, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+const PAIR_RE = /^[A-Z0-9]{2,10}\/[A-Z0-9]{2,10}$/;
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+const MAX_IMPORT_ROWS = 5000;
+
+// ---------------------------------------------------------------------------
+// Market data cache
+// A single fetch layer for provider reads: in-memory + localStorage persistence,
+// in-flight dedupe for identical keys, TTL expiry, stale-if-error and a
+// per-provider circuit breaker. The cache survives reloads, so a refresh no
+// longer re-downloads the whole scan universe.
+// ---------------------------------------------------------------------------
+const MARKET_CACHE_PREFIX = "mdc:v1:";
+const MARKET_CACHE_INDEX_KEY = "mdc:v1:__index";
+const MARKET_CACHE_MAX_ENTRIES = 120;
+const MARKET_CACHE_MAX_BYTES = 2400000;
+const MARKET_BREAKER_LIMIT = 3;
+const MARKET_BREAKER_COOLDOWN = 60000;
+const MARKET_TTL = {
+  ticker: 20000,
+  intraday: 60000,
+  daily: 30 * 60 * 1000,
+  fxDaily: 6 * 60 * 60 * 1000,
+  fxLatest: 60 * 60 * 1000,
+  econ: 6 * 60 * 60 * 1000,
+  currency: 6 * 60 * 60 * 1000,
+};
+const marketCache = new Map();
+const marketInflight = new Map();
+const providerBreakers = Object.create(null);
+let marketCacheIndex = null;
+let lastHttpMeta = null;
+
+function delay(ms) {
+  // The unit-test harness stubs setTimeout to a no-op returning 0. Resolve
+  // immediately in that case so retry paths never hang the suite.
+  return new Promise((resolve) => {
+    const handle = setTimeout(resolve, ms);
+    if (handle === 0) resolve();
+  });
+}
+
+function marketProviderFromUrl(url) {
+  const u = String(url);
+  if (u.includes("binance.com")) return "binance";
+  if (u.includes("bybit.com")) return "bybit";
+  if (u.includes("coinbase.com")) return "coinbase";
+  if (u.includes("frankfurter")) return "frankfurter";
+  if (u.includes("twelvedata")) return "twelvedata";
+  if (u.includes("faireconomy")) return "econ";
+  if (u.includes("jsdelivr")) return "currency";
+  return "http";
+}
+
+function marketHash(text) {
+  let hash = 2166136261;
+  const value = String(text);
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function marketCacheLoadIndex() {
+  if (marketCacheIndex) return marketCacheIndex;
+  try {
+    const raw = localStorage.getItem(MARKET_CACHE_INDEX_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    marketCacheIndex = Array.isArray(parsed)
+      ? parsed.filter((entry) => entry && typeof entry.k === "string" && Number.isFinite(entry.s))
+      : [];
+  } catch {
+    marketCacheIndex = [];
+  }
+  return marketCacheIndex;
+}
+
+function marketCachePersistIndex() {
+  try { localStorage.setItem(MARKET_CACHE_INDEX_KEY, JSON.stringify(marketCacheLoadIndex())); } catch {}
+}
+
+function marketCacheEvict(protectKey) {
+  const index = marketCacheLoadIndex();
+  let total = index.reduce((sum, entry) => sum + (entry.s || 0), 0);
+  index.sort((a, b) => (a.t || 0) - (b.t || 0));
+  let changed = false;
+  while (index.length > MARKET_CACHE_MAX_ENTRIES || total > MARKET_CACHE_MAX_BYTES) {
+    const position = index.findIndex((entry) => entry.k !== protectKey);
+    if (position === -1) break;
+    const oldest = index.splice(position, 1)[0];
+    total -= oldest.s || 0;
+    try { localStorage.removeItem(MARKET_CACHE_PREFIX + oldest.k); } catch {}
+    marketCache.delete(oldest.k);
+    changed = true;
+  }
+  marketCacheIndex = index;
+  if (changed) marketCachePersistIndex();
+}
+
+function writeMarketCache(key, data, fetchedAt) {
+  marketCache.set(key, { data, fetchedAt });
+  let size = 0;
+  let stored = false;
+  try {
+    const raw = JSON.stringify({ v: 1, t: fetchedAt, d: data });
+    size = raw.length;
+    marketCacheEvict(key);
+    try { localStorage.setItem(MARKET_CACHE_PREFIX + key, raw); stored = true; } catch {}
+  } catch {}
+  const index = marketCacheLoadIndex().filter((entry) => entry.k !== key);
+  if (stored) index.push({ k: key, t: fetchedAt, s: size });
+  marketCacheIndex = index;
+  marketCacheEvict();
+  marketCachePersistIndex();
+}
+
+function readMarketCache(key, ttl) {
+  let entry = marketCache.get(key);
+  if (!entry) {
+    try {
+      const raw = localStorage.getItem(MARKET_CACHE_PREFIX + key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.v === 1 && Number.isFinite(parsed.t)) {
+          entry = { data: parsed.d, fetchedAt: parsed.t };
+          marketCache.set(key, entry);
+        }
+      }
+    } catch {}
+  }
+  if (!entry) return null;
+  const age = Math.max(0, Date.now() - entry.fetchedAt);
+  return { data: entry.data, fetchedAt: entry.fetchedAt, age, stale: ttl != null && age > ttl };
+}
+
+function clearMarketCache() {
+  try {
+    for (const entry of marketCacheLoadIndex()) {
+      try { localStorage.removeItem(MARKET_CACHE_PREFIX + entry.k); } catch {}
+    }
+    localStorage.removeItem(MARKET_CACHE_INDEX_KEY);
+  } catch {}
+  marketCache.clear();
+  marketInflight.clear();
+  marketCacheIndex = [];
+  for (const provider of Object.keys(providerBreakers)) delete providerBreakers[provider];
+  lastHttpMeta = null;
+}
+
+function marketCacheStats() {
+  const index = marketCacheLoadIndex();
+  return {
+    entries: index.length,
+    bytes: index.reduce((sum, entry) => sum + (entry.s || 0), 0),
+  };
+}
+
+function marketCacheStatsLabel() {
+  const stats = marketCacheStats();
+  if (stats.entries === 0) return "Cache is empty";
+  return `${stats.entries} entries · ${Math.max(1, Math.round(stats.bytes / 1024))} KB`;
+}
+
+function formatCacheAge(ms) {
+  const seconds = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function marketBreaker(provider) {
+  if (!provider) return null;
+  if (!providerBreakers[provider]) providerBreakers[provider] = { failures: 0, openUntil: 0 };
+  return providerBreakers[provider];
+}
+
+function marketBreakerBlocked(provider) {
+  const breaker = marketBreaker(provider);
+  return breaker ? breaker.openUntil > Date.now() : false;
+}
+
+function marketBreakerSuccess(provider) {
+  const breaker = marketBreaker(provider);
+  if (breaker) { breaker.failures = 0; breaker.openUntil = 0; }
+}
+
+function marketBreakerFailure(provider) {
+  const breaker = marketBreaker(provider);
+  if (!breaker) return;
+  breaker.failures += 1;
+  if (breaker.failures >= MARKET_BREAKER_LIMIT) breaker.openUntil = Date.now() + MARKET_BREAKER_COOLDOWN;
+}
+
+async function httpJson(url, opts = {}) {
+  const provider = opts.provider || marketProviderFromUrl(url);
+  if (marketBreakerBlocked(provider)) {
+    const error = new Error(`${provider} is cooling down after repeated failures.`);
+    error.circuitOpen = true;
+    throw error;
+  }
+  const attempts = Math.max(0, Number.isFinite(opts.retries) ? opts.retries : 0) + 1;
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const response = await fetch(url, opts.signal ? { signal: opts.signal } : undefined);
+      if (!response.ok) {
+        const error = new Error(`${provider} HTTP ${response.status}`);
+        error.httpStatus = response.status;
+        // 429, 451 and 5xx mean the provider itself is unhealthy; other 4xx
+        // responses (an unknown symbol, for example) must not trip the breaker.
+        const outage = response.status === 429 || response.status === 451 || response.status >= 500;
+        if (attempt + 1 < attempts && outage) {
+          await delay(400 * (attempt + 1));
+          continue;
+        }
+        throw error;
+      }
+      const data = await response.json();
+      marketBreakerSuccess(provider);
+      return { data, fetchedAt: Date.now() };
+    } catch (error) {
+      if (error && error.circuitOpen) throw error;
+      lastError = error;
+      if (error && error.name === "AbortError") throw error;
+      const status = error && error.httpStatus;
+      const outage = status == null || status === 429 || status === 451 || status >= 500;
+      if (attempt + 1 < attempts && outage) {
+        await delay(400 * (attempt + 1));
+        continue;
+      }
+      if (outage) marketBreakerFailure(provider);
+      throw error;
+    }
+  }
+  throw lastError || new Error("Request failed");
+}
+
+function marketCacheResult(entry, cache, key) {
+  const age = Math.max(0, Date.now() - entry.fetchedAt);
+  lastHttpMeta = { key, fetchedAt: entry.fetchedAt, age, cache };
+  return { data: entry.data, fetchedAt: entry.fetchedAt, age, cache };
+}
+
+async function cachedJson(url, opts = {}) {
+  const key = opts.key || url;
+  const ttl = Number.isFinite(opts.ttl) ? opts.ttl : 0;
+  const cached = readMarketCache(key, ttl);
+  if (cached && !cached.stale) return marketCacheResult(cached, "hit", key);
+
+  if (!marketInflight.has(key)) {
+    const request = httpJson(url, opts)
+      .then((result) => {
+        writeMarketCache(key, result.data, result.fetchedAt);
+        return result;
+      })
+      .finally(() => marketInflight.delete(key));
+    // Mark rejections as handled even when a stale-while-revalidate caller
+    // returns without awaiting the shared request.
+    request.catch(() => {});
+    marketInflight.set(key, request);
+  }
+
+  // Stale-while-revalidate hands back the old payload immediately and lets the
+  // shared request above refresh it in the background.
+  if (cached && opts.swr) return marketCacheResult(cached, "stale", key);
+
+  try {
+    const result = await marketInflight.get(key);
+    return marketCacheResult({ data: result.data, fetchedAt: result.fetchedAt }, "miss", key);
+  } catch (error) {
+    if (cached) return marketCacheResult(cached, "stale-error", key);
+    throw error;
+  }
+}
+
+function cleanPair(value) {
+  const pair = cleanText(value, 24).toUpperCase().trim();
+  return PAIR_RE.test(pair) ? pair : null;
+}
+
+function sanitizePairList(raw, limit = 500) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of raw.slice(0, limit)) {
+    const pair = cleanPair(item);
+    if (pair && !seen.has(pair)) { seen.add(pair); out.push(pair); }
+  }
+  return out;
+}
+
+// Only https URLs for Discord or Telegram are accepted. A malicious imported
+// backup must not be able to point the webhook at an arbitrary host.
+const WEBHOOK_HOSTS = new Set(["discord.com", "discordapp.com", "api.telegram.org"]);
+
+function isValidWebhookUrl(raw) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 2048) return false;
+  let url;
+  try { url = new URL(raw); } catch { return false; }
+  if (url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  if (WEBHOOK_HOSTS.has(host)) return true;
+  return host.endsWith(".discord.com") || host.endsWith(".discordapp.com");
+}
+
+function sanitizeHistoryEntry(raw) {
+  if (!isPlainObject(raw)) return null;
+  const pair = cleanPair(raw.pair);
+  const timestamp = new Date(raw.timestamp);
+  const direction = raw.direction === "BUY" || raw.direction === "SELL" ? raw.direction : null;
+  if (!pair || !direction || Number.isNaN(timestamp.getTime())) return null;
+  const reasons = Array.isArray(raw.reasons)
+    ? raw.reasons.slice(0, 20).map((reason) => ({
+        ok: !!(isPlainObject(reason) && reason.ok),
+        text: cleanText(isPlainObject(reason) ? reason.text : reason, 240),
+      }))
+    : [];
+  return {
+    id: numOrNull(raw.id) ?? timestamp.getTime(),
+    timestamp,
+    pair,
+    direction,
+    confidence: clampNum(raw.confidence, 0, 100, 0),
+    risk: cleanText(raw.risk, 48) || "No trade",
+    entry: numOrNull(raw.entry),
+    stop: numOrNull(raw.stop),
+    target: numOrNull(raw.target),
+    volatilityPct: Math.max(0, numOrNull(raw.volatilityPct) ?? 0),
+    buyScore: numOrNull(raw.buyScore) ?? 0,
+    sellScore: numOrNull(raw.sellScore) ?? 0,
+    reasons,
+    result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending",
+  };
+}
+
+function sanitizePosition(raw) {
+  if (!isPlainObject(raw)) return null;
+  const pair = cleanPair(raw.pair);
+  const direction = raw.direction === "BUY" || raw.direction === "SELL" ? raw.direction : null;
+  const entry = numOrNull(raw.entry);
+  const openedAt = new Date(raw.openedAt);
+  if (!pair || !direction || entry == null || Number.isNaN(openedAt.getTime())) return null;
+  const closedAt = raw.closedAt ? new Date(raw.closedAt) : null;
+  return {
+    id: typeof raw.id === "string" && /^[A-Za-z0-9_-]{1,48}$/.test(raw.id) ? raw.id : (numOrNull(raw.id) ?? openedAt.getTime()),
+    pair,
+    direction,
+    entry,
+    stop: numOrNull(raw.stop),
+    target: numOrNull(raw.target),
+    openedAt,
+    closedAt: closedAt && !Number.isNaN(closedAt.getTime()) ? closedAt : null,
+    exitPrice: numOrNull(raw.exitPrice),
+    pnl: numOrNull(raw.pnl),
+    pnlPct: numOrNull(raw.pnlPct),
+    pnlCurrency: numOrNull(raw.pnlCurrency),
+    size: numOrNull(raw.size),
+    originalStop: numOrNull(raw.originalStop),
+    trailingStop: !!raw.trailingStop,
+    highWater: numOrNull(raw.highWater),
+    lowWater: numOrNull(raw.lowWater),
+    atr: numOrNull(raw.atr),
+  };
+}
+
+function sanitizeAlertHistory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 500).map((entry) => {
+    if (!isPlainObject(entry)) return null;
+    const pair = cleanPair(entry.pair);
+    const timestamp = new Date(entry.timestamp);
+    if (!pair || Number.isNaN(timestamp.getTime())) return null;
+    return {
+      timestamp: timestamp.toISOString(),
+      pair,
+      type: cleanText(entry.type, 32) || "alert",
+      message: cleanText(entry.message, 240),
+    };
+  }).filter(Boolean);
+}
+
+function sanitizeAlerts(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 500).map((alert) => {
+    if (!isPlainObject(alert)) return null;
+    const pair = cleanPair(alert.pair);
+    const price = numOrNull(alert.price);
+    if (!pair || price == null || price <= 0) return null;
+    return {
+      id: numOrNull(alert.id) ?? Date.now(),
+      pair,
+      price,
+      dir: alert.dir === "below" ? "below" : "above",
+      createdAt: numOrNull(alert.createdAt) ?? Date.now(),
+    };
+  }).filter(Boolean);
+}
+
+function sanitizePriceLevelAlerts(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 500).map((alert) => {
+    if (!isPlainObject(alert)) return null;
+    const pair = cleanPair(alert.pair);
+    const price = numOrNull(alert.price);
+    if (!pair || price == null || price <= 0) return null;
+    return {
+      pair,
+      price,
+      dir: alert.dir === "below" ? "below" : "above",
+      id: numOrNull(alert.id) ?? Date.now(),
+    };
+  }).filter(Boolean);
+}
+
+function sanitizeAlertConditions(raw) {
+  if (!isPlainObject(raw)) return;
+  for (const key of ["mtf_alignment", "pattern_trend", "high_confidence", "volume_surge"]) {
+    const saved = raw[key];
+    if (!isPlainObject(saved) || !alertConditions[key]) continue;
+    alertConditions[key].enabled = !!saved.enabled;
+    const max = key === "high_confidence" ? 100 : 10;
+    alertConditions[key].threshold = clampNum(saved.threshold, 0, max, alertConditions[key].threshold);
+    alertConditions[key].lastFired = numOrNull(saved.lastFired) ?? 0;
+  }
+  alertConditions.lastTestResult = cleanText(raw.lastTestResult, 120);
+}
+
+function normalizeStrategyConfig(raw) {
+  const d = { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45, trailingAtrMult: 3, initialRrMult: 1.5, partialTakePct: 50, adxGate: false, feePct: 0.1, riskPerTradePct: 1 };
+  if (!isPlainObject(raw)) return { ...d };
+  return {
+    threshold: Math.round(clampNum(raw.threshold, 3, 7, d.threshold)),
+    riskRewardRatio: clampNum(raw.riskRewardRatio, 1, 5, d.riskRewardRatio),
+    volumeMultiplier: clampNum(raw.volumeMultiplier, 1, 3, d.volumeMultiplier),
+    volatilityMedianMultiplier: clampNum(raw.volatilityMedianMultiplier, 1, 5, d.volatilityMedianMultiplier),
+    rsiBuyThreshold: clampNum(raw.rsiBuyThreshold, 30, 70, d.rsiBuyThreshold),
+    rsiSellThreshold: clampNum(raw.rsiSellThreshold, 30, 70, d.rsiSellThreshold),
+    trailingAtrMult: clampNum(raw.trailingAtrMult, 1, 8, d.trailingAtrMult),
+    initialRrMult: clampNum(raw.initialRrMult, 0.5, 5, d.initialRrMult),
+    partialTakePct: clampNum(raw.partialTakePct, 0, 100, d.partialTakePct),
+    adxGate: !!raw.adxGate,
+    feePct: clampNum(raw.feePct, 0, 5, d.feePct),
+    riskPerTradePct: clampNum(raw.riskPerTradePct, 0.1, 10, d.riskPerTradePct),
+  };
+}
+
+function normalizeRiskConfig(raw) {
+  const d = { balance: 10000, startingBalance: 10000, riskPct: 1, maxPos: 5, dailyLimit: 5, maxLossStreak: 4, corrCap: 2 };
+  if (!isPlainObject(raw)) return { ...d };
+  return {
+    balance: clampNum(raw.balance, 1, 1e12, d.balance),
+    startingBalance: clampNum(raw.startingBalance, 1, 1e12, d.startingBalance),
+    riskPct: clampNum(raw.riskPct, 0.1, 10, d.riskPct),
+    maxPos: Math.round(clampNum(raw.maxPos, 1, 20, d.maxPos)),
+    dailyLimit: clampNum(raw.dailyLimit, 0, 1e9, d.dailyLimit),
+    maxLossStreak: Math.round(clampNum(raw.maxLossStreak, 1, 10, d.maxLossStreak)),
+    corrCap: Math.round(clampNum(raw.corrCap, 1, 5, d.corrCap)),
+  };
+}
 
 const ML_FEATURES = ["confidence", "maxScore", "margin", "volatility", "isBuy"];
 
@@ -629,11 +1125,11 @@ function renderMlBadge(analysis) {
   if (!trained) {
     value = `<div style="text-align:center">training ${mlModel.n}/${mlModel.minSamples}${bar}<div style="font-size:.55rem;color:#8c98a5;margin-top:2px">collect ${mlModel.minSamples - mlModel.n} more resolved trades</div></div>`;
   } else if (!analysis || !analysis.ml) {
-    value = `<div style="text-align:center"><strong>${mlModel.n} samples</strong><button onclick="mlReset();render()" style="margin-left:6px;background:none;border:none;color:#f85149;cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div>`;
+    value = `<div style="text-align:center"><strong>${mlModel.n} samples</strong><button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:#f85149;cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div>`;
   } else {
     const ml = analysis.ml;
     const hit = mlStats.filtered + mlStats.filteredCorrect > 0 ? Math.round((mlStats.filteredCorrect / Math.max(1, mlStats.filtered)) * 100) : null;
-    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? '#3fb950' : mlFilterEnabled ? '#e3b341' : '#e6edf3'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:#8c98a5;margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? '#e3b341' : '#3fb950'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% filt hit` : ""}<button onclick="mlReset();render()" style="margin-left:6px;background:none;border:none;color:#f85149;cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
+    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? '#3fb950' : mlFilterEnabled ? '#e3b341' : '#e6edf3'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:#8c98a5;margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? '#e3b341' : '#3fb950'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% filt hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:#f85149;cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
   }
   return { label: "ML win prob", value };
 }
@@ -659,14 +1155,14 @@ function applyTheme() { if (darkTheme) { document.documentElement.removeAttribut
 function saveScheduleState() { try { localStorage.setItem("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null })); } catch {} }
 
 function loadAlertHistory() {
-  try { const s = localStorage.getItem("alertHistory"); if (s) alertHistory = JSON.parse(s); } catch {}
+  try { const s = localStorage.getItem("alertHistory"); if (s) alertHistory = sanitizeAlertHistory(JSON.parse(s)); } catch {}
 }
 function saveAlertHistory() {
   try { localStorage.setItem("alertHistory", JSON.stringify(alertHistory)); } catch {}
 }
-function loadPriceLevelAlerts() { try { const s = localStorage.getItem("priceLevelAlerts"); if (s) priceLevelAlerts = JSON.parse(s); } catch {} }
+function loadPriceLevelAlerts() { try { const s = localStorage.getItem("priceLevelAlerts"); if (s) priceLevelAlerts = sanitizePriceLevelAlerts(JSON.parse(s)); } catch {} }
 function savePriceLevelAlerts() { try { localStorage.setItem("priceLevelAlerts", JSON.stringify(priceLevelAlerts)); } catch {} }
-function loadSlippageConfig() { try { const s = localStorage.getItem("slippageConfig"); if (s) { const d = JSON.parse(s); slippageConfig.spreadPips = d.spreadPips ?? 0; slippageConfig.slippagePips = d.slippagePips ?? 0; } } catch {} }
+function loadSlippageConfig() { try { const s = localStorage.getItem("slippageConfig"); if (s) { const d = JSON.parse(s); slippageConfig.spreadPips = Math.max(0, numOrNull(d.spreadPips) ?? 0); slippageConfig.slippagePips = Math.max(0, numOrNull(d.slippagePips) ?? 0); } } catch {} }
 function saveSlippageConfig() { try { localStorage.setItem("slippageConfig", JSON.stringify(slippageConfig)); } catch {} }
 
 function pushAlertHistory(pair, type, message) {
@@ -693,7 +1189,7 @@ function showToast(message, type) {
   } catch {}
 }
 function loadStrategyName() {
-  try { const s = localStorage.getItem("strategyName"); if (s) strategyName = s; } catch {}
+  try { const s = localStorage.getItem("strategyName"); if (s) strategyName = cleanText(s, 64); } catch {}
 }
 function saveStrategyName() {
   try { localStorage.setItem("strategyName", strategyName); } catch {}
@@ -705,8 +1201,8 @@ function loadPositions() {
   try {
     const saved = localStorage.getItem("positions");
     if (saved) {
-      positions = JSON.parse(saved);
-      positions.forEach(p => { p.openedAt = new Date(p.openedAt); p.closedAt = p.closedAt ? new Date(p.closedAt) : null; });
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) positions = parsed.map(sanitizePosition).filter(Boolean);
     }
   } catch {}
 }
@@ -801,7 +1297,7 @@ const livePrice = {
 
 let webhookUrl = "";
 
-function loadWebhook() { try { const s = localStorage.getItem("webhookUrl"); if (s) webhookUrl = s; } catch {} }
+function loadWebhook() { try { const s = localStorage.getItem("webhookUrl"); if (s) webhookUrl = cleanText(s, 2048); } catch {} }
 function saveWebhook() { try { localStorage.setItem("webhookUrl", webhookUrl); } catch {} }
 
 // Optional browser-readable intraday FX feed. Twelve Data is the only free
@@ -815,7 +1311,7 @@ let fxApiLastUsed = null;
 function loadFxApiPrefs() {
   try {
     const s = localStorage.getItem("fxApiPrefs");
-    if (s) { const p = JSON.parse(s); fxApiPrefs.enabled = !!p.enabled; fxApiPrefs.key = typeof p.key === "string" ? p.key : ""; }
+    if (s) { const p = JSON.parse(s); fxApiPrefs.enabled = !!p.enabled; fxApiPrefs.key = cleanText(p.key, 128).trim(); }
   } catch {}
 }
 function saveFxApiPrefs() { try { localStorage.setItem("fxApiPrefs", JSON.stringify(fxApiPrefs)); } catch {} }
@@ -823,9 +1319,9 @@ function saveFxApiPrefs() { try { localStorage.setItem("fxApiPrefs", JSON.string
 function loadRiskConfig() {
   try {
     const s = localStorage.getItem("riskConfig");
-    if (s) return JSON.parse(s);
+    if (s) return normalizeRiskConfig(JSON.parse(s));
   } catch {}
-  return { balance: 10000, startingBalance: 10000, riskPct: 1, maxPos: 5, dailyLimit: 5, maxLossStreak: 4, corrCap: 2 };
+  return normalizeRiskConfig(null);
 }
 
 function getDailyPnl() {
@@ -861,19 +1357,19 @@ function canOpenTrade(pair) {
 }
 
 function saveRiskConfig(cfg) {
-  try { localStorage.setItem("riskConfig", JSON.stringify(cfg)); } catch {}
+  try { localStorage.setItem("riskConfig", JSON.stringify(normalizeRiskConfig(cfg))); } catch {}
 }
 
 function loadStrategyConfig() {
   try {
     const s = localStorage.getItem("strategyConfig");
-    if (s) return JSON.parse(s);
+    if (s) return normalizeStrategyConfig(JSON.parse(s));
   } catch {}
-  return { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45, trailingAtrMult: 3, initialRrMult: 1.5, partialTakePct: 50, adxGate: false, feePct: 0.1, riskPerTradePct: 1 };
+  return normalizeStrategyConfig(null);
 }
 
 function saveStrategyConfig(cfg) {
-  try { localStorage.setItem("strategyConfig", JSON.stringify(cfg)); } catch {}
+  try { localStorage.setItem("strategyConfig", JSON.stringify(normalizeStrategyConfig(cfg))); } catch {}
 }
 
 function recordDailyPnl(amount) {
@@ -886,7 +1382,7 @@ function recordDailyPnl(amount) {
 }
 
 async function sendWebhook(entry) {
-  if (!webhookUrl) return;
+  if (!webhookUrl || !isValidWebhookUrl(webhookUrl)) return;
   const msg = `${entry.direction === "BUY" ? "🟢" : "🔴"} *${entry.direction} ${entry.pair}*\nConfidence: ${entry.confidence}% | Risk: ${entry.risk}\nEntry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Stop: ${entry.stop != null ? formatPrice(entry.stop, entry.pair) : "-"} | Target: ${entry.target != null ? formatPrice(entry.target, entry.pair) : "-"}`;
   try {
     if (webhookUrl.includes("discord")) {
@@ -919,6 +1415,7 @@ const multiScan = {
   sortMode: "conf",
   filter: "all",
   timeframe: "1d",
+  scanToken: 0,
 };
 
 function loadOverviewPrefs() {
@@ -1002,7 +1499,7 @@ function saveScanConfig() {
 function loadAlertConditions() {
   try {
     const s = localStorage.getItem("alertConditions");
-    if (s) { const saved = JSON.parse(s); Object.keys(saved).forEach(k => { if (alertConditions[k]) Object.assign(alertConditions[k], saved[k]); }); }
+    if (s) sanitizeAlertConditions(JSON.parse(s));
   } catch {}
 }
 
@@ -1069,7 +1566,7 @@ let watchlist = [];
 let alerts = [];
 
 function loadWatchlist() {
-  try { const s = localStorage.getItem("watchlist"); if (s) { const p = JSON.parse(s); if (Array.isArray(p)) watchlist = p; } } catch {}
+  try { const s = localStorage.getItem("watchlist"); if (s) watchlist = sanitizePairList(JSON.parse(s)); } catch {}
 }
 function saveWatchlist() { try { localStorage.setItem("watchlist", JSON.stringify(watchlist)); } catch {} }
 function toggleWatchlist(pair) {
@@ -1079,7 +1576,7 @@ function toggleWatchlist(pair) {
 }
 
 function loadAlerts() {
-  try { const s = localStorage.getItem("priceAlerts"); if (s) { const a = JSON.parse(s); if (Array.isArray(a)) alerts = a; } } catch {}
+  try { const s = localStorage.getItem("priceAlerts"); if (s) alerts = sanitizeAlerts(JSON.parse(s)); } catch {}
 }
 function saveAlerts() { try { localStorage.setItem("priceAlerts", JSON.stringify(alerts)); } catch {} }
 function setAlert(pair, price, dir) {
@@ -1333,9 +1830,13 @@ async function fetchFxRows(base, quote) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error("FX data not available for this pair.");
-    const data = await res.json();
+    const result = await cachedJson(url, {
+      ttl: MARKET_TTL.fxDaily,
+      key: `fx-daily:${base}/${quote}:${fmt(start)}:${fmt(end)}`,
+      provider: "frankfurter",
+      signal: controller.signal,
+    });
+    const data = result.data;
     const allRates = data.rates || {};
     const dates = Object.keys(allRates).sort();
     // Drop gaps/partial rows: a missing quote yields undefined closes -> NaN indicators -> silent all-WAIT.
@@ -1366,9 +1867,13 @@ const coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h"
 
 async function fetchBybitRows(base, quote, interval, limit) {
   const symbol = binanceSymbol(base, quote);
-  const res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval[interval] || "D"}&limit=${limit}`);
-  if (!res.ok) throw new Error(`Bybit unavailable for ${base}/${quote}.`);
-  const data = await res.json();
+  const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval[interval] || "D"}&limit=${limit}`;
+  const result = await cachedJson(url, {
+    ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
+    key: `bybit:${symbol}:${interval}:${limit}`,
+    provider: "bybit",
+  });
+  const data = result.data;
   const list = data?.result?.list;
   if (data.retCode !== 0 || !Array.isArray(list) || list.length === 0) throw new Error(`Bybit returned no data for ${base}/${quote}.`);
   return list
@@ -1389,9 +1894,13 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
   if (quote !== "USD") throw new Error("Coinbase fallback only supports USD quotes.");
   const symbol = binanceSymbol(base, quote);
   const granularity = coinbaseGranularity[interval] || 86400;
-  const res = await fetch(`https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`);
-  if (!res.ok) throw new Error(`Coinbase unavailable for ${base}/${quote}.`);
-  const data = await res.json();
+  const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`;
+  const result = await cachedJson(url, {
+    ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
+    key: `coinbase:${symbol}:${interval}:${limit}`,
+    provider: "coinbase",
+  });
+  const data = result.data;
   if (!Array.isArray(data) || data.length === 0) throw new Error(`Coinbase returned no data for ${base}/${quote}.`);
   return data
     .map((k) => ({
@@ -1458,10 +1967,11 @@ async function fetchFxUsdLegSeries(currency, interval) {
   const symbol = fxUsdLegs[currency];
   if (!symbol) return null;
   const cacheKey = symbol + ":" + interval;
-  if (fxUsdLegCache.has(cacheKey)) return fxUsdLegCache.get(cacheKey);
+  const cached = fxUsdLegCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 60000) return cached.series;
   const rows = await fetchBinanceRows(currency, "USDT", interval);
   const series = rows.filter((r) => Number.isFinite(r.close) && r.close > 0);
-  fxUsdLegCache.set(cacheKey, series);
+  fxUsdLegCache.set(cacheKey, { series, at: Date.now() });
   return series;
 }
 
@@ -1560,20 +2070,52 @@ const fxApiIntervalMap = { "1m": "1min", "5m": "5min", "15m": "15min", "30m": "3
 // usage. 6/min and 760/day leave headroom under the real limits.
 const TD_PER_MIN = 6;
 const TD_PER_DAY = 760;
+const TD_GATE_KEY = "tdGate:v1";
 let tdRetryDelayMs = 1500;
 const tdGate = { stamps: [], day: "", used: 0, pausedUntil: 0 };
 let fxApiStatus = "";
+
+function saveTdGate() {
+  try {
+    localStorage.setItem(TD_GATE_KEY, JSON.stringify({
+      day: tdGate.day,
+      used: tdGate.used,
+      pausedUntil: tdGate.pausedUntil,
+      status: fxApiStatus,
+    }));
+  } catch {}
+}
+
+// The daily budget must survive a reload; otherwise refreshing the page hands
+// the provider a brand-new 760-request allowance. Minute stamps are intentionally
+// not restored - a new page load starts a fresh pacing window.
+function loadTdGate() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TD_GATE_KEY) || "null");
+    if (!saved) return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (saved.day !== today) {
+      try { localStorage.removeItem(TD_GATE_KEY); } catch {}
+      return;
+    }
+    tdGate.day = today;
+    tdGate.used = Math.max(0, Math.min(TD_PER_DAY, Number(saved.used) || 0));
+    tdGate.pausedUntil = Math.max(0, Number(saved.pausedUntil) || 0);
+    fxApiStatus = typeof saved.status === "string" ? saved.status.slice(0, 120) : "";
+  } catch {}
+}
 
 function tdReserve(now, ignorePause) {
   if (now == null) now = Date.now();
   const today = new Date(now).toISOString().slice(0, 10);
   if (tdGate.day !== today) { tdGate.day = today; tdGate.used = 0; tdGate.stamps = []; }
-  if (tdGate.used >= TD_PER_DAY) { fxApiStatus = "daily credit budget reached"; return -1; }
+  if (tdGate.used >= TD_PER_DAY) { fxApiStatus = "daily credit budget reached"; saveTdGate(); return -1; }
   if (!ignorePause && now < tdGate.pausedUntil) return tdGate.pausedUntil - now;
   tdGate.stamps = tdGate.stamps.filter((t) => now - t < 60000);
   if (tdGate.stamps.length >= TD_PER_MIN) return 60000 - (now - tdGate.stamps[0]);
   tdGate.stamps.push(now);
   tdGate.used++;
+  saveTdGate();
   return 0;
 }
 
@@ -1581,6 +2123,7 @@ function tdNoteRateLimit(now) {
   if (now == null) now = Date.now();
   tdGate.pausedUntil = now + 20000;
   fxApiStatus = "provider rate limit (429) - backing off";
+  saveTdGate();
 }
 
 async function tdAcquire(ignorePause) {
@@ -1609,12 +2152,7 @@ async function tdFetchJson(url) {
   throw new Error("Twelve Data kept returning 429 (rate limit); retry in a minute.");
 }
 
-async function fetchTwelveDataRows(base, quote, interval) {
-  if (!fxApiPrefs.enabled || !fxApiPrefs.key) return null;
-  const apiInterval = fxApiIntervalMap[interval] || "1h";
-  const url = `https://api.twelvedata.com/time_series?symbol=${base}/${quote}&interval=${apiInterval}&outputsize=1000&timezone=UTC&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
-  const data = await tdFetchJson(url);
-  if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
+function mapTdSeries(data, interval) {
   const rows = [];
   for (const v of Array.isArray(data.values) ? data.values : []) {
     const t = v && v.datetime;
@@ -1627,6 +2165,27 @@ async function fetchTwelveDataRows(base, quote, interval) {
   if (rows.length < 80) return null;
   fxApiLastUsed = "Twelve Data";
   return interval === "4h" ? bucketTo4h(rows) : rows;
+}
+
+async function fetchTwelveDataRows(base, quote, interval) {
+  if (!fxApiPrefs.enabled || !fxApiPrefs.key) return null;
+  const apiInterval = fxApiIntervalMap[interval] || "1h";
+  const url = `https://api.twelvedata.com/time_series?symbol=${base}/${quote}&interval=${apiInterval}&outputsize=1000&timezone=UTC&apikey=${encodeURIComponent(fxApiPrefs.key)}`;
+  // Cache by a hash of the API key, never the key itself, so rotating keys
+  // invalidates old series without exposing the credential in storage keys.
+  const cacheKey = `td:series:${base}/${quote}:${interval}:${marketHash(fxApiPrefs.key)}`;
+  const ttl = interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday;
+  const cached = readMarketCache(cacheKey, ttl);
+  if (cached && !cached.stale) {
+    const rows = mapTdSeries(cached.data, interval);
+    if (rows) return rows;
+  }
+  const data = await tdFetchJson(url);
+  if (data.status !== "ok") throw new Error(data && data.message ? "Twelve Data: " + data.message : "Twelve Data error");
+  const rows = mapTdSeries(data, interval);
+  if (!rows) return null;
+  writeMarketCache(cacheKey, data, Date.now());
+  return rows;
 }
 
 // Lightweight live price from Twelve Data. The free plan allows 800 requests/day,
@@ -1671,23 +2230,26 @@ async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
   const limit = limitOverride || (interval === "1d" ? 200 : ["4h", "1h", "15m", "30m"].includes(interval) ? 500 : interval === "1m" ? 1000 : 200);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
+  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   try {
-    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, { signal: controller.signal });
-    if (response.ok) {
-      const data = await response.json();
-      const rows = data
-        .map((k) => ({
-          date: new Date(k[0]).toISOString().slice(0, 10),
-          time: new Date(k[0]).toISOString(),
-          open: Number(k[1]),
-          high: Number(k[2]),
-          low: Number(k[3]),
-          close: Number(k[4]),
-          volume: Number(k[5]),
-        }))
-        .filter((row) => Number.isFinite(row.close));
-      if (rows.length > 0 && !rowsAreStale(rows, interval)) { clearTimeout(timer); lastCryptoSource = "Binance"; return rows; }
-    }
+    const result = await cachedJson(url, {
+      ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
+      key: `binance:${symbol}:${interval}:${limit}`,
+      provider: "binance",
+      signal: controller.signal,
+    });
+    const rows = result.data
+      .map((k) => ({
+        date: new Date(k[0]).toISOString().slice(0, 10),
+        time: new Date(k[0]).toISOString(),
+        open: Number(k[1]),
+        high: Number(k[2]),
+        low: Number(k[3]),
+        close: Number(k[4]),
+        volume: Number(k[5]),
+      }))
+      .filter((row) => Number.isFinite(row.close));
+    if (rows.length > 0 && !rowsAreStale(rows, interval)) { clearTimeout(timer); lastCryptoSource = "Binance"; return rows; }
   } catch {}
   clearTimeout(timer);
   try {
@@ -1722,17 +2284,21 @@ async function fetchLivePrice(base, quote) {
     if (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) {
       const symbol = binanceSymbol(base, quote);
       try {
-        const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-        if (r.ok) { const d = await r.json(); return { price: Number(d.lastPrice), change: Number(d.priceChangePercent) }; }
+        const result = await cachedJson(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`, { ttl: MARKET_TTL.ticker, key: `binance-ticker:${symbol}`, provider: "binance" });
+        const d = result.data;
+        const price = Number(d.lastPrice);
+        if (Number.isFinite(price)) return { price, change: Number(d.priceChangePercent) };
       } catch {}
       try {
-        const r = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`);
-        if (r.ok) { const d = await r.json(); const t = d?.result?.list?.[0]; if (t && t.lastPrice) return { price: Number(t.lastPrice), change: t.price24hPcnt != null ? Number(t.price24hPcnt) * 100 : null }; }
+        const result = await cachedJson(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${symbol}`, { ttl: MARKET_TTL.ticker, key: `bybit-ticker:${symbol}`, provider: "bybit" });
+        const t = result.data?.result?.list?.[0];
+        if (t && t.lastPrice) return { price: Number(t.lastPrice), change: t.price24hPcnt != null ? Number(t.price24hPcnt) * 100 : null };
       } catch {}
       if (quote === "USD") {
         try {
-          const r = await fetch(`https://api.exchange.coinbase.com/products/${symbol}-USD/ticker`);
-          if (r.ok) { const d = await r.json(); if (d && d.price) return { price: Number(d.price), change: null }; }
+          const result = await cachedJson(`https://api.exchange.coinbase.com/products/${symbol}-USD/ticker`, { ttl: MARKET_TTL.ticker, key: `coinbase-ticker:${symbol}`, provider: "coinbase" });
+          const d = result.data;
+          if (d && d.price) return { price: Number(d.price), change: null };
         } catch {}
       }
       return null;
@@ -1766,11 +2332,14 @@ async function fetchLivePrice(base, quote) {
       if (twelve) return twelve;
     }
     try {
-      const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`);
-      if (r.ok) { const d = await r.json(); return { price: d.rates[quote], change: null }; }
+      const result = await cachedJson(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`, { ttl: MARKET_TTL.fxLatest, key: `fx-latest:${base}:${quote}`, provider: "frankfurter" });
+      const d = result.data;
+      if (d.rates && d.rates[quote] != null) return { price: d.rates[quote], change: null };
     } catch {}
-    const r2 = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${base.toLowerCase()}.min.json`);
-    if (r2.ok) { const d2 = await r2.json(); const rate = d2[base.toLowerCase()]?.[quote.toLowerCase()]; if (rate) return { price: rate, change: null }; }
+    const converted = await cachedJson(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${base.toLowerCase()}.min.json`, { ttl: MARKET_TTL.currency, key: `currency:${base}`, provider: "currency" });
+    const d2 = converted.data;
+    const rate = d2[base.toLowerCase()]?.[quote.toLowerCase()];
+    if (rate) return { price: rate, change: null };
     return null;
   } catch {
     return null;
@@ -2158,7 +2727,7 @@ async function runStrategyOptimizer() {
 }
 
 function sendScheduledReport() {
-  if (!webhookUrl) return;
+  if (!webhookUrl || !isValidWebhookUrl(webhookUrl)) return;
   const hist = autoScan.history.filter(e => e.direction !== "WAIT");
   const resolved = hist.filter(e => e.result === "win" || e.result === "loss");
   const wins = resolved.filter(e => e.result === "win").length;
@@ -2670,9 +3239,14 @@ function checkPriceLevelAlerts() {
 var econEvents = [];
 async function fetchEconEvents() {
   try {
-    var r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
-    if (!r.ok) return;
-    var data = await r.json();
+    const result = await cachedJson('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
+      ttl: MARKET_TTL.econ,
+      key: 'econ:thisweek',
+      provider: 'econ',
+      swr: true,
+    });
+    var data = result.data;
+    if (!Array.isArray(data)) return;
     econEvents = data.filter(function(e) { return e.impact === 'High' || e.impact === 'Medium'; }).map(function(e) {
       var impact = e.impact === 'High' ? 'high' : 'med';
       return { time: e.time || 'TBD', country: e.country || '', name: e.title || e.name || 'Unknown', impact: impact, currency: e.currency || '' };
@@ -2701,7 +3275,18 @@ function renderEconCalendar() {
   }).slice(0, 8);
   if (upcoming.length === 0) return '';
   var isLive = econEvents.length > 0;
-  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + (isLive ? ' live' : '') + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + e.time + '</span><span class="econ-flag">' + (e.country || '') + '</span><span class="econ-name">' + e.name + '<span style="font-size:.58rem;color:#5c6a7a;margin-left:4px">' + (e.currency || '') + '</span></span><span class="econ-impact ' + e.impact + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">' + (isLive ? 'Data from ForexFactory. ' : 'Fallback data. ') + 'High-impact events may increase volatility.</div></div></section>';
+  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + (isLive ? ' live' : '') + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + escapeHtml(e.time) + '</span><span class="econ-flag">' + escapeHtml(e.country || '') + '</span><span class="econ-name">' + escapeHtml(e.name) + '<span style="font-size:.58rem;color:#5c6a7a;margin-left:4px">' + escapeHtml(e.currency || '') + '</span></span><span class="econ-impact ' + escapeHtml(e.impact) + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">' + (isLive ? 'Data from ForexFactory. ' : 'Fallback data. ') + 'High-impact events may increase volatility.</div></div></section>';
+}
+
+function toggleOverlay(name) {
+  if (name === "ichimoku") ichimokuOverlay = !ichimokuOverlay;
+  else if (name === "fib") fibOverlay = !fibOverlay;
+  else if (name === "macd") macdHistVote = !macdHistVote;
+  else if (name === "vwap") vwapOverlay = !vwapOverlay;
+  else if (name === "ml") mlFilterEnabled = !mlFilterEnabled;
+  else return;
+  saveOverlayPrefs();
+  render();
 }
 
 function render() {
@@ -2730,25 +3315,32 @@ function render() {
           <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot" aria-label="Analyze chart screenshot">📷</button>
           <button class="icon-button" id="soundToggle" title="Toggle sound (M)" aria-label="Toggle sound">${soundEnabled ? "🔊" : "🔇"}</button>
           <button class="icon-button" id="themeToggle" title="Toggle theme (T)" aria-label="Toggle color theme">${darkTheme ? "🌙" : "☀️"}</button>
-          <button class="scan-button" id="mlToggle" onclick="mlFilterEnabled=!mlFilterEnabled;saveOverlayPrefs();render()" title="AI/ML win-probability filter" aria-label="Toggle AI/ML filter" style="${mlFilterEnabled ? 'background:#b58cff;color:#fff' : ''}">🤖 ${mlFilterEnabled ? "ML ON" : "ML OFF"}${mlModel.trained ? "" : " ·t=" + mlModel.n + ""}</button>
+          <button class="scan-button" id="mlToggle" data-action="toggle-overlay" data-overlay="ml" title="AI/ML win-probability filter" aria-label="Toggle AI/ML filter" style="${mlFilterEnabled ? 'background:#b58cff;color:#fff' : ''}">🤖 ${mlFilterEnabled ? "ML ON" : "ML OFF"}${mlModel.trained ? "" : " ·t=" + mlModel.n + ""}</button>
           <span style="font-size:.55rem;color:#5c6a7a">R=↻ S=⚡ 1/4/H=⏱ B=Back T=Theme</span>
         </div>
-        <div class="tf-row">${["1d", "4h", "1h", "30m", "15m", "1m"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}" onclick="switchTF('${tf}')">${tf}</button>`).join("")}</div>
+        <div class="tf-row">${["1d", "4h", "1h", "30m", "15m", "1m"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>
         <div class="settings-panel" id="settingsPanel" style="display:none;padding:10px 12px;background:#0e151e;border:1px solid #1f2a36;border-radius:8px;margin:0 12px 8px;flex-direction:column;gap:6px">
           <label style="font-size:.72rem;color:#8c98a5">Webhook URL (Discord or Telegram)</label>
           <div style="display:flex;gap:6px">
-            <input type="url" id="webhookInput" value="${webhookUrl}" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+            <input type="url" id="webhookInput" value="${escapeAttr(webhookUrl)}" maxlength="2048" autocomplete="off" placeholder="https://discord.com/api/webhooks/... or https://api.telegram.org/bot.../sendMessage?chat_id=..." style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
             <button class="scan-button" id="testWebhook" style="white-space:nowrap">Test</button>
           </div>
           <div style="border-top:1px solid #1f2a36;padding-top:6px;margin-top:4px">
             <label style="font-size:.72rem;color:#8c98a5">FX intraday feed (Twelve Data)</label>
             <div style="display:flex;gap:6px;align-items:center">
               <input type="checkbox" id="fxApiEnable" ${fxApiPrefs.enabled ? "checked" : ""} title="Enable browser-readable intraday FX (EUR/JPY and other Binance-uncovered pairs)" style="accent-color:#33c2ff">
-              <input type="text" id="fxApiKey" value="${fxApiPrefs.key}" placeholder="Free key from twelvedata.com" spellcheck="false" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+              <input type="text" id="fxApiKey" value="${escapeAttr(fxApiPrefs.key)}" maxlength="128" autocomplete="off" placeholder="Free key from twelvedata.com" spellcheck="false" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
               <button class="scan-button" id="testFxApi" style="white-space:nowrap">Test</button>
             </div>
             <div style="font-size:.66rem;color:#5a6673;margin-top:3px">Optional. Unlocks 1m–4h for FX pairs Binance cannot cover (JPY, CHF, CAD, NZD and the added crosses). Without a key those pairs keep showing daily rates.</div>
-            <div id="fxApiUsage" style="font-size:.62rem;color:${fxApiStatus ? '#d29922' : '#5a6673'};margin-top:3px">Free tier budget: ${tdGate.used}/${TD_PER_DAY} requests used today${fxApiStatus ? " · " + fxApiStatus : ""}</div>
+            <div id="fxApiUsage" style="font-size:.62rem;color:${fxApiStatus ? '#d29922' : '#5a6673'};margin-top:3px">Free tier budget: ${tdGate.used}/${TD_PER_DAY} requests used today · resets at 00:00 UTC${fxApiStatus ? " · " + escapeHtml(fxApiStatus) : ""}</div>
+          </div>
+          <div style="border-top:1px solid #1f2a36;padding-top:6px;margin-top:4px">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <button class="scan-button" id="clearCache" style="font-size:.7rem">🗑 Clear market cache</button>
+              <span id="cacheStats" style="font-size:.62rem;color:#5c6a7a">${escapeHtml(marketCacheStatsLabel())}</span>
+            </div>
+            <div style="font-size:.62rem;color:#5a6673;margin-top:3px">Cached provider responses survive reloads. Clearing forces a fresh download on the next chart or scan.</div>
           </div>
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="scan-button" id="exportData" style="font-size:.7rem">⬇ Export data</button>
@@ -2757,7 +3349,7 @@ function render() {
           <div style="border-top:1px solid #1f2a36;padding-top:6px;margin-top:4px">
             <label style="font-size:.72rem;color:#8c98a5">Strategy Name</label>
             <div style="display:flex;gap:6px">
-              <input type="text" id="strategyNameInput" value="${strategyName}" placeholder="My Strategy" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
+              <input type="text" id="strategyNameInput" value="${escapeAttr(strategyName)}" maxlength="64" placeholder="My Strategy" style="flex:1;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:.75rem">
             </div>
             <div style="display:flex;gap:6px;margin-top:4px">
               <button class="scan-button" id="exportStrategy" style="font-size:.7rem">⬇ Export Strategy</button>
@@ -2797,9 +3389,9 @@ function render() {
         ${(() => { const b = renderMlBadge(analysis); return metric(b.label, b.value); })()}
       </section>
 
-          ${state.error ? `<div class="notice error" role="alert">${state.error}</div>` : ""}
-          ${state.notice ? `<div class="notice" role="status">${state.notice}</div>` : ""}
-      ${state.source ? `<div class="source-line">Data source: ${state.source}. Signals are educational trading ideas, not financial advice.</div>` : ""}
+          ${state.error ? `<div class="notice error" role="alert">${escapeHtml(state.error)}</div>` : ""}
+          ${state.notice ? `<div class="notice" role="status">${escapeHtml(state.notice)}</div>` : ""}
+      ${state.source ? `<div class="source-line">Data source: ${escapeHtml(state.source)}${state.cacheLabel ? ` · cached ${escapeHtml(state.cacheLabel)}` : ""}. Signals are educational trading ideas, not financial advice.</div>` : ""}
 
       ${
         state.status === "ready" && analysis
@@ -2810,9 +3402,9 @@ function render() {
                   <span>${analysis.last.date}</span>
                 </div>
                 <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
-                  <button onclick="ichimokuOverlay=!ichimokuOverlay;saveOverlayPrefs();render()" style="background:${ichimokuOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${ichimokuOverlay?'#2ea043':'#2a3848'};color:${ichimokuOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">☁ Ichimoku</button>
-                  <button onclick="fibOverlay=!fibOverlay;saveOverlayPrefs();render()" style="background:${fibOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${fibOverlay?'#2ea043':'#2a3848'};color:${fibOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 Fibonacci</button>
-                  <button onclick="macdHistVote=!macdHistVote;saveOverlayPrefs();render()" style="background:${macdHistVote?'#1a3a2a':'#1f2a36'};border:1px solid ${macdHistVote?'#2ea043':'#2a3848'};color:${macdHistVote?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 MACD+Hist</button><button onclick="vwapOverlay=!vwapOverlay;saveOverlayPrefs();render()" style="background:${vwapOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${vwapOverlay?'#2ea043':'#2a3848'};color:${vwapOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 VWAP</button>
+                  <button data-action="toggle-overlay" data-overlay="ichimoku" style="background:${ichimokuOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${ichimokuOverlay?'#2ea043':'#2a3848'};color:${ichimokuOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">☁ Ichimoku</button>
+                  <button data-action="toggle-overlay" data-overlay="fib" style="background:${fibOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${fibOverlay?'#2ea043':'#2a3848'};color:${fibOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 Fibonacci</button>
+                  <button data-action="toggle-overlay" data-overlay="macd" style="background:${macdHistVote?'#1a3a2a':'#1f2a36'};border:1px solid ${macdHistVote?'#2ea043':'#2a3848'};color:${macdHistVote?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 MACD+Hist</button><button data-action="toggle-overlay" data-overlay="vwap" style="background:${vwapOverlay?'#1a3a2a':'#1f2a36'};border:1px solid ${vwapOverlay?'#2ea043':'#2a3848'};color:${vwapOverlay?'#3fb950':'#8c98a5'};padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.62rem;font-family:inherit">📊 VWAP</button>
                 </div>
                 <div id="chartContainer"><canvas id="priceChart"></canvas></div>
               </div>
@@ -2859,12 +3451,12 @@ function render() {
         <div class="overview-grid">${(() => { const best = overviewBestPair(); return overviewFilteredPairs().sort(overviewSort).map(pair => { const r = multiScan.results[pair] || { loading: true }; const cls = r.loading ? "loading" : (r.direction || "wait").toLowerCase(); const isBest = pair === best; const starred = watchlist.includes(pair); const hasAlert = alerts.some(a => a.pair === pair); return `<div class="ov-card ${cls}${isBest ? " ov-best" : ""}">${isBest && !r.loading ? `<div class="ov-best-badge">BEST</div>` : ""}<div class="ov-card-top"><span class="ov-pair">${pair}</span><button class="ov-star ${starred ? 'active' : ''}" data-star="${pair}" title="Toggle watchlist">${starred ? '★' : '☆'}</button></div><span class="ov-signal">${r.loading ? "..." : r.direction}</span><div class="ov-meta">${r.loading ? "" : `<span>${r.confidence}%</span><span id="op-${pair.replace("/","-")}">${r.price ? formatPrice(r.price, pair) : ""}</span>${r.change != null ? `<span id="oc-${pair.replace("/","-")}" class="${r.change >= 0 ? 'chg-up' : 'chg-down'}">${r.change >= 0 ? '+' : ''}${r.change.toFixed(1)}%</span>` : ''}`}</div>${!r.loading && r.mtf4h ? `<span style="font-size:.55rem;padding:1px 4px;border-radius:3px;background:${r.mtf4h === r.direction ? 'rgba(63,185,80,0.15)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.1)' : 'rgba(248,81,73,0.15)'};color:${r.mtf4h === r.direction ? '#3fb950' : r.mtf4h === 'WAIT' ? '#8c98a5' : '#f85149'};border:1px solid ${r.mtf4h === r.direction ? 'rgba(63,185,80,0.3)' : r.mtf4h === 'WAIT' ? 'rgba(139,148,165,0.15)' : 'rgba(248,81,73,0.3)'}" title="${r.mtfTf || '4H'}: ${r.mtf4h}">${r.mtf4h === r.direction ? '✓' : r.mtf4h === 'WAIT' ? '–' : '✗'} ${r.mtfTf || '4H'}</span>` : ''}${!r.loading && r.price ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px"><span style="font-size:.6rem;color:#5c6a7a">📈${r.buyScore}/${macdHistVote?8:7} 📉${r.sellScore}/${macdHistVote?8:7}</span><button class="ov-alert-btn" data-alert="${pair}" title="Set price alert">${hasAlert ? '🔔' : '+ Alert'}</button><button class="ov-alert-btn" data-trade-ov="${pair}" title="Open trade" ${r.direction === "WAIT" ? "disabled" : ""}>→</button></div>` : ""}</div>`; }).join(""); })()}</div></div>
       </section>
 
-      ${(() => { var pa = priceLevelAlerts; return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="priceAlertToggle"><div class="history-toggle-left"><h3>Price Level Alerts</h3><span class="history-count">' + pa.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="priceAlertBody"><div style="padding:10px 12px"><div class="price-alert-row"><select id="paPair" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem">' + scanPairs.map(function(p) { return '<option value="' + p + '">' + p + '</option>'; }).join('') + '</select><select id="paDir"><option value="above">Above</option><option value="below">Below</option></select><input type="number" id="paPrice" placeholder="Price" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"><button class="scan-button" id="addPriceAlert" style="font-size:.7rem">+ Add</button></div>' + pa.map(function(a, i) { return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0e151e;font-size:.7rem"><span style="width:56px;color:#e6edf3;font-weight:600">' + a.pair + '</span><span style="color:' + (a.dir === 'above' ? '#3fb950' : '#f85149') + '">' + (a.dir === 'above' ? '\u2191' : '\u2193') + '</span><span style="color:#8c98a5">' + formatPrice(a.price, a.pair) + '</span><button data-rm-pa="' + i + '" style="background:transparent;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;margin-left:auto">\u2715</button></div>'; }).join('') + '</div></div></section>'; })()}
-${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${a.pair}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${a.id}">✕</button></div>`).join("")}</div></section>` : ""}
+      ${(() => { var pa = priceLevelAlerts; return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="priceAlertToggle"><div class="history-toggle-left"><h3>Price Level Alerts</h3><span class="history-count">' + pa.length + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="priceAlertBody"><div style="padding:10px 12px"><div class="price-alert-row"><select id="paPair" style="background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem">' + scanPairs.map(function(p) { return '<option value="' + escapeAttr(p) + '">' + escapeHtml(p) + '</option>'; }).join('') + '</select><select id="paDir"><option value="above">Above</option><option value="below">Below</option></select><input type="number" id="paPrice" placeholder="Price" step="any" style="width:80px;background:#1a2533;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#e6edf3;font-size:.72rem"><button class="scan-button" id="addPriceAlert" style="font-size:.7rem">+ Add</button></div>' + pa.map(function(a, i) { return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0e151e;font-size:.7rem"><span style="width:56px;color:#e6edf3;font-weight:600">' + escapeHtml(a.pair) + '</span><span style="color:' + (a.dir === 'above' ? '#3fb950' : '#f85149') + '">' + (a.dir === 'above' ? '\u2191' : '\u2193') + '</span><span style="color:#8c98a5">' + formatPrice(a.price, a.pair) + '</span><button data-rm-pa="' + i + '" style="background:transparent;border:none;color:#5c6a7a;cursor:pointer;font-size:.7rem;margin-left:auto">\u2715</button></div>'; }).join('') + '</div></div></section>'; })()}
+${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head"><h4>Price Alerts</h4></div><div class="alerts-grid">${alerts.map(a => `<div class="alert-chip"><span>${escapeHtml(a.pair)}</span><strong>${formatPrice(a.price, a.pair)}</strong><span>${a.dir === "above" ? "↑" : "↓"}</span><button class="alert-chip-rm" data-rm-alert="${escapeAttr(a.id)}">✕</button></div>`).join("")}</div></section>` : ""}
 
       ${(() => { const open = positions.filter(p => !p.closedAt); if (open.length === 0) return ""; const corrGroups = [["EUR/USD","GBP/USD","EUR/GBP"],["AUD/USD","NZD/USD"]]; const openPairs = open.map(p => p.pair); const corrWarnings = []; for (const group of corrGroups) { const matched = openPairs.filter(p => group.includes(p)); if (matched.length >= 2) corrWarnings.push(matched.join(", ")); } return `<section class="positions-section"><div class="positions-head"><h4>Open Positions</h4><span>${open.length}</span><button id="closeAllPositions" style="margin-left:auto;padding:3px 10px;background:#3a1a1a;border:1px solid #f85149;color:#f85149;border-radius:4px;cursor:pointer;font-size:.65rem;font-family:inherit">Close All</button></div>${open.map(p => { const cp = getPosPrice(p); const pnl = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (pnl / p.entry) * 100 : 0; const pnlCls = pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'}"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span><button class="pos-btn" data-close-pos="${p.id}">Close</button></div><div class="pos-partial"><button data-partial-pos="${p.id}" data-pct="25">25%</button><button data-partial-pos="${p.id}" data-pct="50">50%</button><button data-partial-pos="${p.id}" data-pct="75">75%</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Cur ${formatPrice(cp, p.pair)}</span><span>Stop ${formatPrice(p.stop, p.pair)}</span><span>Target ${formatPrice(p.target, p.pair)}</span><span style="color:${pnl >= 0 ? '#3fb950' : '#f85149'}">R: ${(() => { const risk = Math.abs(p.entry - p.stop); const reward = Math.abs(cp - p.entry); return risk > 0 ? (p.direction === 'BUY' ? (reward / risk) : (reward / risk)).toFixed(1) : '0'; })()}x</span></div></div>`; }).join("")}${corrWarnings.length > 0 ? `<div style="padding:6px 10px;background:#3a2a1a;border:1px solid #8c6a3a;border-radius:6px;font-size:.68rem;color:#f0c35a;margin-top:4px">⚠ Correlated positions detected: ${corrWarnings.join("; ")}</div>` : ""}</section>`; })()}
 
-      ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; let tradeNotes = {}; try { tradeNotes = JSON.parse(localStorage.getItem("tradeNotes") || "{}"); } catch {} return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; const noteVal = tradeNotes[p.id] || ""; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div><textarea data-note-pos="${p.id}" placeholder="Trade notes..." style="width:100%;margin-top:4px;background:#0e151e;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#8c98a5;font-size:.65rem;resize:vertical;min-height:20px;font-family:inherit">${noteVal.replace(/</g,"&lt;")}</textarea></div>`; }).join("")}</section>`; })()}
+      ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; let tradeNotes = {}; try { tradeNotes = JSON.parse(localStorage.getItem("tradeNotes") || "{}"); } catch {} return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; const noteVal = tradeNotes[p.id] || ""; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div><textarea data-note-pos="${p.id}" placeholder="Trade notes..." style="width:100%;margin-top:4px;background:#0e151e;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#8c98a5;font-size:.65rem;resize:vertical;min-height:20px;font-family:inherit">${escapeHtml(noteVal)}</textarea></div>`; }).join("")}</section>`; })()}
 
       ${(() => { const perfData = (() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss").reverse(); if (sigs.length < 2) return null; let cum = 0; return sigs.map(s => { cum += s.result === "win" ? 1 : -1; return { date: s.timestamp, value: cum }; }); })(); if (!perfData) return ""; const vals = perfData.map(p => p.value); let mx = -Infinity, mn = Infinity; for (const v of vals) { if (v > mx) mx = v; if (v < mn) mn = v; } const rng = mx - mn || 1; const w = 240; const h = 48; const xSt = w / (vals.length - 1); const pts = vals.map((v, i) => `${i * xSt},${h - ((v - mn) / rng) * (h - 6) - 3}`).join(" "); const color = vals[vals.length - 1] >= vals[0] ? "#3fb950" : "#f85149"; return `<section class="perf-section"><div class="perf-head"><h4>Performance</h4><span>${vals[vals.length - 1] >= 0 ? "+" : ""}${vals[vals.length - 1]} pts</span></div><svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg></section>`; })()}
 
@@ -2928,33 +3520,37 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
 function renderHistoryEntry(entry, idx) {
   const dirClass = entry.direction.toLowerCase();
   const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : "○";
+  const pair = escapeHtml(entry.pair);
+  const direction = escapeHtml(entry.direction);
+  const risk = escapeHtml(entry.risk);
+  const entryId = escapeAttr(entry.id);
   return `<div class="history-entry" data-idx="${idx}">
     <div class="history-summary">
       <span class="h-time">${entry.timestamp.toLocaleTimeString()}</span>
-      <span class="h-pair">${entry.pair}</span>
-      <span class="h-dir ${dirClass}">${entry.direction}</span>
+      <span class="h-pair">${pair}</span>
+      <span class="h-dir ${dirClass}">${direction}</span>
       <span class="h-conf">${entry.confidence}%</span>
-      <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${entry.risk}</span>
+      <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${risk}</span>
       <span class="h-vol">${entry.volatilityPct.toFixed(2)}%</span>
       <span class="h-result ${entry.result}">${resultLabel}</span>
-      <span><button class="h-delete" data-del="${entry.id}" title="Delete entry">✕</button><button class="h-trade-btn" data-trade="${entry.id}" title="Open trade" ${entry.direction === "WAIT" ? "disabled" : ""}>→</button><span class="h-expand">▼</span></span>
+      <span><button class="h-delete" data-del="${entryId}" title="Delete entry">✕</button><button class="h-trade-btn" data-trade="${entryId}" title="Open trade" ${entry.direction === "WAIT" ? "disabled" : ""}>→</button><span class="h-expand">▼</span></span>
     </div>
     <div class="history-detail" id="hd-${idx}">
       <div class="history-detail-grid">
-        <div class="hd-item"><span>Pair</span><span>${entry.pair}</span></div>
-        <div class="hd-item"><span>Direction</span><span class="h-dir ${dirClass}">${entry.direction}</span></div>
+        <div class="hd-item"><span>Pair</span><span>${pair}</span></div>
+        <div class="hd-item"><span>Direction</span><span class="h-dir ${dirClass}">${direction}</span></div>
         <div class="hd-item"><span>Entry</span><span>${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"}</span></div>
         <div class="hd-item"><span>Stop</span><span>${entry.stop != null ? formatPrice(entry.stop, entry.pair) : "-"}</span></div>
         <div class="hd-item"><span>Target</span><span>${entry.target != null ? formatPrice(entry.target, entry.pair) : "-"}</span></div>
         <div class="hd-item"><span>Confidence</span><span>${entry.confidence}%</span></div>
-        <div class="hd-item"><span>Risk mode</span><span>${entry.risk}</span></div>
+        <div class="hd-item"><span>Risk mode</span><span>${risk}</span></div>
         <div class="hd-item"><span>Volatility</span><span>${entry.volatilityPct.toFixed(2)}%</span></div>
-        <div class="hd-item"><span>Result</span><span style="color:${entry.result === 'win' ? '#3fb950' : entry.result === 'loss' ? '#f85149' : '#73808d'}">${entry.result.charAt(0).toUpperCase() + entry.result.slice(1)}</span></div>
+        <div class="hd-item"><span>Result</span><span style="color:${entry.result === 'win' ? '#3fb950' : entry.result === 'loss' ? '#f85149' : '#73808d'}">${escapeHtml(entry.result.charAt(0).toUpperCase() + entry.result.slice(1))}</span></div>
         <div class="hd-item"><span>Buy score</span><span>${entry.buyScore}/7</span></div>
         <div class="hd-item"><span>Sell score</span><span>${entry.sellScore}/7</span></div>
       </div>
-      ${entry.reasons.length > 0 ? `<div class="history-detail-reasons"><p>Reasoning</p>${entry.reasons.map(r => `<div class="hd-reason"><span class="hd-r-icon ${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓' : '!'}</span>${r.text}</div>`).join("")}</div>` : ""}
-      ${entry.direction !== "WAIT" ? `<button class="hd-trade-btn" data-trade="${entry.id}">Open Trade →</button>` : ""}
+      ${entry.reasons.length > 0 ? `<div class="history-detail-reasons"><p>Reasoning</p>${entry.reasons.map(r => `<div class="hd-reason"><span class="hd-r-icon ${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓' : '!'}</span>${escapeHtml(r.text)}</div>`).join("")}</div>` : ""}
+      ${entry.direction !== "WAIT" ? `<button class="hd-trade-btn" data-trade="${entryId}">Open Trade →</button>` : ""}
     </div>
   </div>`;
 }
@@ -3057,13 +3653,17 @@ function loadHistory() {
   try {
     const saved = localStorage.getItem("signalHistory");
     if (saved) {
-      autoScan.history = JSON.parse(saved);
-      autoScan.history.forEach(e => e.timestamp = new Date(e.timestamp));
-      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-      const before = autoScan.history.length;
-      autoScan.history = autoScan.history.filter(e => e && e.direction !== "WAIT" && (e.result !== "pending" || (e.id || 0) > cutoff));
-      // Drop WAIT entries recorded by earlier builds so the log reflects BUY/SELL only.
-      if (autoScan.history.length !== before) saveHistory();
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+        const before = parsed.length;
+        // Sanitising also drops WAIT entries written by earlier builds, so the
+        // log only ever contains actionable BUY/SELL signals.
+        autoScan.history = parsed
+          .map(sanitizeHistoryEntry)
+          .filter(e => e && (e.result !== "pending" || (e.id || 0) > cutoff));
+        if (autoScan.history.length !== before) saveHistory();
+      }
     }
   } catch {}
   mlLoad();
@@ -3097,15 +3697,33 @@ function exportAllData() {
 
 function importAllData(json) {
   try {
+    if (typeof json !== "string" || json.length > MAX_IMPORT_BYTES) throw new Error("file too large");
     const data = JSON.parse(json);
-    if (!Array.isArray(data.history) || !Array.isArray(data.positions)) throw new Error("missing history or positions");
-    autoScan.history = data.history.map(e => ({ ...e, timestamp: new Date(e.timestamp) })).filter(e => e.direction !== "WAIT" && !Number.isNaN(e.timestamp.getTime()));
-    positions = data.positions.map(p => ({ ...p, openedAt: new Date(p.openedAt), closedAt: p.closedAt ? new Date(p.closedAt) : null })).filter(p => !Number.isNaN(p.openedAt.getTime()));
-    if (data.watchlist) watchlist = data.watchlist;
-    if (data.alerts) alerts = data.alerts;
-    if (data.scanPairs) { scanPairs = data.scanPairs; saveScanConfig(); }
-    if (data.webhookUrl != null) { webhookUrl = data.webhookUrl; saveWebhook(); }
+    if (!isPlainObject(data) || !Array.isArray(data.history) || !Array.isArray(data.positions)) throw new Error("missing history or positions");
+    if (data.history.length > MAX_IMPORT_ROWS || data.positions.length > MAX_IMPORT_ROWS) throw new Error("too many rows");
+
+    // Sanitise everything before touching live state so a bad file cannot leave
+    // the dashboard half-imported.
+    const nextHistory = data.history.map(sanitizeHistoryEntry).filter(Boolean);
+    const nextPositions = data.positions.map(sanitizePosition).filter(Boolean);
+    const nextWatchlist = Array.isArray(data.watchlist) ? sanitizePairList(data.watchlist) : null;
+    const nextAlerts = Array.isArray(data.alerts) ? sanitizeAlerts(data.alerts) : null;
+    const nextScanPairs = Array.isArray(data.scanPairs) ? sanitizePairList(data.scanPairs) : null;
+
+    autoScan.history = nextHistory;
+    positions = nextPositions;
+    if (nextWatchlist) watchlist = nextWatchlist;
+    if (nextAlerts) alerts = nextAlerts;
+    if (nextScanPairs && nextScanPairs.length > 0) { scanPairs = nextScanPairs; saveScanConfig(); }
+    if (data.webhookUrl != null) {
+      if (!data.webhookUrl) { webhookUrl = ""; saveWebhook(); }
+      else if (isValidWebhookUrl(data.webhookUrl)) { webhookUrl = data.webhookUrl; saveWebhook(); }
+      else showToast("Imported webhook ignored: only https Discord or Telegram URLs are accepted.", "warn");
+    }
+
+    const dropped = (data.history.length - nextHistory.length) + (data.positions.length - nextPositions.length);
     saveHistory(); savePositions(); saveWatchlist(); saveAlerts(); render();
+    if (dropped > 0) showToast(`Imported backup; ${dropped} invalid row(s) skipped.`, "warn");
   } catch {
     alert("That backup file is invalid or incomplete. No data was imported.");
   }
@@ -3148,25 +3766,31 @@ function exportStrategy() {
     exportedAt: new Date().toISOString(),
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (strategyName || "strategy") + ".json";
+  const safeName = (strategyName || "strategy").replace(/[^\w.-]+/g, "_").slice(0, 64) || "strategy";
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = safeName + ".json";
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
 }
 
 function importStrategy(json) {
   try {
+    if (typeof json !== "string" || json.length > MAX_IMPORT_BYTES) throw new Error("file too large");
     const data = JSON.parse(json);
-    if (!data.strategyConfig) { alert("Invalid strategy file: missing strategyConfig"); return; }
-    if (!confirm(`Import strategy "${data.strategyName || "Unnamed"}"?\nThis will overwrite your current strategy config and scan pairs.`)) return;
+    if (!isPlainObject(data) || !isPlainObject(data.strategyConfig)) { alert("Invalid strategy file: missing strategyConfig"); return; }
+    const name = cleanText(data.strategyName, 64) || "Unnamed";
+    if (!confirm(`Import strategy "${name}"?\nThis will overwrite your current strategy config and scan pairs.`)) return;
     saveStrategyConfig(data.strategyConfig);
-    if (data.scanPairs && Array.isArray(data.scanPairs)) { scanPairs = data.scanPairs; saveScanConfig(); }
-    if (data.strategyName) { strategyName = data.strategyName; saveStrategyName(); }
+    if (Array.isArray(data.scanPairs)) {
+      const pairs = sanitizePairList(data.scanPairs);
+      if (pairs.length > 0) { scanPairs = pairs; saveScanConfig(); }
+    }
+    if (data.strategyName) { strategyName = cleanText(data.strategyName, 64); saveStrategyName(); }
     render();
   } catch { alert("Failed to parse strategy file"); }
 }
 
 function renderAlertLog() {
   const entries = alertHistory;
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="alertLogToggle"><div class="history-toggle-left"><h3>Alert Log</h3><span class="history-count">${entries.length}</span></div><span class="arrow">▾</span></button><div class="history-body" id="alertLogBody"><div class="history-scroll" style="max-height:300px">${entries.length === 0 ? '<div class="history-empty">No alerts triggered yet.</div>' : entries.map(e => { const d = new Date(e.timestamp); return `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-bottom:1px solid #0e151e;font-size:.72rem"><span style="color:#5c6a7a;white-space:nowrap;font-variant-numeric:tabular-nums">${d.toLocaleString()}</span><span style="color:#8c98a5;font-weight:600;white-space:nowrap">${e.pair}</span><span style="color:#b58cff;white-space:nowrap">${e.type.replace(/_/g, " ")}</span><span style="color:#8c98a5;flex:1">${e.message}</span></div>`; }).join("")}</div>${entries.length > 0 ? `<div class="history-actions"><button id="clearAlertLog">Clear log</button></div>` : ""}</div></section>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="alertLogToggle"><div class="history-toggle-left"><h3>Alert Log</h3><span class="history-count">${entries.length}</span></div><span class="arrow">▾</span></button><div class="history-body" id="alertLogBody"><div class="history-scroll" style="max-height:300px">${entries.length === 0 ? '<div class="history-empty">No alerts triggered yet.</div>' : entries.map(e => { const d = new Date(e.timestamp); return `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-bottom:1px solid #0e151e;font-size:.72rem"><span style="color:#5c6a7a;white-space:nowrap;font-variant-numeric:tabular-nums">${d.toLocaleString()}</span><span style="color:#8c98a5;font-weight:600;white-space:nowrap">${escapeHtml(e.pair)}</span><span style="color:#b58cff;white-space:nowrap">${escapeHtml(e.type.replace(/_/g, " "))}</span><span style="color:#8c98a5;flex:1">${escapeHtml(e.message)}</span></div>`; }).join("")}</div>${entries.length > 0 ? `<div class="history-actions"><button id="clearAlertLog">Clear log</button></div>` : ""}</div></section>`;
 }
 
 function renderPerformanceSummary() {
@@ -3320,7 +3944,7 @@ function renderAlertConditions() {
     <div class="cond-row"><div class="cond-info"><span class="cond-title">Pattern + Trend</span><span class="cond-desc">Candlestick pattern confirms trend vote</span></div><div class="cond-controls">${tog("pattern_trend")}</div></div>
     <div class="cond-row"><div class="cond-info"><span class="cond-title">High Confidence</span><span class="cond-desc">Confidence exceeds threshold</span></div><div class="cond-controls">${thresh("high_confidence", 50, 100, 1)}${tog("high_confidence")}</div></div>
     <div class="cond-row"><div class="cond-info"><span class="cond-title">Volume Surge</span><span class="cond-desc">Volume > SMA × multiplier</span></div><div class="cond-controls">${thresh("volume_surge", 1.0, 5.0, 0.1)}${tog("volume_surge")}</div></div>
-    <div style="padding-top:4px;display:flex;align-items:center;gap:8px"><button class="scan-button" id="testAlertCond">Test</button>${c.lastTestResult ? `<span style="font-size:.7rem;color:#8c98a5">${c.lastTestResult}</span>` : ""}</div>
+    <div style="padding-top:4px;display:flex;align-items:center;gap:8px"><button class="scan-button" id="testAlertCond">Test</button>${c.lastTestResult ? `<span style="font-size:.7rem;color:#8c98a5">${escapeHtml(c.lastTestResult)}</span>` : ""}</div>
   </div></div></section>`;
 }
 
@@ -3798,8 +4422,9 @@ function mtfWeightOf(tf) {
   return tf === "1d" ? 12 : tf === "4h" ? 10 : tf === "1h" ? 8 : 6;
 }
 
-async function scanPairForOverview(pair) {
+async function scanPairForOverview(pair, token) {
   const [base, quote] = pair.split("/");
+  const staleScan = () => token != null && token !== multiScan.scanToken;
   try {
     const prevDir = multiScan.results[pair] && !multiScan.results[pair].loading ? multiScan.results[pair].direction : null;
     multiScan.results[pair] = { loading: true, direction: "WAIT", confidence: 0, price: null };
@@ -3808,12 +4433,14 @@ async function scanPairForOverview(pair) {
     const ctxTfs = mtfContextTfs(scanTf).filter(t => t !== scanTf);
     const ctxTf = ctxTfs[0] || "4h";
     const rows = await fetchOverviewRows(pair, scanTf);
+    if (staleScan()) return;
     const cfg = loadStrategyConfig();
     const analysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
     let mtfConf = 0;
     let a4h = null;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
       const mtfAdj = await computeMtfAdjustment(base, quote, cfg, analysis.direction, ctxTfs);
+      if (staleScan()) return;
       mtfConf = mtfAdj.score;
       // ctxTf is one of the context timeframes, so its rows already came back
       // with the MTF pass - reuse them instead of issuing a duplicate request.
@@ -3823,11 +4450,13 @@ async function scanPairForOverview(pair) {
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
     const mtf4hDir = a4h ? a4h.direction : null;
     const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
+    if (staleScan()) return;
     const isNew = addSignalToHistory(pair, task);
     if (prevDir && task && task.direction !== prevDir && task.direction !== "WAIT" && prevDir !== "WAIT") { try { const actx = new (window.AudioContext || window.webkitAudioContext)(); const osc = actx.createOscillator(); const gain = actx.createGain(); osc.connect(gain); gain.connect(actx.destination); osc.type = "sine"; osc.frequency.setValueAtTime(task.direction === "BUY" ? 880 : 440, actx.currentTime); osc.frequency.setValueAtTime(task.direction === "BUY" ? 1100 : 330, actx.currentTime + 0.1); gain.gain.setValueAtTime(0.15, actx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, actx.currentTime + 0.3); osc.start(); osc.stop(actx.currentTime + 0.3); } catch {} }
     const lastRow = rows.at(-1);
     const price = lastRow ? lastRow.close : null;
     const change = rows.length >= 2 ? ((rows[rows.length - 1].close - rows[rows.length - 2].close) / rows[rows.length - 2].close) * 100 : null;
+    if (staleScan()) return;
     multiScan.results[pair] = {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: conf,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
@@ -3836,13 +4465,20 @@ async function scanPairForOverview(pair) {
     };
     if (isNew && task && task.direction !== "WAIT") notifySignal({ direction: task.direction, pair, confidence: task.confidence, risk: task.risk, entry: task.entry });
   } catch {
-    multiScan.results[pair] = { loading: false, direction: "WAIT", confidence: 0, price: null };
+    if (!staleScan()) multiScan.results[pair] = { loading: false, direction: "WAIT", confidence: 0, price: null };
   }
   scheduleRender();
 }
 
+function cancelOverviewScan() {
+  multiScan.scanToken++;
+  multiScan.scanning = false;
+  multiScan.progress = "";
+}
+
 async function scanAllPairs() {
-  if (multiScan.scanning) return;
+  if (multiScan.scanning) cancelOverviewScan();
+  const token = ++multiScan.scanToken;
   multiScan.scanning = true;
   multiScan.results = {};
   render();
@@ -3850,7 +4486,7 @@ async function scanAllPairs() {
   const slow = scanPairs.filter(p => !fast.includes(p));
   const total = scanPairs.length;
   let done = 0;
-  const bump = () => { done++; multiScan.progress = `${done}/${total}`; scheduleRender(); };
+  const bump = () => { if (token !== multiScan.scanToken) return; done++; multiScan.progress = `${done}/${total}`; scheduleRender(); };
   multiScan.progress = `0/${total}`;
   render();
   // Crypto and FX tiers are independent, so run them at the same time instead of
@@ -3861,11 +4497,12 @@ async function scanAllPairs() {
   // run away with the provider budget.
   const runTier = async (list, limit) => {
     for (let i = 0; i < list.length; i += limit) {
-      if (!multiScan.scanning) return;
-      await Promise.all(list.slice(i, i + limit).map(async (p) => { await scanPairForOverview(p); bump(); }));
+      if (token !== multiScan.scanToken) return;
+      await Promise.all(list.slice(i, i + limit).map(async (p) => { await scanPairForOverview(p, token); bump(); }));
     }
   };
   await Promise.all([runTier(fast, 10), runTier(slow, 10)]);
+  if (token !== multiScan.scanToken) return;
   multiScan.scanning = false;
   multiScan.progress = "";
   render();
@@ -4030,31 +4667,31 @@ async function updateOverviewPrices() {
       const data = await Promise.all(allBinance.map(async (pair) => {
         const [base, quote] = pair.split("/");
         try {
-          const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${binanceSymbol(base, quote)}`);
-          if (!r.ok) return null;
-          const d = await r.json();
-          return { pair, price: Number(d.lastPrice), change: Number(d.priceChangePercent) };
+          const symbol = binanceSymbol(base, quote);
+          const result = await cachedJson(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`, {
+            ttl: MARKET_TTL.ticker,
+            key: `binance-ticker:${symbol}`,
+            provider: "binance",
+          });
+          const d = result.data;
+          const price = Number(d.lastPrice);
+          if (!Number.isFinite(price)) return null;
+          return { pair, price, change: Number(d.priceChangePercent) };
         } catch { return null; }
       }));
       for (const d of data) { if (d) results[d.pair] = d; }
     }
     if (fxBases.length > 0) {
-      const now = Date.now();
-      let fxData = null;
-      if (fxCache.rates && now - fxCache.time < 3600000) {
-        fxData = fxCache.rates;
-      } else {
-        const fresh = await Promise.all(fxBases.map(async (base) => {
-          try {
-            const r = await fetch(`https://api.frankfurter.dev/v1/latest?from=${base}`);
-            if (!r.ok) return null;
-            const d = await r.json();
-            return { base, rates: d.rates };
-          } catch { return null; }
-        }));
-        fxCache = { rates: fresh, time: now };
-        fxData = fresh;
-      }
+      const fxData = await Promise.all(fxBases.map(async (base) => {
+        try {
+          const result = await cachedJson(`https://api.frankfurter.dev/v1/latest?from=${base}`, {
+            ttl: MARKET_TTL.fxLatest,
+            key: `fx-latest:${base}`,
+            provider: "frankfurter",
+          });
+          return { base, rates: result.data.rates };
+        } catch { return null; }
+      }));
       for (const fd of fxData) {
         if (!fd) continue;
         for (const pair of fx) {
@@ -4186,6 +4823,7 @@ async function loadDataOnly() {
   state.isDemo = false;
   state.rows = [];
   state.source = "";
+  state.cacheLabel = "";
   try {
     const canUseBinance = nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD");
     const fxIntra = fxIntradayable(base, quote);
@@ -4227,6 +4865,9 @@ async function loadDataOnly() {
     if (requestId !== activeDataRequestId || base !== state.base || quote !== state.quote || timeframe !== state.timeframe) return false;
     state.rows = rows;
     state.source = source;
+    const metaKey = lastHttpMeta && typeof lastHttpMeta.key === "string" ? lastHttpMeta.key : "";
+    const chartMeta = /^(binance|bybit|coinbase|fx-daily|td:series):/.test(metaKey) ? lastHttpMeta : null;
+    state.cacheLabel = chartMeta && chartMeta.age > 1500 ? formatCacheAge(chartMeta.age) : "";
     state.status = "ready";
     return true;
   } catch (error) {
@@ -4234,6 +4875,7 @@ async function loadDataOnly() {
     console.error(`[${base}/${quote}] Data fetch failed:`, error?.message || error);
     state.rows = generateFallbackRows(base, quote);
     state.source = "Offline demo data because live market data could not be reached";
+    state.cacheLabel = "";
     state.status = "ready";
     state.isDemo = true;
     state.error = "Live data is unavailable in this browser session. Signals are disabled; the chart below is simulated demo data and must not be traded.";
@@ -4247,6 +4889,7 @@ async function load() {
   state.error = "";
   state.rows = [];
   state.source = "";
+  state.cacheLabel = "";
   state.mtf = {};
   render();
   const loaded = await loadDataOnly();
@@ -4656,6 +5299,7 @@ function setupEvents() {
     if (event.target.id === "scanTfSel") {
       multiScan.timeframe = event.target.value;
       saveOverviewPrefs();
+      cancelOverviewScan();
       scanAllPairs();
       return;
     }
@@ -4757,13 +5401,9 @@ function setupEvents() {
       removeAlert(Number(target.dataset.rmAlert));
       return;
     }
-    if (target.dataset.tf) {
-      if (state.timeframe === target.dataset.tf) return;
-      const ok = nonFiat.has(state.base) || (binanceFiat.has(state.base) && state.quote === "USD");
-      if (ok) { state.timeframe = target.dataset.tf; load(); }
-      else if (state.base !== state.quote) { loadDataOnly(); render(); }
-      return;
-    }
+    if (target.dataset.tf) { switchTF(target.dataset.tf); return; }
+    if (target.dataset.action === "ml-reset") { mlReset(); render(); return; }
+    if (target.dataset.action === "toggle-overlay") { toggleOverlay(target.dataset.overlay); return; }
     if (target.id === "settingsToggle") {
       document.getElementById("screenshotPanel").style.display = "none";
       const panel = document.getElementById("settingsPanel");
@@ -4801,9 +5441,14 @@ function setupEvents() {
     if (target.id === "testWebhook") {
       const inp = document.getElementById("webhookInput");
       if (inp) {
-        webhookUrl = inp.value;
+        webhookUrl = inp.value.trim();
+        if (!isValidWebhookUrl(webhookUrl)) {
+          showToast("Webhook must be an https Discord or Telegram URL.", "error");
+          return;
+        }
         saveWebhook();
         sendWebhook({ direction: "TEST", pair: "Webhook", confidence: 100, risk: "Test", entry: null, stop: null, target: null });
+        showToast("Test message sent.", "ok");
       }
       return;
     }
@@ -4828,6 +5473,12 @@ function setupEvents() {
       return;
     }
     if (target.id === "exportData") { exportAllData(); return; }
+    if (target.id === "clearCache") {
+      clearMarketCache();
+      render();
+      if (window.showToast) showToast("Market cache cleared.", "ok");
+      return;
+    }
     if (target.id === "exportStrategy") { exportStrategy(); return; }
     if (target.dataset.trade) {
       const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
@@ -5036,6 +5687,7 @@ loadHistory();
 loadPositions();
 loadWebhook();
 loadFxApiPrefs();
+loadTdGate();
 loadAlertConditions();
 loadBacktestMulti();
 loadAlertHistory();
@@ -5050,7 +5702,7 @@ load();
 connectWS();
 loadTheme();
 fetchEconEvents();
-setInterval(updateOverviewPrices, 10000);
+setInterval(updateOverviewPrices, 15000);
 setInterval(checkPriceLevelAlerts, 15000);
 setInterval(function() { if (document.querySelector('.session-bar')) render(); }, 60000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }

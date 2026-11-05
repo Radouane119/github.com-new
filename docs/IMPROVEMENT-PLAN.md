@@ -1,0 +1,185 @@
+# Trading Signal Dashboard — Improvement Plan
+
+Status: Phases 0–2 implemented · Baseline: `9fbb8e3` · Tests: 216 pass / 0 fail
+
+## Snapshot
+
+| Metric | Value |
+| --- | --- |
+| `index.html` | 333 KB, 4,810 lines |
+| Inline JS | 301 KB, 223 functions |
+| Inline CSS | 24 KB |
+| Inline `style=` attributes | 540 |
+| `fetch()` call sites | 17 providers in 1 script |
+| Inline event handlers | 8 `onclick` |
+| `innerHTML =` writes | 4 (one is the whole app) |
+| Build step | none |
+| CI | deploy only — tests never run |
+| Distribution | single file, works from `file://`, GitHub Pages |
+
+## Principles
+
+1. **Never ship a regression.** The 161-test suite must gate every phase.
+2. **One phase at a time.** Each phase is independently releasable and reversible.
+3. **Preserve the deployment model.** No server, no account, still opens from `file://` and GitHub Pages.
+4. **Last thing first.** Architecture changes come after behavior, cache, and rendering are stable, because they touch everything.
+
+---
+
+## Phase 0 — Safety net (S · ~2 h) — DONE
+
+**Goal:** make regressions impossible to deploy.
+
+1. `.github/workflows/ci.yml` — on every push/PR: Node 20, `node test/dashboard.test.js`.
+2. `deploy-pages.yml` — add a `test` job, make `deploy` depend on it (`needs: test`).
+3. `package.json` scripts: `test`, `check` (syntax-check `sw.js` + run tests). Note: `npm` is blocked by the local PowerShell execution policy; `node test/dashboard.test.js` works.
+4. `scripts/verify-html.mjs` — extract the inline script with the same regex the tests use, compile it with `vm.Script` (catches syntax errors without a DOM), assert the bootstrap marker exists.
+5. Document the commands in `README.md`.
+
+**Done when:** a deliberately failing test blocks deployment.
+
+---
+
+## Phase 1 — Safety hardening (M · ~1 day) — DONE
+
+**Goal:** remove the XSS/data-exfiltration surface without changing behavior.
+
+Implementation notes: kept the single-file layout, so item 6 uses a CSP `<meta>` with a SHA-256 hash of the inline script; `scripts/sync-csp.mjs` recomputes it and `scripts/verify-html.mjs` fails when it is stale. Item 7 was a terminal-encoding artifact, not a file defect — the emoji bytes were already correct.
+
+1. Add `escapeHtml()` / `escapeAttr()` helpers.
+2. Escape every user-controlled value interpolated into HTML. Highest priority:
+   - `webhookUrl` (line 2740) and `strategyName` (line 2760) in `value="..."`.
+   - Trade notes (line 2867) — currently only `<` is escaped.
+   - **External API strings**, which are the real attack surface: economic-calendar titles/countries (`renderEconCalendar`, ~2682), provider error text, `state.source`, webhook responses.
+3. Validate the webhook before save/test/send: `new URL()`, `https:` only, host allowlist (`discord.com`, `discordapp.com`, `api.telegram.org`). Prevents a malicious imported backup from exfiltrating localStorage.
+4. Harden import (`importData`, ~3056–3165): whitelist keys, reject `__proto__`/`constructor`/`prototype`, cap array/string sizes, validate numeric fields.
+5. Replace the 8 inline `onclick=` handlers with delegated `data-action` listeners. Required before a strict CSP.
+6. Move the inline `<script>` to `app.js` (or keep inline and emit a build-time hash) and add a CSP `<meta>`:
+   - `default-src 'self'`, `object-src 'none'`, `base-uri 'none'`,
+   - `connect-src` limited to the exact provider hosts already used (Binance/Bybit/Coinbase/Frankfurter/jsDelivr/Twelve Data/faireconomy/Discord/Telegram + WS origin),
+   - `img-src 'self' data: blob:`, `style-src 'self' 'unsafe-inline'` (until Phase 4 removes inline styles).
+7. Fix the mojibake webhook arrows (`"??" : "??"`, line 890) by using Unicode escapes.
+
+**Done when:** tests cover escaping, webhook validation, and hostile-import rejection; CSP loads with zero console violations.
+
+---
+
+## Phase 2 — Data reliability & speed (L · ~2–3 days) — DONE
+
+**Goal:** stop rate-limit failures and repeated network work.
+
+Implementation notes: the cache lives in `index.html` next to the other helpers (`MARKET_CACHE_PREFIX`, `cachedJson` / `httpJson`, `marketCache*`, `providerBreakers`). It keeps 120 entries / ~2.4 M characters (below the 5 MB localStorage quota, which browsers count in UTF-16), defaults to one attempt so the existing Binance → Bybit → Coinbase chain still handles transient failures, and exposes `retries` for callers that want in-layer retry. Tickers are cached for 20 s instead of 10 s to leave headroom. Webhook POSTs and the credit-gated Twelve Data request are intentionally outside the cache. The scan token invalidates stale results when the timeframe changes. Tests: M35 covers cache hits, in-flight dedupe, TTL expiry, reload persistence, stale-if-error, the breaker, `tdGate` persistence, cached candles and scan cancellation.
+
+Current issues (baseline):
+- 17 independent `fetch` calls, no shared cache, no request dedupe.
+- Twelve Data budget (`tdGate`, line 1564) lives only in memory — a page reload resets the 760/day counter and can exceed the provider quota.
+- `setInterval(updateOverviewPrices, 10000)` (line 5053) re-hits providers every 10 s per tab, regardless of use.
+- Scan-all re-fetches candle series that were just used for the chart.
+
+Changes:
+1. `httpJson(url, { ttl, key, provider, signal, retries })` helper:
+   - in-memory `Map` + `localStorage` persistence (`mdc:v1:`), versioned;
+   - in-flight promise dedupe for identical URLs;
+   - LRU cap (~200 entries / ~4 MB) so the 5 MB quota is never hit;
+   - stale-while-revalidate; return `{ data, fetchedAt, stale }`.
+2. TTL policy: tickers 10 s, intraday candles 60 s, daily candles 30 min, FX daily 6 h, econ calendar 6 h, correlation 1 h.
+3. Route all 17 fetch sites through it, with jittered retry on 429/5xx and a per-provider circuit breaker (3 failures → 60 s open, serve stale).
+4. Persist `tdGate` and `fxApiStatus` to localStorage keyed by UTC date; expose "resets at 00:00 UTC".
+5. Cache candles by `base/quote/timeframe/limit`; abort in-flight scans when the pair/timeframe changes; cap scan concurrency.
+6. Settings: cache size/entries, "Clear market cache", and a "cached 42 s ago" indicator next to the source line.
+
+**Done when:** two identical calls inside a TTL = one network request (tested), quota survives reload (tested), scan-all makes no duplicate requests.
+
+---
+
+## Phase 3 — Rendering that keeps user state (L · ~3 days)
+
+**Goal:** stop a 10-second refresh cycle from destroying focus, scroll, and typed text.
+
+Current issues:
+- `render()` writes the entire app into `root.innerHTML` (line 2716) on every toggle.
+- A 60-second timer re-renders the whole page unconditionally (line 5055).
+- Every render re-runs `analyze()` and redraws the chart canvas.
+
+Changes:
+1. **Cheap win first:** `captureUiState()` / `restoreUiState()` around `render()` — active element id, selection range, `window.scrollY`, each scrollable panel's `scrollTop`, open settings/screenshot/backtest panels, `<details open>`.
+2. Split rendering into stable regions (`data-region`): summary, workspace/chart, positions, history, overview, alerts, backtest, paper, replay. `render()` becomes an orchestrator that patches only dirty regions; the existing `renderX()` helpers already cover most sections.
+3. Memoize `analyze(rows, cfg)` by rows revision + config hash, and `drawChart()` by pair/timeframe/row-count/overlay/size. Chart drawing is the most expensive work per render.
+4. Debounce note persistence (currently one `localStorage.setItem` per keystroke) and input-driven renders.
+5. Replace the 60 s full render with `renderSessionBar()` only.
+6. **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.
+7. Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
+
+**Done when:** typing a trade note survives a minute tick; toggling an overlay preserves focus and scroll; only the chart repaints when the chart changes.
+
+---
+
+## Phase 4 — Maintainability: modules + build (L · ~4–5 days)
+
+**Goal:** make the 301 KB script navigable without breaking `file://` or Pages.
+
+Target layout:
+
+```
+src/
+  main.js                 bootstrap
+  state/store.js          state, localStorage schema + version, import/export
+  data/providers.js       exchange/FX/econ providers
+  data/http.js            cache, retry, circuit breaker
+  core/indicators.js      ema, rsi, atr, adx, bollinger, ichimoku, obv, vwap, macd
+  core/analysis.js        analyze(), scoring, pullback, trailing
+  core/ml.js
+  core/backtest.js        backtest, monte carlo, walk-forward, optimizer, correlation
+  ui/render.js            shell + regions
+  ui/chart.js             canvas rendering
+  ui/events.js            delegated listeners
+  ui/panels/*.js
+```
+
+Build with esbuild (`build.mjs`) into the existing single-file shape:
+- inline bundle + CSS into `index.html`, so `file://` still works;
+- emit `sw.js` with a content-hash cache name and the real asset list (no more manual `signals-v3` bump);
+- emit the CSP script hash if the script stays inline.
+
+Tests migrate from regex/`vm` extraction to direct module imports, keeping the current 161 assertions as the parity baseline. CI adds `node build.mjs --check` so committed output can't drift.
+
+**Done when:** `node build.mjs` reproduces the shipped HTML byte-for-byte, all tests pass against modules, and the site still opens from `file://`.
+
+---
+
+## Phase 5 — Quality depth & polish (M · ongoing)
+
+1. ESLint flat config (`no-undef`, `no-unused-vars`, `no-redeclare`) on `src/`; warnings first, then errors.
+2. Playwright smoke test: load → wait for ready → switch timeframe → toggle theme/overlay → run backtest → export/import. Catches render crashes the `vm` harness cannot.
+3. Surface storage failures: the ~20 `catch {}` blocks around `localStorage` silently discard data on quota errors. Toast on `QuotaExceededError`.
+4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, screenshots, `id`/`scope`, and a "new version available" update prompt.
+5. README: architecture, dev commands, and an explicit privacy note (webhook URL and API key are readable by anything on the same origin).
+6. Optional domain track: confidence calibration (predicted vs realized win rate), per-pair performance table, slippage realism, and a persistent "demo data" watermark on every panel while fallback data is active.
+
+---
+
+## Order and rationale
+
+```
+Phase 0  Safety net        ──►  Phase 1  Safety
+                                      │
+                                      ▼
+                               Phase 2  Data/cache
+                                      │
+                                      ▼
+                               Phase 3  Rendering
+                                      │
+                                      ▼
+                               Phase 4  Modules/build
+                                      │
+                                      ▼
+                               Phase 5  Polish
+```
+
+Modules come last deliberately: extracting files before cache/rendering behavior settles would force the same 300 KB diff through review twice. Phases 0–2 are low-risk and user-visible; Phase 3 is the biggest UX win; Phase 4 is the biggest long-term win and the only phase that changes how the app is built.
+
+## Non-goals
+
+- Framework rewrite (React/Svelte) — the app is small, offline-first, and build-free by design.
+- TypeScript migration — high churn for a single-maintainer PWA.
+- Any backend, account system, or real order execution — out of scope and a regulatory risk.

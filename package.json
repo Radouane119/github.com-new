@@ -4,6 +4,9 @@
   "private": true,
   "description": "Forex, Crypto & Gold trading ideas dashboard",
   "scripts": {
-    "test": "node test/dashboard.test.js"
+    "test": "node test/dashboard.test.js",
+    "verify": "node scripts/verify-html.mjs",
+    "sync-csp": "node scripts/sync-csp.mjs",
+    "check": "node scripts/verify-html.mjs && node test/dashboard.test.js"
   }
 }

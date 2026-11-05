@@ -788,6 +788,215 @@ ctx.AbortController = realAbortScan;
 vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = ''; fxUsdLegCache.clear(); tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = '';", ctx);
 
 console.log("");
+console.log("--- M34: untrusted data is escaped and rejected at the boundary ---");
+// The browser supplies URL; the sandbox needs it for webhook validation.
+if (!ctx.URL) ctx.URL = URL;
+const alertMsgs = [];
+const realAlert = ctx.alert;
+const realConfirm = ctx.confirm;
+ctx.alert = (msg) => alertMsgs.push(String(msg));
+ctx.confirm = () => true;
+
+assert(ctx.escapeHtml('<img src=x onerror="a">&\'') === "&lt;img src=x onerror=&quot;a&quot;&gt;&amp;&#39;", "escapeHtml neutralises HTML metacharacters");
+assert(vm.runInContext("escapeAttr === escapeHtml", ctx), "escapeAttr uses the same escaping as escapeHtml");
+assert(ctx.escapeHtml(null) === "" && ctx.escapeHtml(42) === "42", "escapeHtml handles null and numbers");
+
+assert(ctx.isValidWebhookUrl("https://discord.com/api/webhooks/1/x"), "https Discord webhooks are accepted");
+assert(ctx.isValidWebhookUrl("https://canary.discord.com/api/webhooks/1/x"), "Discord subdomains are accepted");
+assert(ctx.isValidWebhookUrl("https://api.telegram.org/bot1/sendMessage"), "the Telegram API is accepted");
+assert(!ctx.isValidWebhookUrl("http://discord.com/api/webhooks/1/x"), "plain http webhooks are rejected");
+assert(!ctx.isValidWebhookUrl("https://discord.com.evil.example/x"), "look-alike hosts are rejected");
+assert(!ctx.isValidWebhookUrl("javascript:alert(1)"), "javascript: URLs are rejected");
+assert(!ctx.isValidWebhookUrl(""), "empty webhooks are rejected");
+assert(!ctx.isValidWebhookUrl("https://example.com/hook"), "unrelated hosts are rejected");
+
+assert(ctx.cleanPair("eur/usd") === "EUR/USD", "cleanPair normalises a valid pair");
+assert(ctx.cleanPair("<img>/USD") === null, "cleanPair rejects markup");
+assert(ctx.cleanPair("EUR/USD/EVIL") === null, "cleanPair rejects extra segments");
+assert(JSON.stringify(ctx.sanitizePairList(["BTC/USD", "btc/usd", "<x>", 5])) === '["BTC/USD"]', "sanitizePairList dedupes and drops junk");
+
+const nowIso = new Date().toISOString();
+const goodEntry = ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "BUY", timestamp: nowIso, confidence: 140, risk: "<b>Low</b>", reasons: [{ ok: true, text: "<script>x</script>" }] });
+assert(goodEntry && goodEntry.confidence === 100, "history confidence is clamped, got " + (goodEntry && goodEntry.confidence));
+assert(goodEntry.risk === "<b>Low</b>", "history risk stays raw for the renderer to escape");
+assert(goodEntry.reasons[0].text === "<script>x</script>", "reason text is bounded but kept raw");
+assert(ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "WAIT", timestamp: nowIso }) === null, "WAIT entries are rejected");
+assert(ctx.sanitizeHistoryEntry({ pair: "<img>/USD", direction: "BUY", timestamp: nowIso }) === null, "hostile pairs are rejected");
+assert(ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "BUY", timestamp: "nope" }) === null, "invalid timestamps are rejected");
+assert(ctx.sanitizePosition({ pair: "EUR/USD", direction: "BUY", entry: null, openedAt: nowIso }) === null, "positions without an entry price are rejected");
+const pos = ctx.sanitizePosition({ id: '1"><img>', pair: "EUR/USD", direction: "BUY", entry: 1.1, openedAt: nowIso });
+assert(pos && pos.id !== '1"><img>', "unsafe string position ids are replaced");
+assert(ctx.sanitizeAlerts([{ pair: "EUR/USD", price: -1 }, { pair: "EUR/USD", price: 1.1 }]).length === 1, "non-positive alert prices are dropped");
+const alertRow = ctx.sanitizeAlertHistory([{ pair: "EUR/USD", timestamp: nowIso, type: "<b>risk</b>", message: "<img>" }]);
+assert(alertRow.length === 1 && alertRow[0].type === "<b>risk</b>", "alert types are bounded and left raw for the renderer");
+
+// Import must reject hostile or malformed backups without touching live state.
+vm.runInContext("autoScan.history = [{ pair: 'EUR/USD', direction: 'BUY', timestamp: new Date(), confidence: 70, risk: 'Low', reasons: [], result: 'pending', id: Date.now() }]", ctx);
+const historyBefore = vm.runInContext("autoScan.history.length", ctx);
+const realRender = ctx.render;
+ctx.render = () => {};
+alertMsgs.length = 0;
+ctx.importAllData(JSON.stringify({ history: "nope", positions: [] }));
+assert(alertMsgs.length === 1 && vm.runInContext("autoScan.history.length", ctx) === historyBefore, "a malformed import is rejected without changing state");
+ctx.importAllData(JSON.stringify({
+  history: [
+    { pair: "EUR/USD", direction: "BUY", timestamp: nowIso, confidence: 80 },
+    { pair: "<img>/USD", direction: "BUY", timestamp: nowIso },
+  ],
+  positions: [{ pair: "BTC/USD", direction: "SELL", entry: 100, openedAt: nowIso }],
+  webhookUrl: "javascript:alert(1)",
+  watchlist: ["BTC/USD", "<x>"],
+}));
+assert(vm.runInContext("autoScan.history.length", ctx) === 1, "an import keeps only valid history rows");
+assert(vm.runInContext("positions.length", ctx) === 1, "an import keeps only valid positions");
+assert(vm.runInContext("webhookUrl", ctx) === "", "an imported javascript: webhook is ignored");
+assert(JSON.stringify(vm.runInContext("watchlist", ctx)) === '["BTC/USD"]', "an imported watchlist is sanitised");
+assert(alertMsgs.length === 1, "a partially valid import does not raise the invalid-file alert");
+ctx.importAllData("x".repeat(2 * 1024 * 1024 + 1));
+assert(alertMsgs.length === 2, "oversized imports are rejected before parsing");
+ctx.render = realRender;
+ctx.alert = realAlert;
+ctx.confirm = realConfirm;
+
+console.log("");
+console.log("--- M35: shared market cache, circuit breaker and persisted budget ---");
+// The cache is process-wide, so every test below starts from a clean slate.
+const realCacheFetch = ctx.fetch;
+try {
+  vm.runInContext("clearMarketCache()", ctx);
+
+  // A fresh entry is reused without touching the network.
+  let hitCalls = 0;
+  ctx.fetch = () => {
+    hitCalls++;
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ value: 42 }) });
+  };
+  const hit1 = await ctx.cachedJson("https://example.test/a", { ttl: 60000, key: "test:a", provider: "test" });
+  const hit2 = await ctx.cachedJson("https://example.test/a", { ttl: 60000, key: "test:a", provider: "test" });
+  assert(hitCalls === 1, "a fresh cache entry does not re-fetch, got " + hitCalls + " calls");
+  assert(hit1.cache === "miss" && hit2.cache === "hit", "cache miss then hit is reported, got " + hit1.cache + "/" + hit2.cache);
+  assert(hit2.data.value === 42, "the cached payload is returned intact");
+
+  // Two callers for the same key share one in-flight request.
+  let inflightCalls = 0;
+  let releaseInflight = null;
+  ctx.fetch = () => {
+    inflightCalls++;
+    return new Promise((resolve) => {
+      releaseInflight = () => resolve({ ok: true, status: 200, json: async () => ({ value: 7 }) });
+    });
+  };
+  const shared1 = ctx.cachedJson("https://example.test/b", { ttl: 60000, key: "test:b", provider: "test" });
+  const shared2 = ctx.cachedJson("https://example.test/b", { ttl: 60000, key: "test:b", provider: "test" });
+  releaseInflight();
+  const [sharedA, sharedB] = await Promise.all([shared1, shared2]);
+  assert(inflightCalls === 1, "identical in-flight keys are deduped, got " + inflightCalls + " requests");
+  assert(sharedA.data.value === 7 && sharedB.data.value === 7, "both deduped callers receive the payload");
+
+  // TTL expiry forces a refetch.
+  let ttlCalls = 0;
+  ctx.fetch = () => {
+    ttlCalls++;
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ value: ttlCalls }) });
+  };
+  await ctx.cachedJson("https://example.test/c", { ttl: 1, key: "test:c", provider: "test" });
+  await new Promise((resolve) => setTimeout(resolve, 8));
+  const expired = await ctx.cachedJson("https://example.test/c", { ttl: 1, key: "test:c", provider: "test" });
+  assert(ttlCalls === 2 && expired.cache === "miss", "an expired entry is fetched again, got " + ttlCalls + " calls/" + expired.cache);
+
+  // Persistence: clearing only the in-memory maps simulates a page reload.
+  let reloadCalls = 0;
+  ctx.fetch = () => {
+    reloadCalls++;
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ value: "persisted" }) });
+  };
+  await ctx.cachedJson("https://example.test/d", { ttl: 60000, key: "test:d", provider: "test" });
+  vm.runInContext("marketCache.clear(); marketCacheIndex = null;", ctx);
+  const reloaded = await ctx.cachedJson("https://example.test/d", { ttl: 60000, key: "test:d", provider: "test" });
+  assert(reloadCalls === 1 && reloaded.cache === "hit", "a persisted entry survives a reload, got " + reloadCalls + " calls/" + reloaded.cache);
+  assert(reloaded.data.value === "persisted", "the rehydrated payload matches");
+  assert(vm.runInContext("marketCacheStats().entries", ctx) >= 1, "the cache index reports stored entries");
+
+  // Stale-if-error: a failed refresh keeps the last good payload available.
+  await new Promise((resolve) => setTimeout(resolve, 8));
+  ctx.fetch = () => Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+  const stale = await ctx.cachedJson("https://example.test/d", { ttl: 1, key: "test:d", provider: "test" });
+  assert(stale.cache === "stale-error" && stale.data.value === "persisted", "a failed refresh serves the stale payload, got " + stale.cache);
+
+  // Circuit breaker: three provider failures open the circuit and skip fetch.
+  vm.runInContext("clearMarketCache()", ctx);
+  let breakerCalls = 0;
+  ctx.fetch = () => {
+    breakerCalls++;
+    return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+  };
+  for (let i = 0; i < 3; i++) {
+    try { await ctx.cachedJson("https://example.test/e", { ttl: 0, key: "test:e:" + i, provider: "brk" }); } catch {}
+  }
+  const callsBeforeOpen = breakerCalls;
+  let openError = null;
+  try { await ctx.cachedJson("https://example.test/e", { ttl: 0, key: "test:e:open", provider: "brk" }); } catch (e) { openError = e && e.message; }
+  assert(breakerCalls === callsBeforeOpen && openError && openError.includes("cooling"), "an open breaker fails fast, got " + breakerCalls + " calls and " + openError);
+
+  // Clearing the cache also resets breaker state.
+  vm.runInContext("clearMarketCache()", ctx);
+  assert(vm.runInContext("marketCacheStats().entries", ctx) === 0 && ls.get("mdc:v1:__index") == null, "clearing removes the persisted index");
+
+  // The daily Twelve Data budget survives a reload, but only for the same UTC day.
+  vm.runInContext("localStorage.removeItem('tdGate:v1'); tdGate.stamps = []; tdGate.day = ''; tdGate.used = 0; tdGate.pausedUntil = 0; fxApiStatus = '';", ctx);
+  const today = new Date().toISOString().slice(0, 10);
+  vm.runInContext(`tdGate.day = '${today}'; tdGate.used = 123; fxApiStatus = 'daily credit budget reached'; saveTdGate(); tdGate.used = 0; tdGate.day = ''; fxApiStatus = ''; loadTdGate();`, ctx);
+  assert(vm.runInContext("tdGate.used", ctx) === 123, "the request budget is restored on reload, got " + vm.runInContext("tdGate.used", ctx));
+  assert(vm.runInContext("fxApiStatus", ctx).includes("budget"), "the restored budget status is shown in Settings");
+  vm.runInContext("localStorage.setItem('tdGate:v1', JSON.stringify({ day: '2000-01-01', used: 500, pausedUntil: 0, status: 'old' })); tdGate.used = 0; tdGate.day = ''; loadTdGate();", ctx);
+  assert(vm.runInContext("tdGate.used", ctx) === 0, "a budget from another UTC day is discarded");
+  assert(ls.get("tdGate:v1") == null, "the stale budget record is removed");
+
+  // fetchBinanceRows is cached too, so a scan cannot re-download the same candles.
+  const realAbort = ctx.AbortController;
+  ctx.AbortController = AbortController;
+  vm.runInContext("clearMarketCache(); lastCryptoSource = 'Binance';", ctx);
+  let binanceCalls = 0;
+  const nowMs = Date.now();
+  ctx.fetch = () => {
+    binanceCalls++;
+    const candles = Array.from({ length: 5 }, (_, i) => {
+      const stamp = nowMs - (5 - i) * 3600000;
+      return [stamp, "100", "101", "99", "100.5", "10"];
+    });
+    return Promise.resolve({ ok: true, status: 200, json: async () => candles });
+  };
+  const binanceA = await ctx.fetchBinanceRows("BTC", "USD", "1h");
+  const binanceB = await ctx.fetchBinanceRows("BTC", "USD", "1h");
+  assert(binanceCalls === 1, "repeated candle loads use the cache, got " + binanceCalls + " requests");
+  assert(binanceA.length === 5 && binanceB.length === 5 && binanceB[4].close === 100.5, "cached candles parse identically");
+  ctx.AbortController = realAbort;
+
+  // Starting a new scan invalidates the previous token so an old timeframe's
+  // results cannot overwrite the new run.
+  const realOverviewRows = ctx.fetchOverviewRows;
+  const realBinanceRowsForScan = ctx.fetchBinanceRows;
+  ctx.fetchOverviewRows = async () => rows;
+  ctx.fetchBinanceRows = async () => rows;
+  vm.runInContext("scanPairs = ['BTC/USD', 'ETH/USD', 'EUR/USD']; multiScan.results = {}; multiScan.scanning = false; multiScan.scanToken = 0; multiScan.timeframe = '1d';", ctx);
+  const firstScan = ctx.scanAllPairs();
+  const secondScan = ctx.scanAllPairs();
+  await Promise.all([firstScan, secondScan]);
+  assert(vm.runInContext("multiScan.scanning", ctx) === false, "a superseded scan releases the scanning lock");
+  assert(vm.runInContext("multiScan.scanToken", ctx) >= 2, "restarting a scan advances the cancellation token");
+  ctx.fetchOverviewRows = realOverviewRows;
+  ctx.fetchBinanceRows = realBinanceRowsForScan;
+  vm.runInContext("scanPairs = [...allScanPairs]; multiScan.results = {}; multiScan.progress = '';", ctx);
+
+  assert(ctx.formatCacheAge(42000) === "42s ago", "cache age under a minute is shown in seconds");
+  assert(ctx.formatCacheAge(5 * 60 * 1000) === "5m ago", "cache age under an hour is shown in minutes");
+  assert(ctx.formatCacheAge(2 * 60 * 60 * 1000) === "2h ago", "cache age is shown in hours");
+} finally {
+  vm.runInContext("clearMarketCache()", ctx);
+  ctx.fetch = realCacheFetch;
+}
+
+console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
 })().catch((e) => { console.error("FAIL: unhandled error", e && e.message); process.exit(1); });
