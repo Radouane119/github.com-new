@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-jPKbe1w36cVBOeRT/QGkcaRbwoqOFghuw9iggeRmu8U='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-MAwrtpZ7iPHXzcCHUjrmvJe3YI82j+/O0r1oeG5/XeQ='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -2905,8 +2905,22 @@ function autoCheckPaperPositions() {
   }
 }
 
+const analyzeMemo = new WeakMap();
+function analyzeMemoKey(cfg) {
+  const ml = mlModel.trained
+    ? [mlModel.n, mlModel.nWin, mlModel.nLoss, mlModel.muWin.join(","), mlModel.varWin.join(","), mlModel.muLoss.join(","), mlModel.varLoss.join(",")]
+    : null;
+  return JSON.stringify([cfg || null, macdHistVote, !!(state && state.isDemo), ml]);
+}
+
 function analyze(rows, cfg, sigKey, trackSignal = false) {
   if (rows.length < 80) return null;
+  // Tracking signals mutates lastSignals, so only pure analyses are memoized.
+  const memoKey = trackSignal ? null : analyzeMemoKey(cfg);
+  if (memoKey) {
+    const cached = analyzeMemo.get(rows);
+    if (cached && cached.key === memoKey) return cached.result;
+  }
   // Rows can be synthetic demo data when every live source failed. Compute the
   // indicators as usual so charts still draw, but never emit a tradable signal.
   const demoSuppressed = !!(state && state.isDemo);
@@ -3109,7 +3123,9 @@ function analyze(rows, cfg, sigKey, trackSignal = false) {
   ];
   const outDirection = demoSuppressed ? "WAIT" : direction;
   const outConfidence = demoSuppressed ? 0 : confidence;
-  return { chartRows: merged.slice(-140), last, direction: outDirection, confidence: outConfidence, risk: demoSuppressed ? "No trade (demo data)" : risk, entry, stop, target, trailingStop, reasons: demoSuppressed ? [...reasons, { ok: false, text: "Live market data could not be reached — signal suppressed, the chart below is simulated demo data and must not be traded." }] : reasons, buyScore, sellScore, volatilityPct, regime, adx, swingPivot, buyPieces, sellPieces, pullbackEntry: computePullbackEntry(outDirection, last.close, last.ema21 || entry, entry, stop), ml: mlModel.trained && !demoSuppressed ? mlPredict([outConfidence / 100, Math.max(buyScore, sellScore) / 100, Math.max(-1, Math.min(1, (buyScore - sellScore) / 100)), Math.max(0, Math.min(20, volatilityPct)) / 10, outDirection === "BUY" ? 1 : 0]) : null };
+  const result = { chartRows: merged.slice(-140), last, direction: outDirection, confidence: outConfidence, risk: demoSuppressed ? "No trade (demo data)" : risk, entry, stop, target, trailingStop, reasons: demoSuppressed ? [...reasons, { ok: false, text: "Live market data could not be reached — signal suppressed, the chart below is simulated demo data and must not be traded." }] : reasons, buyScore, sellScore, volatilityPct, regime, adx, swingPivot, buyPieces, sellPieces, pullbackEntry: computePullbackEntry(outDirection, last.close, last.ema21 || entry, entry, stop), ml: mlModel.trained && !demoSuppressed ? mlPredict([outConfidence / 100, Math.max(buyScore, sellScore) / 100, Math.max(-1, Math.min(1, (buyScore - sellScore) / 100)), Math.max(0, Math.min(20, volatilityPct)) / 10, outDirection === "BUY" ? 1 : 0]) : null };
+  if (memoKey) analyzeMemo.set(rows, { key: memoKey, result });
+  return result;
 }
 
 function computePullbackEntry(direction, price, ema21, entry, stop) {
@@ -3392,6 +3408,85 @@ try {
   document.addEventListener("visibilitychange", function () { if (document.hidden) flushTradeNotes(); });
 } catch {}
 
+// Rendering patches stable top-level regions instead of replacing the whole app.
+// Every <main> child is keyed by tag/id/classes plus its position among siblings,
+// and reused verbatim when its generated HTML has not changed. Keeping the chart
+// canvas alive is what makes the drawChart() memo skip real work.
+const regionHtmlMemo = new WeakMap();
+
+function regionBaseKey(el) {
+  const tag = (el.tagName || "").toLowerCase();
+  const raw = typeof el.className === "string" ? el.className : (el.getAttribute ? el.getAttribute("class") || "" : "");
+  const cls = raw.trim().split(/\s+/).filter(Boolean).sort().join(".");
+  return tag + (el.id ? "#" + el.id : "") + (cls ? "." + cls : "");
+}
+
+function regionKey(el, seen) {
+  const base = regionBaseKey(el);
+  if (!seen) return base;
+  const n = seen[base] || 0;
+  seen[base] = n + 1;
+  return base + "@" + n;
+}
+
+function rememberRegionHtml(mainEl) {
+  if (!mainEl || !mainEl.children) return;
+  Array.from(mainEl.children).forEach((child) => {
+    if (child && child.outerHTML != null) regionHtmlMemo.set(child, child.outerHTML);
+  });
+}
+
+function renderIntoRoot(html) {
+  if (!root) return;
+  let template = null;
+  try { template = document.createElement("template"); } catch { template = null; }
+  // Test harnesses and very old browsers lack <template>.content: fall back to a full write.
+  if (!template || typeof template.innerHTML !== "string" || !("content" in template)) {
+    root.innerHTML = html;
+    rememberRegionHtml(root.querySelector ? root.querySelector("main") : null);
+    return;
+  }
+  template.innerHTML = html;
+  const nextMain = template.content.querySelector("main");
+  const prevMain = root.querySelector ? root.querySelector("main") : null;
+  if (!nextMain || !prevMain) {
+    root.innerHTML = html;
+    rememberRegionHtml(root.querySelector ? root.querySelector("main") : null);
+    return;
+  }
+  Array.from(nextMain.attributes || []).forEach((attr) => {
+    if (prevMain.getAttribute(attr.name) !== attr.value) prevMain.setAttribute(attr.name, attr.value);
+  });
+  // Bucket the current children by key so identical markup can be reused in place.
+  const pools = new Map();
+  const prevSeen = {};
+  Array.from(prevMain.children).forEach((child) => {
+    const key = regionKey(child, prevSeen);
+    if (!pools.has(key)) pools.set(key, []);
+    pools.get(key).push(child);
+  });
+  const ordered = [];
+  const seen = {};
+  Array.from(nextMain.children).forEach((child) => {
+    const key = regionKey(child, seen);
+    const pool = pools.get(key);
+    const candidate = pool && pool.length ? pool.shift() : null;
+    const markup = child.outerHTML;
+    if (candidate && regionHtmlMemo.get(candidate) === markup) {
+      ordered.push(candidate);
+    } else {
+      regionHtmlMemo.set(child, markup);
+      ordered.push(child);
+    }
+  });
+  if (prevMain.replaceChildren) {
+    prevMain.replaceChildren(...ordered);
+  } else {
+    prevMain.textContent = "";
+    ordered.forEach((node) => prevMain.appendChild(node));
+  }
+}
+
 function render() {
   const uiState = captureUiState();
   const pair = `${state.base}/${state.quote}`;
@@ -3402,7 +3497,7 @@ function render() {
   const displayRisk = effAnalysis ? (effAnalysis.direction === "WAIT" ? effAnalysis.risk : (effAnalysis.risk === "Low" && displayConfidence >= 72 ? "Low" : "No trade")) : "";
   const signalClass = effAnalysis ? effAnalysis.direction.toLowerCase() : "wait";
   const headlineSignal = state.status === "error" ? "DATA ERROR" : state.status === "ready" && effAnalysis ? effAnalysis.direction : "LOADING";
-  root.innerHTML = `
+  renderIntoRoot(`
     <main aria-busy="${state.status === "loading"}">
       <section class="topbar">
         <div>
@@ -3610,7 +3705,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
         </div>
       </section>
     </main>
-  `;
+  `);
   if (state.status === "ready" && analysis) {
     drawChart(document.getElementById("priceChart"), analysis.chartRows, pair, state.timeframe);
   }
@@ -5016,6 +5111,12 @@ async function load() {
   if (autoScan.enabled) updateLivePrice();
 }
 
+const chartMemo = new WeakMap();
+function chartMemoKey(rows, pair, tf, overlays, width, height, dpr) {
+  const last = rows && rows.length ? rows[rows.length - 1] : null;
+  return [pair, tf, rows ? rows.length : 0, last ? (last.time || last.date || "") : "", last ? last.open : "", last ? last.high : "", last ? last.low : "", last ? last.close : "", last ? last.volume : "", overlays.ichimoku ? 1 : 0, overlays.fib ? 1 : 0, overlays.vwap ? 1 : 0, Math.round(width), Math.round(height), dpr].join("|");
+}
+
 function drawChart(canvas, rows, pair, tf) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -5023,6 +5124,8 @@ function drawChart(canvas, rows, pair, tf) {
   const rect = canvas.getBoundingClientRect();
   const width = rect.width;
   const height = rect.height || 460;
+  const memoKey = chartMemoKey(rows, pair, tf, { ichimoku: ichimokuOverlay, fib: fibOverlay, vwap: vwapOverlay }, width, height, dpr);
+  if (chartMemo.get(canvas) === memoKey) return;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
   ctx.scale(dpr, dpr);
@@ -5182,6 +5285,7 @@ function drawChart(canvas, rows, pair, tf) {
   ctx.fillStyle = "#8c98a5";
   ctx.fillText(formatAxisDate(rows[0], tf), pad.left, height - 10);
   ctx.fillText(formatAxisDate(rows.at(-1), tf), width - pad.right - 78, height - 10);
+  chartMemo.set(canvas, memoKey);
 }
 
 function formatAxisDate(row, tf) {

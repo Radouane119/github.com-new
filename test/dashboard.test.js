@@ -1068,6 +1068,107 @@ delete ctx.document.activeElement;
 delete ctx.window.scrollY;
 delete ctx.window.scrollTo;
 
+console.log("--- M37: analysis/chart memoization and region patching ---");
+
+// analyze(): pure calls are memoized by rows identity, config and ML signature.
+vm.runInContext("state.isDemo = false; macdHistVote = false; lastSignals.clear();", ctx);
+const cfgA = ctx.loadStrategyConfig();
+const memoRows = makeRows(200);
+const pureA1 = ctx.analyze(memoRows, cfgA);
+const pureA2 = ctx.analyze(memoRows, cfgA);
+assert(pureA1 && pureA1 === pureA2, "a repeated pure analyze() returns the cached object");
+assert(ctx.analyze(memoRows, { ...cfgA, threshold: (cfgA.threshold ?? 5) + 1 }) !== pureA1, "changing the config invalidates the analysis memo");
+assert(ctx.analyze(makeRows(200), cfgA) !== pureA1, "a different rows array invalidates the analysis memo");
+assert(ctx.analyze(memoRows.slice(0, 79), cfgA) === null, "short histories still return null before memoizing");
+
+// trackSignal() must never reuse the memo because it mutates lastSignals.
+const tracked = ctx.analyze(memoRows, cfgA, "MEMO/TEST", true);
+assert(tracked !== pureA1, "a tracked analysis bypasses the memo");
+assert(ctx.analyze(memoRows, cfgA, "MEMO/TEST", true) !== tracked, "tracked analyses are recomputed each time");
+vm.runInContext("lastSignals.clear()", ctx);
+
+// drawChart(): the memo key covers pair, timeframe, row shape, overlays and size.
+const memoChartRows = makeRows(140);
+const overlaysOff = { ichimoku: false, fib: false, vwap: false };
+const keyA = ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", overlaysOff, 800, 460, 2);
+assert(keyA === ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", overlaysOff, 800, 460, 2), "the chart memo key is stable for identical inputs");
+assert(ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", { ...overlaysOff, ichimoku: true }, 800, 460, 2) !== keyA, "the Ichimoku overlay invalidates the chart memo");
+assert(ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", { ...overlaysOff, fib: true }, 800, 460, 2) !== keyA, "the Fibonacci overlay invalidates the chart memo");
+assert(ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", { ...overlaysOff, vwap: true }, 800, 460, 2) !== keyA, "the VWAP overlay invalidates the chart memo");
+assert(ctx.chartMemoKey(memoChartRows, "EUR/USD", "4h", overlaysOff, 800, 460, 2) !== keyA, "changing the timeframe invalidates the chart memo");
+assert(ctx.chartMemoKey(memoChartRows, "EUR/USD", "1h", overlaysOff, 640, 460, 2) !== keyA, "resizing the canvas invalidates the chart memo");
+assert(ctx.chartMemoKey(memoChartRows.slice(0, 139), "EUR/USD", "1h", overlaysOff, 800, 460, 2) !== keyA, "a new row count invalidates the chart memo");
+
+// An unchanged canvas must not be repainted.
+let widthSets = 0;
+const fakeCanvas = {
+  getContext: () => new Proxy({}, { get: (t, p) => (p in t ? t[p] : () => {}), set: (t, p, v) => { t[p] = v; return true; } }),
+  getBoundingClientRect: () => ({ width: 800, height: 460 }),
+};
+Object.defineProperty(fakeCanvas, "width", { get: () => 0, set: () => { widthSets++; } });
+Object.defineProperty(fakeCanvas, "height", { get: () => 0, set: () => {} });
+vm.runInContext("ichimokuOverlay = false; fibOverlay = false; vwapOverlay = false;", ctx);
+ctx.drawChart(fakeCanvas, memoChartRows, "EUR/USD", "1h");
+ctx.drawChart(fakeCanvas, memoChartRows, "EUR/USD", "1h");
+assert(widthSets === 1, "an unchanged chart is drawn once and then skipped, got " + widthSets + " resizes");
+vm.runInContext("ichimokuOverlay = true;", ctx);
+ctx.drawChart(fakeCanvas, memoChartRows, "EUR/USD", "1h");
+assert(widthSets === 2, "changing an overlay forces a repaint, got " + widthSets + " resizes");
+vm.runInContext("ichimokuOverlay = false;", ctx);
+
+// regionKey(): stable per tag/id/class, disambiguated by sibling position.
+const seen = {};
+const regionA = ctx.regionKey({ tagName: "SECTION", id: "", className: "dashboard-section" }, seen);
+const regionB = ctx.regionKey({ tagName: "SECTION", id: "", className: "dashboard-section" }, seen);
+assert(regionA === "section.dashboard-section@0", "the first sibling of a region kind is keyed @0, got " + regionA);
+assert(regionB === "section.dashboard-section@1", "a second sibling of the same kind is keyed @1, got " + regionB);
+assert(ctx.regionKey({ tagName: "DIV", id: "x", className: "b a" }) === "div#x.a.b", "region keys normalise tag, id and sorted classes");
+
+// Without <template>.content the patcher must fall back to a plain innerHTML write.
+domEls.root.innerHTML = "";
+ctx.renderIntoRoot("<main><section class='fallback'>fallback body</section></main>");
+assert(domEls.root.innerHTML.includes("fallback body"), "renderIntoRoot falls back to innerHTML without <template> support");
+
+// With <template> support, unchanged regions keep their existing nodes.
+function fakeRegion(markup, className) {
+  return { tagName: "SECTION", id: "", className: className || "", outerHTML: markup, getAttribute: () => null };
+}
+const prevMain = {
+  attributes: [],
+  children: [],
+  attrs: {},
+  getAttribute(name) { return this.attrs[name] ?? null; },
+  setAttribute(name, value) { this.attrs[name] = value; },
+  replaceChildren(...nodes) { this.children = nodes.slice(); },
+};
+const nextMain = { attributes: [{ name: "aria-busy", value: "false" }], children: [] };
+const fakeTemplate = { innerHTML: "", content: { querySelector: (sel) => (sel === "main" ? nextMain : null) } };
+const realCreateElement = ctx.document.createElement;
+ctx.document.createElement = (tag) => (tag === "template" ? fakeTemplate : realCreateElement(tag));
+domEls.root.querySelector = (sel) => (sel === "main" ? prevMain : null);
+
+const firstRegion = fakeRegion("<section class=\"summary-grid\">A</section>", "summary-grid");
+nextMain.children = [firstRegion];
+ctx.renderIntoRoot("<main></main>");
+assert(prevMain.children.length === 1 && prevMain.children[0] === firstRegion, "the first patch inserts the generated region");
+assert(prevMain.attrs["aria-busy"] === "false", "<main> attributes are copied across a patch");
+
+const sameMarkupRegion = fakeRegion("<section class=\"summary-grid\">A</section>", "summary-grid");
+nextMain.children = [sameMarkupRegion];
+ctx.renderIntoRoot("<main></main>");
+assert(prevMain.children[0] === firstRegion, "an unchanged region keeps the existing DOM node");
+assert(prevMain.children[0] !== sameMarkupRegion, "the freshly parsed duplicate is discarded");
+
+const changedRegion = fakeRegion("<section class=\"summary-grid\">B</section>", "summary-grid");
+nextMain.children = [changedRegion];
+ctx.renderIntoRoot("<main></main>");
+assert(prevMain.children[0] === changedRegion, "a changed region replaces its node");
+
+ctx.document.createElement = realCreateElement;
+domEls.root.querySelector = realQuerySelector;
+assert(html.includes("renderIntoRoot(`"), "render() writes through the region patcher");
+assert(html.includes("chartMemo.set(canvas, memoKey)"), "drawChart() records the memo after a successful paint");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

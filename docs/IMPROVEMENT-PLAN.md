@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3A implemented · Baseline: `9fbb8e3` · Tests: 233 pass / 0 fail
+Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 259 pass / 0 fail
 
 ## Snapshot
 
@@ -98,16 +98,15 @@ Changes:
 
 Implementation notes (3A, done): `captureUiState()` / `restoreUiState()` wrap the full `render()` — they keep the focused input/textarea, caret selection, `window.scrollY`, every panel's `scrollTop`, `.open` sections, and an open Settings panel. Trade notes now live in a small in-memory cache, are written to `localStorage` on a 400 ms debounce, and are flushed on blur/`pagehide`/hidden tab, so a render can never drop a draft. Input-driven renders (`rm*`, `strat*`, `paperBalance`) go through `scheduleRender()`. The 60 s timer now calls `refreshSessionBar()` and patches only that node instead of rebuilding the page. Tests: M36.
 
-Remaining (3B–3D):
-- Split rendering into stable regions (`data-region`): summary, workspace/chart, positions, history, overview, alerts, backtest, paper, replay. `render()` becomes an orchestrator that patches only dirty regions; the existing `renderX()` helpers already cover most sections.
-- Memoize `analyze(rows, cfg)` by rows revision + config hash, and `drawChart()` by pair/timeframe/row-count/overlay/size.
+Implementation notes (3B, done): `renderIntoRoot()` parses the generated markup into a `<template>` and patches the top-level `<main>` children instead of replacing the whole document. Each region is keyed by tag/id/classes plus its sibling position, and is reused verbatim when its generated HTML is unchanged — so the chart canvas, open panels and screenshot state survive a render. `analyze()` is memoized in a `WeakMap` keyed by the `state.rows` array, config, `macdHistVote`, demo mode and the ML model signature; `trackSignal` calls always bypass it because they mutate `lastSignals`. `drawChart()` is memoized per canvas by pair, timeframe, row shape, last candle, overlay flags, size and DPR, so an idle render does not repaint the canvas. Tests: M37.
+
+Remaining (3C–3D):
 - **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.
 - Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
 
 Current issues (baseline):
-- `render()` writes the entire app into `root.innerHTML` (line 2716) on every toggle.
-- A 60-second timer re-renders the whole page unconditionally (line 5055).
-- Every render re-runs `analyze()` and redraws the chart canvas.
+- `render()` still regenerates the full markup string; only the DOM patching and canvas paint are skipped for unchanged regions.
+- Region keys are positional, so inserting a conditional region can replace the siblings that follow it.
 
 **Done when:** typing a trade note survives a minute tick; toggling an overlay preserves focus and scroll; only the chart repaints when the chart changes.
 

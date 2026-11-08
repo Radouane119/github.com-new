@@ -12,7 +12,7 @@ No install or build step is required; the checks run on plain Node.js 20+.
 
 ```sh
 node scripts/verify-html.mjs   # inline script parses, CSP hash is current, no inline handlers
-node test/dashboard.test.js    # 230+ regression tests
+node test/dashboard.test.js    # 250+ regression tests
 node scripts/sync-csp.mjs      # recompute the CSP hash after editing the inline script
 ```
 
@@ -26,6 +26,7 @@ Run `verify-html` and `sync-csp` after any change to the inline script: the Cont
 - Webhooks are restricted to `https` Discord and Telegram endpoints. Other URLs are rejected rather than contacted.
 - Provider responses are cached in local storage (`mdc:v1:*`) with short TTLs, so repeated scans and reloads reuse recent candles and tickers. **Settings → Clear market cache** forces a fresh download; this cache contains only public market data.
 - Full re-renders preserve the focused field, caret position, page scroll, panel scroll, open sections, and the Settings panel. Trade notes are saved on a short debounce and flushed when the field loses focus or the tab closes.
+- Rendering patches the top-level regions whose markup actually changed, and an idle render neither replaces the chart canvas nor repaints it. Indicator analysis is memoized per row array + strategy config, so repeated renders reuse the same result.
 - Export a backup from **Settings** before clearing browser data or moving to a new device.
 
 ## Publish to GitHub Pages
