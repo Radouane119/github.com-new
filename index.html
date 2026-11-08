@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-G3jPdZIrh0vj8Ae9BF68kUcPy69PVK2lKkVEqGv4WWw='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-jPKbe1w36cVBOeRT/QGkcaRbwoqOFghuw9iggeRmu8U='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -3289,7 +3289,111 @@ function toggleOverlay(name) {
   render();
 }
 
+// ---- Phase 3A: keep focus, scroll and open panels across full re-renders ----
+let tradeNotesCache = null;
+let tradeNotesSaveTimer = null;
+
+function getTradeNotes() {
+  if (tradeNotesCache) return tradeNotesCache;
+  try {
+    const parsed = JSON.parse(localStorage.getItem("tradeNotes") || "{}");
+    tradeNotesCache = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch { tradeNotesCache = {}; }
+  return tradeNotesCache;
+}
+
+function flushTradeNotes() {
+  if (tradeNotesSaveTimer) { clearTimeout(tradeNotesSaveTimer); tradeNotesSaveTimer = null; }
+  if (!tradeNotesCache) return;
+  try { localStorage.setItem("tradeNotes", JSON.stringify(tradeNotesCache)); } catch {}
+}
+
+function saveTradeNotesDebounced() {
+  if (tradeNotesSaveTimer) clearTimeout(tradeNotesSaveTimer);
+  tradeNotesSaveTimer = setTimeout(flushTradeNotes, 400);
+}
+
+let scheduledRenderTimer = null;
+function scheduleRender(delay) {
+  if (scheduledRenderTimer) clearTimeout(scheduledRenderTimer);
+  scheduledRenderTimer = setTimeout(() => { scheduledRenderTimer = null; render(); }, delay == null ? 250 : delay);
+}
+
+function captureUiState() {
+  const ui = { scrollY: 0, scrolls: [], openIds: [], settingsOpen: false, active: null };
+  try { ui.scrollY = window.scrollY || 0; } catch {}
+  try {
+    const settings = document.getElementById("settingsPanel");
+    ui.settingsOpen = !!(settings && settings.style && settings.style.display !== "none");
+  } catch {}
+  try {
+    if (root && root.querySelectorAll) {
+      root.querySelectorAll("[id]").forEach((el) => {
+        if ((el.scrollTop || 0) > 0 || (el.scrollLeft || 0) > 0) {
+          ui.scrolls.push({ id: el.id, top: el.scrollTop || 0, left: el.scrollLeft || 0 });
+        }
+      });
+      root.querySelectorAll(".open").forEach((el) => { if (el.id) ui.openIds.push(el.id); });
+    }
+  } catch {}
+  try {
+    const active = document.activeElement;
+    if (active && active !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || "")) {
+      let key = active.id ? "#" + active.id : null;
+      if (!key && active.dataset && active.dataset.notePos) key = '[data-note-pos="' + active.dataset.notePos + '"]';
+      if (key) ui.active = { key, tag: active.tagName, value: active.value, start: active.selectionStart, end: active.selectionEnd };
+    }
+  } catch {}
+  return ui;
+}
+
+function restoreUiState(ui) {
+  if (!ui) return;
+  try { window.scrollTo(0, ui.scrollY || 0); } catch {}
+  try {
+    (ui.scrolls || []).forEach((s) => {
+      const el = document.getElementById(s.id);
+      if (!el) return;
+      el.scrollTop = s.top;
+      el.scrollLeft = s.left;
+    });
+    (ui.openIds || []).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el && el.classList) el.classList.add("open");
+    });
+    if (ui.settingsOpen) {
+      const settings = document.getElementById("settingsPanel");
+      if (settings && settings.style) settings.style.display = "flex";
+    }
+  } catch {}
+  if (!ui.active) return;
+  try {
+    let el = null;
+    if (ui.active.key.charAt(0) === "#") el = document.getElementById(ui.active.key.slice(1));
+    else if (root && root.querySelector) el = root.querySelector(ui.active.key);
+    if (!el) return;
+    if (ui.active.tag !== "SELECT" && "value" in el && el.value !== ui.active.value) el.value = ui.active.value;
+    if (ui.active.start != null && el.setSelectionRange) el.setSelectionRange(ui.active.start, ui.active.end);
+    if (el.focus) el.focus({ preventScroll: true });
+  } catch {}
+}
+
+function refreshSessionBar() {
+  const current = document.querySelector(".session-bar");
+  if (!current) return;
+  const holder = document.createElement("div");
+  holder.innerHTML = renderSessionBar();
+  const next = holder.firstElementChild;
+  if (next) current.replaceWith(next);
+}
+
+try {
+  window.addEventListener("pagehide", flushTradeNotes);
+  document.addEventListener("visibilitychange", function () { if (document.hidden) flushTradeNotes(); });
+} catch {}
+
 function render() {
+  const uiState = captureUiState();
   const pair = `${state.base}/${state.quote}`;
   const analysis = analyze(state.rows, loadStrategyConfig());
   const mlBlocked = mlFilterWarn(analysis);
@@ -3456,7 +3560,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
 
       ${(() => { const open = positions.filter(p => !p.closedAt); if (open.length === 0) return ""; const corrGroups = [["EUR/USD","GBP/USD","EUR/GBP"],["AUD/USD","NZD/USD"]]; const openPairs = open.map(p => p.pair); const corrWarnings = []; for (const group of corrGroups) { const matched = openPairs.filter(p => group.includes(p)); if (matched.length >= 2) corrWarnings.push(matched.join(", ")); } return `<section class="positions-section"><div class="positions-head"><h4>Open Positions</h4><span>${open.length}</span><button id="closeAllPositions" style="margin-left:auto;padding:3px 10px;background:#3a1a1a;border:1px solid #f85149;color:#f85149;border-radius:4px;cursor:pointer;font-size:.65rem;font-family:inherit">Close All</button></div>${open.map(p => { const cp = getPosPrice(p); const pnl = p.direction === "BUY" ? cp - p.entry : p.entry - cp; const pnlPct = p.entry ? (pnl / p.entry) * 100 : 0; const pnlCls = pnl >= 0 ? "pos-profit" : "pos-loss"; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'}"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span><button class="pos-btn" data-close-pos="${p.id}">Close</button></div><div class="pos-partial"><button data-partial-pos="${p.id}" data-pct="25">25%</button><button data-partial-pos="${p.id}" data-pct="50">50%</button><button data-partial-pos="${p.id}" data-pct="75">75%</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Cur ${formatPrice(cp, p.pair)}</span><span>Stop ${formatPrice(p.stop, p.pair)}</span><span>Target ${formatPrice(p.target, p.pair)}</span><span style="color:${pnl >= 0 ? '#3fb950' : '#f85149'}">R: ${(() => { const risk = Math.abs(p.entry - p.stop); const reward = Math.abs(cp - p.entry); return risk > 0 ? (p.direction === 'BUY' ? (reward / risk) : (reward / risk)).toFixed(1) : '0'; })()}x</span></div></div>`; }).join("")}${corrWarnings.length > 0 ? `<div style="padding:6px 10px;background:#3a2a1a;border:1px solid #8c6a3a;border-radius:6px;font-size:.68rem;color:#f0c35a;margin-top:4px">⚠ Correlated positions detected: ${corrWarnings.join("; ")}</div>` : ""}</section>`; })()}
 
-      ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; let tradeNotes = {}; try { tradeNotes = JSON.parse(localStorage.getItem("tradeNotes") || "{}"); } catch {} return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; const noteVal = tradeNotes[p.id] || ""; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div><textarea data-note-pos="${p.id}" placeholder="Trade notes..." style="width:100%;margin-top:4px;background:#0e151e;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#8c98a5;font-size:.65rem;resize:vertical;min-height:20px;font-family:inherit">${escapeHtml(noteVal)}</textarea></div>`; }).join("")}</section>`; })()}
+      ${(() => { const closed = positions.filter(p => p.closedAt); if (closed.length === 0) return ""; const tradeNotes = getTradeNotes(); return `<section class="positions-section closed"><div class="positions-head"><h4>Closed Positions</h4><span>${closed.length}</span></div>${closed.map(p => { const pnlCls = p.pnl >= 0 ? "pos-profit" : "pos-loss"; const noteVal = tradeNotes[p.id] || ""; return `<div class="pos-row ${p.direction === 'BUY' ? 'pos-buy' : 'pos-sell'} closed"><div class="pos-top"><span class="pos-pair">${p.pair}</span><span class="pos-dir">${p.direction}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnlPct.toFixed(2)}%</span><button class="pos-btn" data-del-pos="${p.id}">✕</button></div><div class="pos-meta"><span>Entry ${formatPrice(p.entry, p.pair)}</span><span>Exit ${formatPrice(p.exitPrice, p.pair)}</span><span class="${pnlCls}">${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(p.pair.includes('JPY') ? 3 : p.pair.includes('XAU') || nonFiat.has(p.pair.split('/')[0]) ? 2 : 5)}</span></div><textarea data-note-pos="${p.id}" placeholder="Trade notes..." style="width:100%;margin-top:4px;background:#0e151e;border:1px solid #1f2a36;border-radius:4px;padding:3px 6px;color:#8c98a5;font-size:.65rem;resize:vertical;min-height:20px;font-family:inherit">${escapeHtml(noteVal)}</textarea></div>`; }).join("")}</section>`; })()}
 
       ${(() => { const perfData = (() => { const sigs = autoScan.history.filter(e => e.result === "win" || e.result === "loss").reverse(); if (sigs.length < 2) return null; let cum = 0; return sigs.map(s => { cum += s.result === "win" ? 1 : -1; return { date: s.timestamp, value: cum }; }); })(); if (!perfData) return ""; const vals = perfData.map(p => p.value); let mx = -Infinity, mn = Infinity; for (const v of vals) { if (v > mx) mx = v; if (v < mn) mn = v; } const rng = mx - mn || 1; const w = 240; const h = 48; const xSt = w / (vals.length - 1); const pts = vals.map((v, i) => `${i * xSt},${h - ((v - mn) / rng) * (h - 6) - 3}`).join(" "); const color = vals[vals.length - 1] >= vals[0] ? "#3fb950" : "#f85149"; return `<section class="perf-section"><div class="perf-head"><h4>Performance</h4><span>${vals[vals.length - 1] >= 0 ? "+" : ""}${vals[vals.length - 1]} pts</span></div><svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg></section>`; })()}
 
@@ -3515,6 +3619,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
   updateScanUI();
   const lp = document.getElementById("livePrice");
   if (lp && livePrice.price != null) renderLivePrice(lp);
+  restoreUiState(uiState);
 }
 
 function renderHistoryEntry(entry, idx) {
@@ -5224,7 +5329,7 @@ function setupEvents() {
       if (event.target.id === "rmMaxStreak") cfg.maxLossStreak = Math.min(10, Math.max(1, Number(event.target.value) || 4));
       if (event.target.id === "rmCorrCap") cfg.corrCap = Math.min(5, Math.max(1, Number(event.target.value) || 2));
       saveRiskConfig(cfg);
-      render();
+      scheduleRender();
     }
     if (event.target.id === "stratThreshold" || event.target.id === "stratRR" || event.target.id === "stratVolMult" || event.target.id === "stratVolMedian" || event.target.id === "stratRSIBuy" || event.target.id === "stratRSISell" || event.target.id === "stratTrailMult" || event.target.id === "stratInitRR" || event.target.id === "stratPartialPct") {
       const cfg = loadStrategyConfig();
@@ -5238,7 +5343,7 @@ function setupEvents() {
       if (event.target.id === "stratInitRR") cfg.initialRrMult = Math.min(5, Math.max(0.5, Number(event.target.value) || 1.5));
       if (event.target.id === "stratPartialPct") cfg.partialTakePct = Math.min(100, Math.max(0, Number(event.target.value) || 50));
       saveStrategyConfig(cfg);
-      render();
+      scheduleRender();
     }
     if (event.target.id === "stratAdxGate") {
       const cfg = loadStrategyConfig();
@@ -5259,11 +5364,9 @@ function setupEvents() {
       return;
     }
     if (event.target.dataset.notePos) {
-      try {
-        const notes = JSON.parse(localStorage.getItem("tradeNotes") || "{}");
-        notes[Number(event.target.dataset.notePos)] = event.target.value;
-        localStorage.setItem("tradeNotes", JSON.stringify(notes));
-      } catch {}
+      const notes = getTradeNotes();
+      notes[event.target.dataset.notePos] = event.target.value;
+      saveTradeNotesDebounced();
     }
     if (event.target.id === "paperBuyBtn") { openManualPaperTrade("BUY"); return; }
     if (event.target.id === "paperSellBtn") { openManualPaperTrade("SELL"); return; }
@@ -5271,7 +5374,7 @@ function setupEvents() {
       paperState.startingBalance = Number(event.target.value) || 10000;
       paperState.balance = paperState.startingBalance;
       savePaperState();
-      render();
+      scheduleRender();
     }
 
     if (event.target.id === "slipSpread") { slippageConfig.spreadPips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); return; }
@@ -5289,6 +5392,9 @@ function setupEvents() {
       render();
     }
   });
+  root.addEventListener("blur", (event) => {
+    if (event.target && event.target.dataset && event.target.dataset.notePos) flushTradeNotes();
+  }, true);
   root.addEventListener("change", (event) => {
     if (event.target.id === "ovSort") {
       multiScan.sortMode = event.target.value;
@@ -5704,7 +5810,7 @@ loadTheme();
 fetchEconEvents();
 setInterval(updateOverviewPrices, 15000);
 setInterval(checkPriceLevelAlerts, 15000);
-setInterval(function() { if (document.querySelector('.session-bar')) render(); }, 60000);
+setInterval(function() { refreshSessionBar(); }, 60000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

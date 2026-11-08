@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–2 implemented · Baseline: `9fbb8e3` · Tests: 216 pass / 0 fail
+Status: Phases 0–3A implemented · Baseline: `9fbb8e3` · Tests: 233 pass / 0 fail
 
 ## Snapshot
 
@@ -96,19 +96,18 @@ Changes:
 
 **Goal:** stop a 10-second refresh cycle from destroying focus, scroll, and typed text.
 
-Current issues:
+Implementation notes (3A, done): `captureUiState()` / `restoreUiState()` wrap the full `render()` — they keep the focused input/textarea, caret selection, `window.scrollY`, every panel's `scrollTop`, `.open` sections, and an open Settings panel. Trade notes now live in a small in-memory cache, are written to `localStorage` on a 400 ms debounce, and are flushed on blur/`pagehide`/hidden tab, so a render can never drop a draft. Input-driven renders (`rm*`, `strat*`, `paperBalance`) go through `scheduleRender()`. The 60 s timer now calls `refreshSessionBar()` and patches only that node instead of rebuilding the page. Tests: M36.
+
+Remaining (3B–3D):
+- Split rendering into stable regions (`data-region`): summary, workspace/chart, positions, history, overview, alerts, backtest, paper, replay. `render()` becomes an orchestrator that patches only dirty regions; the existing `renderX()` helpers already cover most sections.
+- Memoize `analyze(rows, cfg)` by rows revision + config hash, and `drawChart()` by pair/timeframe/row-count/overlay/size.
+- **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.
+- Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
+
+Current issues (baseline):
 - `render()` writes the entire app into `root.innerHTML` (line 2716) on every toggle.
 - A 60-second timer re-renders the whole page unconditionally (line 5055).
 - Every render re-runs `analyze()` and redraws the chart canvas.
-
-Changes:
-1. **Cheap win first:** `captureUiState()` / `restoreUiState()` around `render()` — active element id, selection range, `window.scrollY`, each scrollable panel's `scrollTop`, open settings/screenshot/backtest panels, `<details open>`.
-2. Split rendering into stable regions (`data-region`): summary, workspace/chart, positions, history, overview, alerts, backtest, paper, replay. `render()` becomes an orchestrator that patches only dirty regions; the existing `renderX()` helpers already cover most sections.
-3. Memoize `analyze(rows, cfg)` by rows revision + config hash, and `drawChart()` by pair/timeframe/row-count/overlay/size. Chart drawing is the most expensive work per render.
-4. Debounce note persistence (currently one `localStorage.setItem` per keystroke) and input-driven renders.
-5. Replace the 60 s full render with `renderSessionBar()` only.
-6. **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.
-7. Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
 
 **Done when:** typing a trade note survives a minute tick; toggling an overlay preserves focus and scroll; only the chart repaints when the chart changes.
 

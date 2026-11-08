@@ -996,6 +996,78 @@ try {
   ctx.fetch = realCacheFetch;
 }
 
+console.log("--- M36: renders preserve focus, scroll and open panels ---");
+
+// Notes are cached in memory, written debounced, and flushed on blur/pagehide.
+vm.runInContext("tradeNotesCache = null; tradeNotesSaveTimer = null;", ctx);
+ls.set("tradeNotes", JSON.stringify({ 7: "hello" }));
+assert(ctx.getTradeNotes()["7"] === "hello", "trade notes load from storage on first use");
+ctx.getTradeNotes()["8"] = "world";
+ctx.saveTradeNotesDebounced();
+ctx.flushTradeNotes();
+assert(JSON.parse(ls.get("tradeNotes"))["8"] === "world", "a debounced note save persists on flush");
+ls.set("tradeNotes", JSON.stringify({ 9: "external" }));
+assert(ctx.getTradeNotes()["9"] === undefined, "the in-memory note cache wins over a stale storage read");
+
+// Capture focus, caret, panel scroll and open sections before the DOM is replaced.
+const scrollEl = { id: "historyScroll", scrollTop: 120, scrollLeft: 3, classList: { add() {} } };
+const bodyEl = { id: "historyBody", classList: { added: [], add(c) { this.added.push(c); } } };
+const inputEl = {
+  id: "rmRisk", tagName: "INPUT", value: "2.5", selectionStart: 1, selectionEnd: 2,
+  focused: false, sel: null,
+  setSelectionRange(a, b) { this.sel = [a, b]; },
+  focus() { this.focused = true; },
+};
+const settingsEl = { id: "settingsPanel", style: { display: "flex" } };
+domEls.settingsPanel = settingsEl;
+domEls.historyScroll = scrollEl;
+domEls.historyBody = bodyEl;
+domEls.rmRisk = inputEl;
+const realQuerySelectorAll = domEls.root.querySelectorAll;
+const realQuerySelector = domEls.root.querySelector;
+domEls.root.querySelectorAll = (sel) => (sel === "[id]" ? [scrollEl, bodyEl] : sel === ".open" ? [bodyEl] : []);
+domEls.root.querySelector = (sel) => (sel === '[data-note-pos="7"]' ? inputEl : null);
+ctx.document.activeElement = inputEl;
+ctx.window.scrollY = 240;
+let scrolledTo = null;
+ctx.window.scrollTo = (x, y) => { scrolledTo = [x, y]; };
+
+const uiState = ctx.captureUiState();
+assert(uiState.scrollY === 240, "window scroll is captured");
+assert(uiState.scrolls.length === 1 && uiState.scrolls[0].id === "historyScroll" && uiState.scrolls[0].top === 120, "panel scroll is captured");
+assert(uiState.openIds.includes("historyBody"), "open sections are captured");
+assert(uiState.settingsOpen === true, "an open settings panel is captured");
+assert(uiState.active && uiState.active.key === "#rmRisk" && uiState.active.value === "2.5", "the focused input and its value are captured");
+
+// Simulate the fresh DOM written by render(), then restore.
+scrollEl.scrollTop = 0;
+bodyEl.classList.added = [];
+settingsEl.style.display = "none";
+inputEl.value = "";
+inputEl.focused = false;
+ctx.document.activeElement = null;
+ctx.restoreUiState(uiState);
+assert(scrollEl.scrollTop === 120, "panel scroll is restored");
+assert(bodyEl.classList.added.includes("open"), "open sections are restored");
+assert(settingsEl.style.display === "flex", "the settings panel stays open across a render");
+assert(inputEl.value === "2.5" && inputEl.focused, "focus and the typed value are restored");
+assert(inputEl.sel && inputEl.sel[0] === 1 && inputEl.sel[1] === 2, "the caret selection is restored");
+assert(scrolledTo && scrolledTo[1] === 240, "window scroll is restored");
+
+// The minute tick updates only the session bar, and input renders are deferred.
+assert(html.includes("refreshSessionBar()"), "the session bar refreshes without a full render");
+assert(!html.includes("document.querySelector('.session-bar')) render()"), "the minute tick no longer calls render()");
+const shellBefore = vm.runInContext("document.getElementById('root').innerHTML", ctx);
+ctx.scheduleRender(10);
+assert(vm.runInContext("document.getElementById('root').innerHTML", ctx) === shellBefore, "scheduled renders are deferred, not immediate");
+
+// Cleanup the temporary DOM stubs.
+domEls.root.querySelectorAll = realQuerySelectorAll;
+domEls.root.querySelector = realQuerySelector;
+delete ctx.document.activeElement;
+delete ctx.window.scrollY;
+delete ctx.window.scrollTo;
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
