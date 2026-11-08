@@ -1169,6 +1169,78 @@ domEls.root.querySelector = realQuerySelector;
 assert(html.includes("renderIntoRoot(`"), "render() writes through the region patcher");
 assert(html.includes("chartMemo.set(canvas, memoKey)"), "drawChart() records the memo after a successful paint");
 
+console.log("--- M38: CORS-safe economic calendar mapping ---");
+
+// The old ForexFactory mirror sent no Access-Control-Allow-Origin header, so the
+// browser could never read it. The dashboard now reads a CORS-enabled feed.
+const econUrl = ctx.econCalendarUrl(Date.UTC(2026, 10, 9, 12, 0, 0));
+assert(econUrl.startsWith("https://biquote.io/api/calendar?"), "the calendar URL points at the CORS-enabled host");
+assert(econUrl.includes("from=2026-11-08") && econUrl.includes("to=2026-11-11"), "the calendar URL requests a short forward window, got " + econUrl);
+assert(ctx.marketProviderFromUrl("https://biquote.io/api/calendar") === "econ", "biquote is classified as the econ provider");
+const cspMeta = (html.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/) || [])[1] || "";
+assert(cspMeta.includes("https://biquote.io"), "the CSP allows the new calendar host");
+assert(!cspMeta.includes("faireconomy"), "the CSP no longer allows the blocked host");
+
+const mappedEcon = ctx.mapEconEvents([
+  { time: "2026-11-10T13:30:00Z", countryCode: "US", currency: "USD", name: "CPI m/m", importance: "high" },
+  { time: "2026-11-09T10:00:00Z", countryCode: "GB", currency: "GBP", name: "BoE Speech", importance: "medium" },
+  { time: "2026-11-09T08:00:00Z", countryCode: "SG", currency: "SGD", name: "Holiday", importance: "none" },
+  { time: "2026-11-09T09:00:00Z", countryCode: "JP", currency: "JPY", name: "Low tier", importance: "low" },
+  null,
+  { time: "not-a-date", countryCode: "EU", currency: "EUR", name: "Mystery", importance: "high" },
+]);
+assert(mappedEcon.length === 3, "low/none events are dropped, got " + mappedEcon.length);
+assert(mappedEcon[0].name === "BoE Speech" && mappedEcon[1].name === "CPI m/m", "events are sorted by absolute time");
+assert(mappedEcon[0].impact === "med" && mappedEcon[1].impact === "high", "importance maps to the dashboard's high/med scale");
+assert(mappedEcon[0].time === "10:00" && mappedEcon[1].time === "13:30", "UTC clock times are formatted as HH:MM");
+assert(mappedEcon[2].time === "TBD" && Number.isNaN(mappedEcon[2].at), "an unparseable time falls back to TBD");
+assert(ctx.mapEconEvents("nope").length === 0 && ctx.mapEconEvents(null).length === 0, "non-array payloads map to no events");
+
+// The static fallback must not disappear late in the UTC day.
+vm.runInContext("econEvents = [];", ctx);
+const fallbackHtml = ctx.renderEconCalendar();
+assert(fallbackHtml.includes("Economic Calendar") && fallbackHtml.includes("Fallback data."), "the fallback calendar stays visible at any hour");
+
+// Live rows are filtered by absolute time, not just clock time.
+vm.runInContext("econEvents = [ {time:'x',at:Date.now()-7200000,country:'US',name:'Past Event',impact:'high',currency:'USD'}, {time:'y',at:Date.now()+3600000,country:'US',name:'Future Event',impact:'med',currency:'USD'}, {time:'z',at:Date.now()+2*86400000,country:'EU',name:'Later Event',impact:'high',currency:'EUR'} ];", ctx);
+const liveHtml = ctx.renderEconCalendar();
+assert(!liveHtml.includes("Past Event"), "a live event more than an hour in the past is dropped");
+assert(liveHtml.includes("Future Event") && liveHtml.includes("Later Event"), "live events later in the week are kept even when their clock time is earlier");
+assert(liveHtml.includes("live") && liveHtml.includes("Data from Biquote."), "live rows are labelled with the CORS-enabled source");
+vm.runInContext("econEvents = [];", ctx);
+
+console.log("--- M39: signal history badge counts lifetime signals ---");
+
+const totalGenerated = () => vm.runInContext("autoScan.totalGenerated", ctx);
+const retainedRows = () => vm.runInContext("autoScan.history.length", ctx);
+vm.runInContext("autoScan.history = []; autoScan.totalGenerated = 0; autoScan.maxEntries = 2;", ctx);
+assert(totalGenerated() === 0, "the lifetime counter starts at zero");
+assert(ctx.addSignalToHistory("EUR/USD", { direction: "BUY", confidence: 70 }) === true, "a fresh BUY is recorded");
+assert(totalGenerated() === 1, "the first signal increments the lifetime counter");
+assert(ctx.addSignalToHistory("EUR/USD", { direction: "BUY", confidence: 71 }) === false, "a refresh of the same pending setup is not a new signal");
+assert(totalGenerated() === 1, "a refreshed setup leaves the lifetime counter alone");
+assert(ctx.addSignalToHistory("GBP/USD", { direction: "SELL", confidence: 60 }) === true, "a second pair adds a new signal");
+assert(totalGenerated() === 2, "the lifetime counter tracks the second signal");
+assert(ctx.addSignalToHistory("USD/JPY", { direction: "BUY", confidence: 65 }) === true, "a third pair adds another signal");
+assert(totalGenerated() === 3, "the lifetime counter keeps rising past the retained cap");
+assert(retainedRows() === 2, "the retained log is still capped at maxEntries, got " + retainedRows());
+assert(ls.get("signalHistoryTotal") === "3", "the lifetime counter is persisted, got " + ls.get("signalHistoryTotal"));
+
+vm.runInContext("autoScan.totalGenerated = 0; autoScan.history = []; loadHistory();", ctx);
+assert(totalGenerated() === 3, "loadHistory restores the persisted lifetime counter, got " + totalGenerated());
+assert(retainedRows() === 2, "loadHistory restores the retained rows");
+
+// Older installs have no counter key: seed it from what was retained.
+ls.delete("signalHistoryTotal");
+vm.runInContext("autoScan.totalGenerated = 0; autoScan.history = []; loadHistory();", ctx);
+assert(totalGenerated() === 2, "a missing counter is seeded from the retained log, got " + totalGenerated());
+
+let clearThrew = null;
+try { vm.runInContext("autoScan.maxEntries = 50; clearSignalHistory();", ctx); } catch (e) { clearThrew = e && e.message; }
+assert(clearThrew === null, "clearSignalHistory does not throw, got: " + clearThrew);
+assert(totalGenerated() === 0 && retainedRows() === 0, "clearing history resets both the log and the lifetime counter");
+assert(html.includes("${autoScan.totalGenerated}") && html.includes('title="${autoScan.history.length} in log"'), "the badge renders the lifetime total and keeps the retained count in its tooltip");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

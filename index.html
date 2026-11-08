@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-MAwrtpZ7iPHXzcCHUjrmvJe3YI82j+/O0r1oeG5/XeQ='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://nfs.faireconomy.media https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-QKJagadqHQsOXEIt5sPyUEKRjz8kgoOySXpf+afkU/s='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -485,6 +485,9 @@ const autoScan = {
   intervalId: null,
   history: [],
   maxEntries: 50,
+  // Lifetime total of signals ever recorded, so the badge keeps counting after
+  // the retained history is capped (the log itself only keeps maxEntries rows).
+  totalGenerated: 0,
 };
 
 const alertConditions = {
@@ -590,7 +593,7 @@ function marketProviderFromUrl(url) {
   if (u.includes("coinbase.com")) return "coinbase";
   if (u.includes("frankfurter")) return "frankfurter";
   if (u.includes("twelvedata")) return "twelvedata";
-  if (u.includes("faireconomy")) return "econ";
+  if (u.includes("biquote.io")) return "econ";
   if (u.includes("jsdelivr")) return "currency";
   return "http";
 }
@@ -3252,21 +3255,72 @@ function checkPriceLevelAlerts() {
 }
 
 
+// The old ForexFactory mirror (nfs.faireconomy.media) never sent an
+// Access-Control-Allow-Origin header, so a browser fetch from GitHub Pages was
+// always blocked. Biquote exposes the same public calendar as CORS-enabled JSON
+// and accepts a date window, so the request stays small.
+var ECON_CALENDAR_BASE = 'https://biquote.io/api/calendar';
+
+function econCalendarUrl(nowMs) {
+  var now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  var from = new Date(now - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  var to = new Date(now + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return ECON_CALENDAR_BASE + '?from=' + from + '&to=' + to;
+}
+
+function econImpact(raw) {
+  var value = String(raw == null ? '' : raw).toLowerCase();
+  if (value === 'high') return 'high';
+  if (value === 'medium' || value === 'med') return 'med';
+  return null;
+}
+
+function econClock(iso) {
+  var when = new Date(String(iso == null ? '' : iso));
+  if (isNaN(when.getTime())) return { time: 'TBD', at: NaN };
+  return {
+    time: String(when.getUTCHours()).padStart(2, '0') + ':' + String(when.getUTCMinutes()).padStart(2, '0'),
+    at: when.getTime(),
+  };
+}
+
+function mapEconEvents(data) {
+  if (!Array.isArray(data)) return [];
+  return data.map(function(e) {
+    if (!e || typeof e !== 'object') return null;
+    var impact = econImpact(e.importance);
+    if (!impact) return null;
+    var clock = econClock(e.time);
+    return {
+      time: clock.time,
+      at: clock.at,
+      country: e.countryCode || e.country || '',
+      name: e.name || e.eventName || e.title || 'Unknown',
+      impact: impact,
+      currency: e.currency || '',
+    };
+  }).filter(Boolean).sort(function(a, b) {
+    var av = Number.isFinite(a.at) ? a.at : Number.MAX_SAFE_INTEGER;
+    var bv = Number.isFinite(b.at) ? b.at : Number.MAX_SAFE_INTEGER;
+    return av - bv;
+  });
+}
+
 var econEvents = [];
 async function fetchEconEvents() {
   try {
-    const result = await cachedJson('https://nfs.faireconomy.media/ff_calendar_thisweek.json', {
+    const result = await cachedJson(econCalendarUrl(), {
       ttl: MARKET_TTL.econ,
-      key: 'econ:thisweek',
+      key: 'econ:biquote',
       provider: 'econ',
       swr: true,
     });
-    var data = result.data;
-    if (!Array.isArray(data)) return;
-    econEvents = data.filter(function(e) { return e.impact === 'High' || e.impact === 'Medium'; }).map(function(e) {
-      var impact = e.impact === 'High' ? 'high' : 'med';
-      return { time: e.time || 'TBD', country: e.country || '', name: e.title || e.name || 'Unknown', impact: impact, currency: e.currency || '' };
-    });
+    var mapped = mapEconEvents(result.data);
+    if (mapped.length > 0) {
+      econEvents = mapped;
+      // The bootstrap render used fallback rows; refresh once live data lands.
+      scheduleRender();
+    }
   } catch {}
 }
 function renderEconCalendar() {
@@ -3281,17 +3335,17 @@ function renderEconCalendar() {
     { time: '19:00', country: 'AU', name: 'AU Employment Change', impact: 'med', currency: 'AUD' },
   ];
   var now = new Date();
-  var utcH = now.getUTCHours(), utcM = now.getUTCMinutes();
-  var nowMin = utcH * 60 + utcM;
+  var nowMs = now.getTime();
   var upcoming = events.filter(function(e) {
-    if (!e.time || e.time === 'TBD') return true;
-    var parts = e.time.split(':').map(Number);
-    if (parts.length < 2) return true;
-    return (parts[0] * 60 + parts[1]) >= nowMin - 60;
+    // Live rows carry an absolute timestamp, so a later day is not dropped just
+    // because its clock time is earlier than right now. Fallback rows are
+    // illustrative and have no date, so they always stay visible.
+    if (!Number.isFinite(e.at)) return true;
+    return e.at >= nowMs - 60 * 60 * 1000;
   }).slice(0, 8);
   if (upcoming.length === 0) return '';
   var isLive = econEvents.length > 0;
-  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + (isLive ? ' live' : '') + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + escapeHtml(e.time) + '</span><span class="econ-flag">' + escapeHtml(e.country || '') + '</span><span class="econ-name">' + escapeHtml(e.name) + '<span style="font-size:.58rem;color:#5c6a7a;margin-left:4px">' + escapeHtml(e.currency || '') + '</span></span><span class="econ-impact ' + escapeHtml(e.impact) + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">' + (isLive ? 'Data from ForexFactory. ' : 'Fallback data. ') + 'High-impact events may increase volatility.</div></div></section>';
+  return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="econToggle"><div class="history-toggle-left"><h3>Economic Calendar</h3><span class="history-count">' + upcoming.length + (isLive ? ' live' : '') + '</span></div><span class="arrow">\u25BE</span></button><div class="history-body" id="econBody"><div style="padding:4px 0">' + upcoming.map(function(e) { return '<div class="econ-row"><span class="econ-time">' + escapeHtml(e.time) + '</span><span class="econ-flag">' + escapeHtml(e.country || '') + '</span><span class="econ-name">' + escapeHtml(e.name) + '<span style="font-size:.58rem;color:#5c6a7a;margin-left:4px">' + escapeHtml(e.currency || '') + '</span></span><span class="econ-impact ' + escapeHtml(e.impact) + '"></span></div>'; }).join('') + '</div><div style="padding:4px 12px;font-size:.6rem;color:#5c6a7a">' + (isLive ? 'Data from Biquote. ' : 'Fallback data. ') + 'High-impact events may increase volatility.</div></div></section>';
 }
 
 function toggleOverlay(name) {
@@ -3689,7 +3743,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
         <button class="history-toggle no-select" id="historyToggle">
           <div class="history-toggle-left">
             <h3>Signal History</h3>
-            <span class="history-count">${autoScan.history.length}</span>
+            <span class="history-count" title="${autoScan.history.length} in log">${autoScan.totalGenerated}</span>
           </div>
           <span class="arrow">▾</span>
         </button>
@@ -3825,6 +3879,7 @@ function addSignalToHistory(pair, task) {
     reasons: task?.reasons ?? [],
     result: "pending",
   });
+  autoScan.totalGenerated += 1;
   if (autoScan.history.length > autoScan.maxEntries) autoScan.history.length = autoScan.maxEntries;
   saveHistory();
   return true;
@@ -3846,10 +3901,17 @@ function recordSignal() {
 }
 
 function saveHistory() {
-  try { localStorage.setItem("signalHistory", JSON.stringify(autoScan.history)); } catch {}
+  try {
+    localStorage.setItem("signalHistory", JSON.stringify(autoScan.history));
+    localStorage.setItem("signalHistoryTotal", String(autoScan.totalGenerated));
+  } catch {}
 }
 
 function loadHistory() {
+  try {
+    const savedTotal = parseInt(localStorage.getItem("signalHistoryTotal") || "0", 10);
+    if (Number.isFinite(savedTotal) && savedTotal > 0) autoScan.totalGenerated = savedTotal;
+  } catch {}
   try {
     const saved = localStorage.getItem("signalHistory");
     if (saved) {
@@ -3866,6 +3928,9 @@ function loadHistory() {
       }
     }
   } catch {}
+  // Older installs have no lifetime counter; seed it from what was retained so
+  // the badge never shows fewer signals than the visible log.
+  if (autoScan.totalGenerated < autoScan.history.length) autoScan.totalGenerated = autoScan.history.length;
   mlLoad();
   mlBatchTrain(autoScan.history);
 }
@@ -3886,6 +3951,7 @@ function playBeep() {
 function exportAllData() {
   const data = {
     exportedAt: new Date().toISOString(),
+    totalGenerated: autoScan.totalGenerated,
     history: autoScan.history,
     positions: positions.map(p => ({ ...p, openedAt: p.openedAt.toISOString(), closedAt: p.closedAt ? p.closedAt.toISOString() : null })),
     watchlist, alerts, scanPairs, webhookUrl,
@@ -3911,6 +3977,8 @@ function importAllData(json) {
     const nextScanPairs = Array.isArray(data.scanPairs) ? sanitizePairList(data.scanPairs) : null;
 
     autoScan.history = nextHistory;
+    const importedTotal = Math.floor(Number(data.totalGenerated));
+    autoScan.totalGenerated = Math.max(nextHistory.length, Number.isFinite(importedTotal) ? importedTotal : 0);
     positions = nextPositions;
     if (nextWatchlist) watchlist = nextWatchlist;
     if (nextAlerts) alerts = nextAlerts;
@@ -3942,6 +4010,7 @@ function exportCSV() {
 
 function clearSignalHistory() {
   autoScan.history = [];
+  autoScan.totalGenerated = 0;
   saveHistory();
   render();
 }

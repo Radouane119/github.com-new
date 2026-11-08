@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 259 pass / 0 fail
+Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 291 pass / 0 fail
 
 ## Snapshot
 
@@ -99,6 +99,8 @@ Changes:
 Implementation notes (3A, done): `captureUiState()` / `restoreUiState()` wrap the full `render()` — they keep the focused input/textarea, caret selection, `window.scrollY`, every panel's `scrollTop`, `.open` sections, and an open Settings panel. Trade notes now live in a small in-memory cache, are written to `localStorage` on a 400 ms debounce, and are flushed on blur/`pagehide`/hidden tab, so a render can never drop a draft. Input-driven renders (`rm*`, `strat*`, `paperBalance`) go through `scheduleRender()`. The 60 s timer now calls `refreshSessionBar()` and patches only that node instead of rebuilding the page. Tests: M36.
 
 Implementation notes (3B, done): `renderIntoRoot()` parses the generated markup into a `<template>` and patches the top-level `<main>` children instead of replacing the whole document. Each region is keyed by tag/id/classes plus its sibling position, and is reused verbatim when its generated HTML is unchanged — so the chart canvas, open panels and screenshot state survive a render. `analyze()` is memoized in a `WeakMap` keyed by the `state.rows` array, config, `macdHistVote`, demo mode and the ML model signature; `trackSignal` calls always bypass it because they mutate `lastSignals`. `drawChart()` is memoized per canvas by pair, timeframe, row shape, last candle, overlay flags, size and DPR, so an idle render does not repaint the canvas. Tests: M37.
+
+Post-3B maintenance (done): the economic calendar now reads the CORS-enabled Biquote feed — the old ForexFactory mirror never sent `Access-Control-Allow-Origin`, so browser fetches were always blocked. Live rows are mapped/sorted by absolute UTC time, the panel refreshes once they arrive, and the sample rows stay visible at any hour. The Signal History badge now shows a persisted lifetime total (`signalHistoryTotal`) instead of the retained-row count, so it keeps counting past the 50-row cap. Tests: M38–M39.
 
 Remaining (3C–3D):
 - **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.

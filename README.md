@@ -12,7 +12,7 @@ No install or build step is required; the checks run on plain Node.js 20+.
 
 ```sh
 node scripts/verify-html.mjs   # inline script parses, CSP hash is current, no inline handlers
-node test/dashboard.test.js    # 250+ regression tests
+node test/dashboard.test.js    # 290+ regression tests
 node scripts/sync-csp.mjs      # recompute the CSP hash after editing the inline script
 ```
 
@@ -27,6 +27,7 @@ Run `verify-html` and `sync-csp` after any change to the inline script: the Cont
 - Provider responses are cached in local storage (`mdc:v1:*`) with short TTLs, so repeated scans and reloads reuse recent candles and tickers. **Settings → Clear market cache** forces a fresh download; this cache contains only public market data.
 - Full re-renders preserve the focused field, caret position, page scroll, panel scroll, open sections, and the Settings panel. Trade notes are saved on a short debounce and flushed when the field loses focus or the tab closes.
 - Rendering patches the top-level regions whose markup actually changed, and an idle render neither replaces the chart canvas nor repaints it. Indicator analysis is memoized per row array + strategy config, so repeated renders reuse the same result.
+- The economic calendar reads a CORS-enabled public feed and falls back to clearly labelled sample rows when it is unreachable. The Signal History badge counts every signal ever generated, even after the retained list is capped at the most recent 50.
 - Export a backup from **Settings** before clearing browser data or moving to a new device.
 
 ## Publish to GitHub Pages
