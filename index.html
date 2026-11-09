@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-QKJagadqHQsOXEIt5sPyUEKRjz8kgoOySXpf+afkU/s='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-8LPJPNBIx9EGikYWqFxP4GUJnHZbIzhQWoYxZEoMYyA='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -461,7 +461,12 @@ const names = {
 };
 
 const nonFiat = new Set(["XAU", "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "AVAX", "SHIB", "LTC", "MATIC", "POL", "UNI", "ATOM", "LUNC", "NEAR", "APT", "ARB", "OP", "INJ", "SUI", "FET", "WIF", "PEPE", "BONK", "ETHFI", "TIA", "SEI", "JUP", "RENDER", "ONDO", "TAO", "JASMY", "ENA", "AAVE", "MKR", "CRV", "LDO", "STX", "BCH", "XLM", "TRX", "ETC", "FIL", "HBAR", "ICP", "VET", "ALGO", "GRT", "SAND", "MANA", "IMX", "THETA", "RUNE", "FLOKI", "WLD", "TON", "EOS", "XTZ", "CHZ", "GALA", "APE", "DYDX", "PYTH", "JTO", "ORDI", "PENDLE", "EIGEN"]);
-const binanceFiat = new Set(["EUR", "GBP", "AUD", "NZD"]);
+// Only these fiat currencies have a live Binance USDT book. NZD was removed:
+// Binance has no NZDUSDT market, so requesting it returned a 400 on every scan.
+const binanceFiat = new Set(["EUR", "GBP", "AUD"]);
+// Frankfurter dropped BGN when Bulgaria adopted the euro, so a from=BGN request
+// 404s. Route unsupported legs through the currency-api fallback instead.
+const frankfurterCurrencies = new Set(["AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN", "MYR", "NOK", "NZD", "PHP", "PLN", "RON", "SEK", "SGD", "THB", "TRY", "USD", "ZAR"]);
 
 const state = {
   base: "EUR",
@@ -1404,7 +1409,6 @@ const allScanPairs = [
   "BTC/USD","ETH/USD","SOL/USD","XRP/USD","ADA/USD","DOGE/USD","DOT/USD","LINK/USD","AVAX/USD",
   "SHIB/USD","LTC/USD","MATIC/USD","UNI/USD","ATOM/USD","LUNC/USD","NEAR/USD","APT/USD","ARB/USD","OP/USD","INJ/USD","SUI/USD","FET/USD","WIF/USD","PEPE/USD","BONK/USD","TIA/USD","SEI/USD","JUP/USD","RENDER/USD","ONDO/USD","TAO/USD","JASMY/USD","ENA/USD","AAVE/USD","MKR/USD","CRV/USD","LDO/USD","STX/USD",
   "BCH/USD","XLM/USD","TRX/USD","ETC/USD","FIL/USD","HBAR/USD","ICP/USD","VET/USD","ALGO/USD","GRT/USD","SAND/USD","MANA/USD","IMX/USD","THETA/USD","RUNE/USD","FLOKI/USD","WLD/USD","TON/USD","EOS/USD","XTZ/USD","CHZ/USD","GALA/USD","APE/USD","DYDX/USD","PYTH/USD","JTO/USD","ORDI/USD","PENDLE/USD","EIGEN/USD",
-  "BTC/ETH",
 ];
 
 let scanPairs = [...allScanPairs];
@@ -1822,6 +1826,12 @@ function makeOhlc(date, close, previousClose) {
 }
 
 async function fetchFxRows(base, quote) {
+  // Frankfurter no longer publishes BGN (Bulgaria adopted the euro), so a
+  // history request for it would 404 on every chart open. Fail fast with a
+  // readable message instead of logging a failed network request.
+  if (!frankfurterCurrencies.has(base) || !frankfurterCurrencies.has(quote)) {
+    throw new Error(`Daily history is not available for ${base}/${quote}.`);
+  }
   const end = new Date();
   const start = new Date();
   start.setDate(start.getDate() - 180);
@@ -2284,7 +2294,10 @@ function mtfContextTfs(timeframe) {
 
 async function fetchLivePrice(base, quote) {
   try {
-    if (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD")) {
+    if (quote === "USD" && (nonFiat.has(base) || binanceFiat.has(base))) {
+      // Binance only has USD(T)-quoted books for these assets. A crypto/crypto
+      // cross such as BTC/ETH would build an invalid symbol (BTCETH), so those
+      // fall through to the currency-api conversion below instead.
       const symbol = binanceSymbol(base, quote);
       try {
         const result = await cachedJson(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`, { ttl: MARKET_TTL.ticker, key: `binance-ticker:${symbol}`, provider: "binance" });
@@ -2334,11 +2347,13 @@ async function fetchLivePrice(base, quote) {
       const twelve = await fetchTwelveDataPrice(base, quote).catch(() => null);
       if (twelve) return twelve;
     }
-    try {
-      const result = await cachedJson(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`, { ttl: MARKET_TTL.fxLatest, key: `fx-latest:${base}:${quote}`, provider: "frankfurter" });
-      const d = result.data;
-      if (d.rates && d.rates[quote] != null) return { price: d.rates[quote], change: null };
-    } catch {}
+    if (frankfurterCurrencies.has(base) && frankfurterCurrencies.has(quote)) {
+      try {
+        const result = await cachedJson(`https://api.frankfurter.dev/v1/latest?from=${base}&to=${quote}`, { ttl: MARKET_TTL.fxLatest, key: `fx-latest:${base}:${quote}`, provider: "frankfurter" });
+        const d = result.data;
+        if (d.rates && d.rates[quote] != null) return { price: d.rates[quote], change: null };
+      } catch {}
+    }
     const converted = await cachedJson(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${base.toLowerCase()}.min.json`, { ttl: MARKET_TTL.currency, key: `currency:${base}`, provider: "currency" });
     const d2 = converted.data;
     const rate = d2[base.toLowerCase()]?.[quote.toLowerCase()];
@@ -4926,10 +4941,10 @@ async function updateOverviewPrices() {
   const pairs = scanPairs;
   if (pairs.length === 0) return;
   try {
-    const crypto = pairs.filter(p => nonFiat.has(p.split("/")[0]));
+    const crypto = pairs.filter(p => nonFiat.has(p.split("/")[0]) && p.split("/")[1] === "USD");
+    const cryptoCross = pairs.filter(p => nonFiat.has(p.split("/")[0]) && p.split("/")[1] !== "USD");
     const binanceFx = pairs.filter(p => !nonFiat.has(p.split("/")[0]) && binanceFiat.has(p.split("/")[0]) && p.split("/")[1] === "USD");
     const fx = pairs.filter(p => !nonFiat.has(p.split("/")[0]) && !binanceFx.includes(p));
-    const fxBases = [...new Set(fx.map(p => p.split("/")[0]))];
     const results = {};
     const allBinance = [...crypto, ...binanceFx];
     if (allBinance.length > 0) {
@@ -4950,8 +4965,18 @@ async function updateOverviewPrices() {
       }));
       for (const d of data) { if (d) results[d.pair] = d; }
     }
-    if (fxBases.length > 0) {
-      const fxData = await Promise.all(fxBases.map(async (base) => {
+    // Frankfurter only serves the currencies it still publishes (BGN is gone),
+    // so split the FX batch: supported legs go to Frankfurter, everything else
+    // (including crypto/crypto crosses) converts through currency-api.
+    const ffPairs = fx.filter((p) => {
+      const [b, q] = p.split("/");
+      return frankfurterCurrencies.has(b) && frankfurterCurrencies.has(q);
+    });
+    const ffBases = [...new Set(ffPairs.map(p => p.split("/")[0]))];
+    const altPairs = fx.filter(p => !ffPairs.includes(p)).concat(cryptoCross);
+    const altBases = [...new Set(altPairs.map(p => p.split("/")[0]))];
+    if (ffBases.length > 0) {
+      const fxData = await Promise.all(ffBases.map(async (base) => {
         try {
           const result = await cachedJson(`https://api.frankfurter.dev/v1/latest?from=${base}`, {
             ttl: MARKET_TTL.fxLatest,
@@ -4963,10 +4988,34 @@ async function updateOverviewPrices() {
       }));
       for (const fd of fxData) {
         if (!fd) continue;
-        for (const pair of fx) {
+        for (const pair of ffPairs) {
           const [b, q] = pair.split("/");
           if (b !== fd.base) continue;
           const rate = fd.rates[q];
+          if (rate && multiScan.results[pair]) {
+            results[pair] = { pair, price: rate, change: null };
+          }
+        }
+      }
+    }
+    if (altBases.length > 0) {
+      const altData = await Promise.all(altBases.map(async (base) => {
+        const key = base.toLowerCase();
+        try {
+          const result = await cachedJson(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${key}.min.json`, {
+            ttl: MARKET_TTL.currency,
+            key: `currency:${key}`,
+            provider: "currency",
+          });
+          return { base, table: result.data[key] || {} };
+        } catch { return null; }
+      }));
+      for (const ad of altData) {
+        if (!ad) continue;
+        for (const pair of altPairs) {
+          const [b, q] = pair.split("/");
+          if (b !== ad.base) continue;
+          const rate = ad.table[q.toLowerCase()];
           if (rate && multiScan.results[pair]) {
             results[pair] = { pair, price: rate, change: null };
           }

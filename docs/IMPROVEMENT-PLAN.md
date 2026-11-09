@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 291 pass / 0 fail
+Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 309 pass / 0 fail
 
 ## Snapshot
 
@@ -101,6 +101,8 @@ Implementation notes (3A, done): `captureUiState()` / `restoreUiState()` wrap th
 Implementation notes (3B, done): `renderIntoRoot()` parses the generated markup into a `<template>` and patches the top-level `<main>` children instead of replacing the whole document. Each region is keyed by tag/id/classes plus its sibling position, and is reused verbatim when its generated HTML is unchanged — so the chart canvas, open panels and screenshot state survive a render. `analyze()` is memoized in a `WeakMap` keyed by the `state.rows` array, config, `macdHistVote`, demo mode and the ML model signature; `trackSignal` calls always bypass it because they mutate `lastSignals`. `drawChart()` is memoized per canvas by pair, timeframe, row shape, last candle, overlay flags, size and DPR, so an idle render does not repaint the canvas. Tests: M37.
 
 Post-3B maintenance (done): the economic calendar now reads the CORS-enabled Biquote feed — the old ForexFactory mirror never sent `Access-Control-Allow-Origin`, so browser fetches were always blocked. Live rows are mapped/sorted by absolute UTC time, the panel refreshes once they arrive, and the sample rows stay visible at any hour. The Signal History badge now shows a persisted lifetime total (`signalHistoryTotal`) instead of the retained-row count, so it keeps counting past the 50-row cap. Tests: M38–M39.
+
+Post-3B maintenance (done): market scans no longer request dead endpoints. The default universe drops `BTC/ETH` (Binance builds the invalid symbol `BTCETH`), Binance fiat books are limited to EUR/GBP/AUD (NZD has no `NZDUSDT` market), and BGN is routed around Frankfurter (which stopped publishing it when Bulgaria adopted the euro) to the currency-api fallback. The 15 s overview poll now batches supported legs through Frankfurter and everything else through currency-api, and daily history fails fast for unsupported currencies instead of logging a 4xx. Tests: M40.
 
 Remaining (3C–3D):
 - **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.

@@ -1241,6 +1241,80 @@ assert(clearThrew === null, "clearSignalHistory does not throw, got: " + clearTh
 assert(totalGenerated() === 0 && retainedRows() === 0, "clearing history resets both the log and the lifetime counter");
 assert(html.includes("${autoScan.totalGenerated}") && html.includes('title="${autoScan.history.length} in log"'), "the badge renders the lifetime total and keeps the retained count in its tooltip");
 
+console.log("--- M40: unsupported tickers and currencies never hit the network ---");
+
+// Defaults must not contain pairs that map to a dead exchange book.
+const defaults = vm.runInContext("allScanPairs.slice()", ctx);
+assert(!defaults.includes("BTC/ETH"), "the default universe no longer contains BTC/ETH (BTCETH is not a Binance symbol)");
+assert(vm.runInContext("binanceFiat.has('NZD')", ctx) === false, "NZD is no longer treated as a Binance fiat book");
+assert(vm.runInContext("binanceFiat.has('EUR') && binanceFiat.has('GBP') && binanceFiat.has('AUD')", ctx), "the real Binance fiat books are still enabled");
+const badDefaults = defaults.filter((p) => {
+  const [b, q] = p.split("/");
+  return vm.runInContext(`nonFiat.has(${JSON.stringify(b)})`, ctx) && q !== "USD";
+});
+assert(badDefaults.length === 0, "no default crypto cross builds an invalid Binance symbol, got " + badDefaults.join(","));
+assert(vm.runInContext("frankfurterCurrencies.has('USD') && !frankfurterCurrencies.has('BGN')", ctx), "the Frankfurter allowlist excludes BGN");
+
+// NZD/USD must skip Binance and use the Frankfurter daily rate.
+vm.runInContext("fxApiPrefs.enabled = false; fxApiPrefs.key = ''; fxUsdLegCache.clear(); clearMarketCache();", ctx);
+const liveCalls = [];
+ctx.fetch = (url) => {
+  const u = String(url);
+  liveCalls.push(u);
+  if (u.includes("frankfurter.dev/v1/latest")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ base: "NZD", rates: { USD: 0.6 } }) });
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const nzdUsd = await ctx.fetchLivePrice("NZD", "USD");
+assert(nzdUsd && nzdUsd.price === 0.6, "NZD/USD resolves through Frankfurter, got " + (nzdUsd && nzdUsd.price));
+assert(!liveCalls.some((u) => u.includes("NZDUSDT")), "NZD/USD never requests the missing Binance book");
+
+// BGN is no longer published by Frankfurter, so it must use currency-api.
+vm.runInContext("clearMarketCache();", ctx);
+const bgnCalls = [];
+ctx.fetch = (url) => {
+  const u = String(url);
+  bgnCalls.push(u);
+  if (u.includes("jsdelivr") && u.includes("/bgn.")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ bgn: { usd: 0.55 } }) });
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+const bgnUsd = await ctx.fetchLivePrice("BGN", "USD");
+assert(bgnUsd && bgnUsd.price === 0.55, "BGN/USD resolves through currency-api, got " + (bgnUsd && bgnUsd.price));
+assert(!bgnCalls.some((u) => u.includes("from=BGN")), "BGN never requests the unsupported Frankfurter endpoint");
+
+// The 15s overview poll must not fire the three noisy requests.
+vm.runInContext("clearMarketCache();", ctx);
+const overviewCalls = [];
+ctx.fetch = (url) => {
+  const u = String(url);
+  overviewCalls.push(u);
+  if (u.includes("binance")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ lastPrice: "1.23", priceChangePercent: "0.5" }) });
+  if (u.includes("frankfurter")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ base: "NZD", rates: { USD: 0.6 } }) });
+  if (u.includes("jsdelivr") && u.includes("/usd.")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ usd: { bgn: 1.8 } }) });
+  if (u.includes("jsdelivr")) return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+vm.runInContext(
+  `scanPairs = ["BTC/USD","BTC/ETH","NZD/USD","USD/BGN","EUR/USD"]; multiScan.results = {}; for (const p of scanPairs) multiScan.results[p] = { pair: p, direction: "WAIT", confidence: 0, price: null, change: null };`,
+  ctx
+);
+await ctx.updateOverviewPrices();
+assert(!overviewCalls.some((u) => u.includes("symbol=BTCETH")), "the overview poll never requests the invalid BTCETH book");
+assert(!overviewCalls.some((u) => u.includes("symbol=NZDUSDT")), "the overview poll never requests the missing NZDUSDT book");
+assert(!overviewCalls.some((u) => u.includes("from=BGN")), "the overview poll never requests from=BGN");
+assert(overviewCalls.some((u) => u.includes("jsdelivr")), "BGN legs are routed through currency-api");
+assert(vm.runInContext("multiScan.results['USD/BGN'].price", ctx) === 1.8, "USD/BGN gets a currency-api price");
+assert(vm.runInContext("multiScan.results['NZD/USD'].price", ctx) === 0.6, "NZD/USD gets a Frankfurter price in the overview");
+assert(vm.runInContext("multiScan.results['BTC/ETH'].price", ctx) == null, "BTC/ETH is not fetched from an invalid exchange book");
+
+// Daily history must fail fast for currencies Frankfurter dropped.
+vm.runInContext("clearMarketCache();", ctx);
+const historyCalls = [];
+ctx.fetch = (url) => { historyCalls.push(String(url)); return Promise.resolve({ ok: false, status: 404, json: async () => ({}) }); };
+let historyErr = null;
+try { await ctx.fetchFxRows("BGN", "USD"); } catch (e) { historyErr = e && e.message; }
+assert(historyErr && historyErr.includes("BGN/USD"), "BGN history fails with a readable message, got: " + historyErr);
+assert(historyCalls.length === 0, "BGN history makes no known-failing request, got " + historyCalls.length);
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

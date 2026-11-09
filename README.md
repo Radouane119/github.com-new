@@ -28,6 +28,7 @@ Run `verify-html` and `sync-csp` after any change to the inline script: the Cont
 - Full re-renders preserve the focused field, caret position, page scroll, panel scroll, open sections, and the Settings panel. Trade notes are saved on a short debounce and flushed when the field loses focus or the tab closes.
 - Rendering patches the top-level regions whose markup actually changed, and an idle render neither replaces the chart canvas nor repaints it. Indicator analysis is memoized per row array + strategy config, so repeated renders reuse the same result.
 - The economic calendar reads a CORS-enabled public feed and falls back to clearly labelled sample rows when it is unreachable. The Signal History badge counts every signal ever generated, even after the retained list is capped at the most recent 50.
+- Market scans skip requests that are known to fail: crypto books are only quoted in USD(T), and currencies Frankfurter no longer publishes (such as BGN) are converted through the currency-api fallback instead of logging 4xx errors.
 - Export a backup from **Settings** before clearing browser data or moving to a new device.
 
 ## Publish to GitHub Pages
