@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3C implemented · Baseline: `9fbb8e3` · Tests: 325 pass / 0 fail
+Status: Phases 0–3D implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
 
 ## Snapshot
 
@@ -106,8 +106,7 @@ Post-3B maintenance (done): market scans no longer request dead endpoints. The d
 
 Implementation notes (3C, done): the palette now lives in `:root` as semantic CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted*`, `--buy*`, `--sell*`, `--wait*`, `--accent*`, `--warn*`, `--gold*`, `--on-accent`, `--neutral-soft`, `--sheen`). A single `[data-theme="light"]` block overrides those variables, replacing the 16 per-component light rules. Every palette literal in the `<style>` block and in the 545 inline `style="..."` attributes was replaced with `var(--token)`, so dark and light now share one component stylesheet. JS values that are concatenated with an alpha suffix or passed to canvas APIs (`volColor`, `corrColor`, chart paints) stay hex by design. Tests: M41.
 
-Remaining (3D):
-- Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
+Implementation notes (3D, done): every interactive control now has a visible `:focus-visible` ring (including links, textareas and switch tracks), and switch inputs stay in the tab order instead of being `display:none`. Toasts are live regions — `status`/`polite` for confirmations and `alert`/`assertive` for warnings — and never intercept clicks. The price canvas is exposed as `role="img"` with an `aria-labelledby` text summary that reports pair, timeframe, candle count, period change, last close and high/low. Toggles expose `aria-pressed`, and the theme/sound buttons update their accessible labels when clicked or toggled from the keyboard (`T`/`M`). `prefers-reduced-motion` collapses animations and transitions, and icon buttons, timeframe buttons, selects and switches grow to at least 44 px on small screens. Both palettes were retuned until every text/background pair met WCAG AA: light `--muted-3`/`--buy`/`--sell`/`--warn`/`--gold` and dark `--muted-2`/`--muted-3`/`--muted-4`/`--on-accent`, plus the session volatility badge, inactive session segments and loading overview cards. Tests: M42. Lighthouse accessibility is 1.0 in both themes.
 
 Current issues (baseline):
 - `render()` still regenerates the full markup string; only the DOM patching and canvas paint are skipped for unchanged regions.

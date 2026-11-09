@@ -1345,6 +1345,54 @@ vm.runInContext("darkTheme = false; applyTheme();", ctx);
 assert(themed.attrs["data-theme"] === "light", "applyTheme sets data-theme=light in light mode");
 ctx.document.documentElement = realDocEl;
 
+console.log("--- M42: accessibility semantics, motion and touch targets ---");
+
+// Screen-reader utility + focus rings cover all interactive controls.
+assert(/\.sr-only\{[^}]*clip:rect\(0,0,0,0\)/.test(styleBlock), "a screen-reader-only utility exists");
+assert(/textarea:focus-visible/.test(styleBlock), "textareas get the focus ring");
+assert(/a\[href\]:focus-visible/.test(styleBlock), "links get the focus ring");
+assert(/\.toggle input:focus-visible~\.toggle-track\{[^}]*outline:2px solid var\(--accent\)/.test(styleBlock), "keyboard focus is visible on switch toggles");
+assert(!/\.toggle input\{display:none\}/.test(styleBlock), "switch inputs stay in the tab order");
+
+// Reduced motion is respected.
+assert(/@media \(prefers-reduced-motion: reduce\)\{[\s\S]*transition-duration:\.01ms !important/.test(styleBlock), "transitions collapse for reduced-motion users");
+assert(/\.toggle-track,\.toggle-knob,\.heatmap-cell\{transition:none !important\}/.test(styleBlock), "the animated controls also stop under reduced motion");
+
+// Touch targets grow on small screens.
+assert(/@media \(max-width:768px\)\{[\s\S]*\.icon-button\{min-width:44px;min-height:44px\}/.test(styleBlock), "icon buttons reach 44px on mobile");
+assert(/@media \(max-width:768px\)\{[\s\S]*\.tf-btn\{min-width:44px;min-height:44px\}/.test(styleBlock), "timeframe buttons reach 44px on mobile");
+assert(/@media \(max-width:768px\)\{[\s\S]*\.toggle\{width:44px;height:24px\}/.test(styleBlock), "switch toggles grow to 44px on mobile");
+
+// Toasts announce politely for success and urgently for warnings.
+const toastEl = { style: {}, attrs: {}, textContent: "", setAttribute(k, v) { this.attrs[k] = v; } };
+const realCreate = ctx.document.createElement;
+const realGetById = ctx.document.getElementById;
+ctx.document.createElement = () => toastEl;
+ctx.document.getElementById = () => null;
+ctx.showToast("Saved", "ok");
+assert(toastEl.attrs.role === "status" && toastEl.attrs["aria-live"] === "polite", "success toasts are polite status messages");
+assert(toastEl.attrs["aria-atomic"] === "true", "toasts are announced as a whole");
+ctx.showToast("Blocked", "warn");
+assert(toastEl.attrs.role === "alert" && toastEl.attrs["aria-live"] === "assertive", "warning toasts are assertive alerts");
+ctx.document.createElement = realCreate;
+ctx.document.getElementById = realGetById;
+
+// The canvas has a text alternative and its summary tracks the data.
+assert(/<canvas id="priceChart" role="img" aria-labelledby="chartSummary"><\/canvas>/.test(html), "the price canvas is exposed as an image with a labelledby target");
+assert(/<p id="chartSummary" class="sr-only">/.test(html), "the chart has a screen-reader text summary");
+const a11yChartRows = [
+  { date: "2026-01-01", open: 1.1, high: 1.2, low: 1.0, close: 1.1 },
+  { date: "2026-01-02", open: 1.2, high: 1.3, low: 1.1, close: 1.2 },
+  { date: "2026-01-03", open: 1.3, high: 1.4, low: 1.2, close: 1.32 },
+];
+const upSummary = ctx.chartSummary(a11yChartRows, "EUR/USD", "1h");
+assert(upSummary.includes("EUR/USD 1h") && upSummary.includes("3 candles"), "the chart summary names the pair, timeframe and candle count, got: " + upSummary);
+assert(upSummary.includes("up 20.00%"), "the chart summary reports the period change, got: " + upSummary);
+assert(upSummary.includes("High") && upSummary.includes("low"), "the chart summary reports the high/low range");
+const downSummary = ctx.chartSummary([{ date: "a", open: 2, high: 2.1, low: 1.9, close: 2 }, { date: "b", open: 2, high: 2.1, low: 1.5, close: 1.8 }], "XAU/USD", "1D");
+assert(downSummary.includes("down 10.00%"), "the chart summary reports a falling period, got: " + downSummary);
+assert(ctx.chartSummary([], "EUR/USD", "1h").includes("no data available"), "an empty chart gets an explicit summary");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
