@@ -1315,6 +1315,36 @@ try { await ctx.fetchFxRows("BGN", "USD"); } catch (e) { historyErr = e && e.mes
 assert(historyErr && historyErr.includes("BGN/USD"), "BGN history fails with a readable message, got: " + historyErr);
 assert(historyCalls.length === 0, "BGN history makes no known-failing request, got " + historyCalls.length);
 
+console.log("--- M41: theme palette lives in CSS variables ---");
+
+const styleBlock = (html.match(/<style>([\s\S]*?)<\/style>/) || [])[1] || "";
+assert(/:root\{[\s\S]*--bg:/.test(styleBlock), "the dark palette is declared as :root CSS variables");
+assert(/\[data-theme="light"\]\{[\s\S]*--bg:/.test(styleBlock), "the light theme overrides the same variables");
+for (const token of ["--bg", "--panel", "--border", "--text", "--muted", "--buy", "--sell"]) {
+  assert(styleBlock.includes(token + ":"), "the palette defines " + token);
+}
+const inlineStyles = [...html.matchAll(/style="([^"]*)"/g)].map((m) => m[1]);
+const rawColorStyles = inlineStyles.filter((s) => /#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(s));
+assert(rawColorStyles.length === 0, "inline styles use palette variables instead of raw colors, got: " + rawColorStyles.slice(0, 3).join(" | "));
+assert(!/\[data-theme="light"\]\s+body/.test(styleBlock), "the light theme no longer needs per-component color overrides");
+assert(/background:var\(--bg\)/.test(styleBlock) && /color:var\(--text\)/.test(styleBlock), "body paints through the palette variables");
+
+ls.set("theme", "light");
+vm.runInContext("loadTheme();", ctx);
+assert(vm.runInContext("darkTheme", ctx) === false, "loadTheme restores the light preference");
+ls.set("theme", "dark");
+vm.runInContext("loadTheme();", ctx);
+assert(vm.runInContext("darkTheme", ctx) === true, "loadTheme restores the dark preference");
+
+const themed = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };
+const realDocEl = ctx.document.documentElement;
+ctx.document.documentElement = themed;
+vm.runInContext("darkTheme = true; applyTheme();", ctx);
+assert(!("data-theme" in themed.attrs), "applyTheme clears the light attribute in dark mode");
+vm.runInContext("darkTheme = false; applyTheme();", ctx);
+assert(themed.attrs["data-theme"] === "light", "applyTheme sets data-theme=light in light mode");
+ctx.document.documentElement = realDocEl;
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

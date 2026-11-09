@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3B implemented · Baseline: `9fbb8e3` · Tests: 309 pass / 0 fail
+Status: Phases 0–3C implemented · Baseline: `9fbb8e3` · Tests: 325 pass / 0 fail
 
 ## Snapshot
 
@@ -104,8 +104,9 @@ Post-3B maintenance (done): the economic calendar now reads the CORS-enabled Biq
 
 Post-3B maintenance (done): market scans no longer request dead endpoints. The default universe drops `BTC/ETH` (Binance builds the invalid symbol `BTCETH`), Binance fiat books are limited to EUR/GBP/AUD (NZD has no `NZDUSDT` market), and BGN is routed around Frankfurter (which stopped publishing it when Bulgaria adopted the euro) to the currency-api fallback. The 15 s overview poll now batches supported legs through Frankfurter and everything else through currency-api, and daily history fails fast for unsupported currencies instead of logging a 4xx. Tests: M40.
 
-Remaining (3C–3D):
-- **Theme fix:** 540 inline dark hex colors defeat the 16 light-theme CSS overrides. Move to CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted`, `--buy`, `--sell`) with one light override block. Do it section by section.
+Implementation notes (3C, done): the palette now lives in `:root` as semantic CSS variables (`--bg`, `--panel`, `--border`, `--text`, `--muted*`, `--buy*`, `--sell*`, `--wait*`, `--accent*`, `--warn*`, `--gold*`, `--on-accent`, `--neutral-soft`, `--sheen`). A single `[data-theme="light"]` block overrides those variables, replacing the 16 per-component light rules. Every palette literal in the `<style>` block and in the 545 inline `style="..."` attributes was replaced with `var(--token)`, so dark and light now share one component stylesheet. JS values that are concatenated with an alpha suffix or passed to canvas APIs (`volColor`, `corrColor`, chart paints) stay hex by design. Tests: M41.
+
+Remaining (3D):
 - Accessibility: `:focus-visible` rings, `aria-live` for toasts, canvas text summary, `prefers-reduced-motion`, 44 px mobile targets.
 
 Current issues (baseline):
