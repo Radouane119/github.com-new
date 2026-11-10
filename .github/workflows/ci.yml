@@ -19,6 +19,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Check generated index.html is up to date
+        run: node build.mjs --check
       - name: Verify HTML guardrails
         run: node scripts/verify-html.mjs
       - name: Run tests

@@ -44,7 +44,7 @@ if (!scriptMatch) {
     fail(
       "CSP script hash is stale.\n" +
         `  expected: script-src '${hash}'\n` +
-        "  run: node scripts/sync-csp.mjs"
+        "  run: node build.mjs"
     );
   }
 }

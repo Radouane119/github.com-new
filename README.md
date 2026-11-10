@@ -8,15 +8,16 @@ Open `index.html` in a modern browser. For the service worker and offline mode, 
 
 ## Development checks
 
-No install or build step is required; the checks run on plain Node.js 20+.
+The dashboard itself needs no install or build step: the generated `index.html` is committed and opens directly. Editing works from the sources in `src/`; the zero-dependency build regenerates the single file with Node.js 20+.
 
 ```sh
+node build.mjs                 # regenerate index.html from src/
+node build.mjs --check         # fail if index.html is out of date
 node scripts/verify-html.mjs   # inline script parses, CSP hash is current, no inline handlers
-node test/dashboard.test.js    # 290+ regression tests
-node scripts/sync-csp.mjs      # recompute the CSP hash after editing the inline script
+node test/dashboard.test.js    # 345 regression tests
 ```
 
-Run `verify-html` and `sync-csp` after any change to the inline script: the Content-Security-Policy in `index.html` allows that script by SHA-256 hash, and a stale hash blocks the whole app. Both are wired into `npm run check`, and CI gates deployment on them.
+Edit `src/app.js`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build inlines the sources and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
 
 ## Important notes
 
@@ -43,7 +44,11 @@ The included workflow runs the checks and tests, then deploys the dashboard afte
 
 ## Project structure
 
-- `index.html` — application UI, styles, and client-side logic.
+- `index.html` — generated single-file app (UI, styles, and client-side logic); do not edit by hand.
+- `src/index.template.html` — page shell with placeholders for styles, script, and CSP hash.
+- `src/styles.css` — stylesheet inlined by the build.
+- `src/app.js` — client-side logic inlined by the build.
+- `build.mjs` — zero-dependency build; inlines `src/` and computes the CSP hash.
 - `manifest.json` — progressive-web-app metadata.
 - `sw.js` — offline asset caching.
 - `icon.svg` — application icon.
