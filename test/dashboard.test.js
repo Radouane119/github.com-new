@@ -5,10 +5,21 @@ const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
 const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
-const m = html.match(/<script>([\s\S]*?)<\/script>/);
-if (!m) { console.error("FAIL: no <script> block found"); process.exit(1); }
+const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "src/app/manifest.json"), "utf8"));
+if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+  console.error("FAIL: src/app/manifest.json does not list any sources");
+  process.exit(1);
+}
 
-let js = m[1];
+// Runtime tests run against the sources directly; static markup/CSP checks
+// still inspect the generated index.html. The build concatenates these files
+// in the same manifest order, so this keeps the suite independent of packaging
+// while still guarding the shipped document.
+let js = manifest.files
+  .map((name) => fs.readFileSync(path.join(ROOT, "src/app", name), "utf8"))
+  .join("")
+  .replace(/\r\n?/g, "\n");
+
 // Truncate at the browser bootstrap so the live load()/connectWS() never runs.
 const boot = js.indexOf("\nloadHistory();");
 if (boot === -1) { console.error("FAIL: bootstrap marker not found"); process.exit(1); }
@@ -49,7 +60,7 @@ vm.createContext(ctx);
 
 let sandboxErr = null;
 try {
-  vm.runInContext(js, ctx, { filename: "dashboard-inline.js" });
+  vm.runInContext(js, ctx, { filename: "dashboard-sources.js" });
 } catch (e) {
   sandboxErr = e;
 }

@@ -11,13 +11,14 @@ Open `index.html` in a modern browser. For the service worker and offline mode, 
 The dashboard itself needs no install or build step: the generated `index.html` is committed and opens directly. Editing works from the sources in `src/`; the zero-dependency build regenerates the single file with Node.js 20+.
 
 ```sh
-node build.mjs                 # regenerate index.html from src/
-node build.mjs --check         # fail if index.html is out of date
-node scripts/verify-html.mjs   # inline script parses, CSP hash is current, no inline handlers
-node test/dashboard.test.js    # 345 regression tests
+node build.mjs                   # regenerate index.html from src/
+node build.mjs --check           # fail if index.html is out of date
+node scripts/verify-html.mjs     # inline script parses, CSP hash is current, no inline handlers
+node scripts/verify-sources.mjs  # manifest lists every source and each file parses
+node test/dashboard.test.js      # 345 regression tests against src/app
 ```
 
-Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, inlines them, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
+Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, inlines them, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. The test suite loads those same sources directly, so it stays independent of the generated HTML. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
 
 ## Important notes
 

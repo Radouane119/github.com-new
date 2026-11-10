@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D and 4A–4B implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
+Status: Phases 0–3D and 4A–4C implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
 
 ## Snapshot
 
@@ -149,7 +149,9 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 
 **4A (done):** the page shell, stylesheet, and script now live in `src/index.template.html`, `src/styles.css`, and the JavaScript sources. The zero-dependency `build.mjs` inlines them, derives the CSP SHA-256 hash from the exact rendered script text, and writes `index.html` with LF endings (`.gitattributes` pins this on every platform). `node build.mjs --check` compares the generated output against the committed file and runs in both CI jobs before the guardrails and tests. The regenerated `index.html` is byte-identical to the previous release (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`), so this slice changes the source layout without changing the shipped app.
 
-**4B (done):** `src/app.js` is split into twelve contiguous files under `src/app/` — universe, safety, cache, state, market, analysis, signals, render, backtest, scans, chart, and events. `src/app/manifest.json` fixes the concatenation order, and `build.mjs` joins the files verbatim, so the inline script and CSP hash are still byte-identical (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`) and the tests keep using the existing inline-script harness. Every slice parses on its own with `node --check`. The esbuild bundle and test migration to module imports remain for the next slice.
+**4B (done):** `src/app.js` is split into twelve contiguous files under `src/app/` — universe, safety, cache, state, market, analysis, signals, render, backtest, scans, chart, and events. `src/app/manifest.json` fixes the concatenation order, and `build.mjs` joins the files verbatim, so the inline script and CSP hash are still byte-identical (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`) and the tests keep using the existing inline-script harness. Every slice parses on its own with `node --check`. The esbuild bundle and a full ESM migration remain for a later slice.
+
+**4C (done):** the test suite no longer extracts the inline script from `index.html`. It reads `src/app/manifest.json`, concatenates the sources in the same order as the build, and runs them in the existing `vm` sandbox, so the 345 assertions now cover the sources directly. A new `scripts/verify-sources.mjs` guardrail checks that the manifest lists every `src/app/*.js` exactly once, that no listed file is missing or empty, and that each file parses as a standalone script. Both CI jobs run it, and `npm run check` includes it. `index.html` and the CSP hash are unchanged. The next slice can replace the concatenation with a real bundle without having to rewrite the tests at the same time.
 
 ---
 

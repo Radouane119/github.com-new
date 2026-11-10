@@ -28,6 +28,8 @@ jobs:
         run: node build.mjs --check
       - name: Verify HTML guardrails
         run: node scripts/verify-html.mjs
+      - name: Verify source manifest
+        run: node scripts/verify-sources.mjs
       - name: Run tests
         run: node test/dashboard.test.js
 
