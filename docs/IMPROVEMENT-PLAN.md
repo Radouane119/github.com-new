@@ -1,13 +1,13 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D and 4A implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
+Status: Phases 0–3D and 4A–4B implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
 
 ## Snapshot
 
 | Metric | Value |
 | --- | --- |
 | `index.html` | 375 KB, 6,110 lines (generated) |
-| Inline JS | 340 KB in `src/app.js` |
+| Inline JS | 340 KB across `src/app/*.js` |
 | Inline CSS | 27 KB in `src/styles.css` |
 | Inline `style=` attributes | 545 |
 | `fetch()` call sites | 17 providers in 1 script |
@@ -147,7 +147,9 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 
 **Done when:** `node build.mjs` reproduces the shipped HTML byte-for-byte, all tests pass against modules, and the site still opens from `file://`.
 
-**4A (done):** the page shell, stylesheet, and script now live in `src/index.template.html`, `src/styles.css`, and `src/app.js`. The zero-dependency `build.mjs` inlines them, derives the CSP SHA-256 hash from the exact rendered script text, and writes `index.html` with LF endings (`.gitattributes` pins this on every platform). `node build.mjs --check` compares the generated output against the committed file and runs in both CI jobs before the guardrails and tests. The regenerated `index.html` is byte-identical to the previous release (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`), so this slice changes the source layout without changing the shipped app. The module split and esbuild bundle stay for the next slice; the tests still extract the inline script, so no test changes were needed.
+**4A (done):** the page shell, stylesheet, and script now live in `src/index.template.html`, `src/styles.css`, and the JavaScript sources. The zero-dependency `build.mjs` inlines them, derives the CSP SHA-256 hash from the exact rendered script text, and writes `index.html` with LF endings (`.gitattributes` pins this on every platform). `node build.mjs --check` compares the generated output against the committed file and runs in both CI jobs before the guardrails and tests. The regenerated `index.html` is byte-identical to the previous release (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`), so this slice changes the source layout without changing the shipped app.
+
+**4B (done):** `src/app.js` is split into twelve contiguous files under `src/app/` — universe, safety, cache, state, market, analysis, signals, render, backtest, scans, chart, and events. `src/app/manifest.json` fixes the concatenation order, and `build.mjs` joins the files verbatim, so the inline script and CSP hash are still byte-identical (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`) and the tests keep using the existing inline-script harness. Every slice parses on its own with `node --check`. The esbuild bundle and test migration to module imports remain for the next slice.
 
 ---
 

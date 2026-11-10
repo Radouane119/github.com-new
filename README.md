@@ -17,7 +17,7 @@ node scripts/verify-html.mjs   # inline script parses, CSP hash is current, no i
 node test/dashboard.test.js    # 345 regression tests
 ```
 
-Edit `src/app.js`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build inlines the sources and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
+Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, inlines them, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
 
 ## Important notes
 
@@ -47,8 +47,8 @@ The included workflow runs the checks and tests, then deploys the dashboard afte
 - `index.html` — generated single-file app (UI, styles, and client-side logic); do not edit by hand.
 - `src/index.template.html` — page shell with placeholders for styles, script, and CSP hash.
 - `src/styles.css` — stylesheet inlined by the build.
-- `src/app.js` — client-side logic inlined by the build.
-- `build.mjs` — zero-dependency build; inlines `src/` and computes the CSP hash.
+- `src/app/` — client-side logic split by responsibility (`00-universe.js` … `11-events.js`), concatenated in the order listed by `src/app/manifest.json`.
+- `build.mjs` — zero-dependency build; concatenates and inlines `src/` and computes the CSP hash.
 - `manifest.json` — progressive-web-app metadata.
 - `sw.js` — offline asset caching.
 - `icon.svg` — application icon.

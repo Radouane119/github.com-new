@@ -4,7 +4,8 @@
 // Source of truth:
 //   src/index.template.html  page shell with {{STYLES}}, {{SCRIPT}}, {{CSP_HASH}}
 //   src/styles.css           inline CSS
-//   src/app.js               inline JavaScript
+//   src/app/manifest.json    ordered list of JavaScript sources
+//   src/app/*.js             inline JavaScript, concatenated in manifest order
 //
 // Generated artifact:
 //   index.html               committed, so the site keeps working from file://
@@ -28,10 +29,18 @@ export function hashScript(script) {
   return `sha256-${createHash("sha256").update(script, "utf8").digest("base64")}`;
 }
 
+function readApp() {
+  const manifest = JSON.parse(read("src/app/manifest.json"));
+  if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+    throw new Error("build: src/app/manifest.json must list at least one file");
+  }
+  return manifest.files.map((name) => read(`src/app/${name}`)).join("");
+}
+
 export function render() {
   const template = read("src/index.template.html");
   const styles = read("src/styles.css");
-  const app = read("src/app.js");
+  const app = readApp();
 
   const shell = template
     .replace("{{STYLES}}", () => styles)
