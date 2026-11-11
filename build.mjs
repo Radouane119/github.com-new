@@ -5,7 +5,7 @@
 //   src/index.template.html  page shell with {{STYLES}}, {{SCRIPT}}, {{CSP_HASH}}
 //   src/styles.css           inline CSS
 //   src/app/manifest.json    ordered list of JavaScript sources
-//   src/app/*.js             inline JavaScript, concatenated in manifest order
+//   src/app/*.js             JavaScript bundled by esbuild in manifest order
 //
 // Generated artifact:
 //   index.html               committed, so the site keeps working from file://
@@ -17,6 +17,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 
 const root = new URL("./", import.meta.url);
 
@@ -37,10 +38,25 @@ function readApp() {
   return manifest.files.map((name) => read(`src/app/${name}`)).join("");
 }
 
+function bundleApp(app) {
+  const result = buildSync({
+    stdin: { contents: app, loader: "js", sourcefile: "dashboard.js" },
+    bundle: true,
+    format: "iife",
+    target: "es2020",
+    platform: "browser",
+    charset: "utf8",
+    legalComments: "none",
+    write: false,
+    logLevel: "silent",
+  });
+  return result.outputFiles[0].text;
+}
+
 export function render() {
   const template = read("src/index.template.html");
   const styles = read("src/styles.css");
-  const app = readApp();
+  const app = bundleApp(readApp());
 
   const shell = template
     .replace("{{STYLES}}", () => styles)

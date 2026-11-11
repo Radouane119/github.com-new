@@ -475,17 +475,17 @@ function openManualPaperTrade(direction) {
   const stop = els[1] ? Number(els[1].value) : NaN;
   const target = els[2] ? Number(els[2].value) : NaN;
   if (![entry, stop, target].every(Number.isFinite) || entry <= 0 || stop <= 0 || target <= 0) {
-    if (window.showToast) showToast("Enter valid Entry, Stop and Target prices.", "warn");
+    showToast("Enter valid Entry, Stop and Target prices.", "warn");
     return;
   }
   const valid = direction === "BUY" ? (stop < entry && target > entry) : (stop > entry && target < entry);
   if (!valid) {
-    if (window.showToast) showToast("Prices must satisfy stop–entry–target ordering.", "warn");
+    showToast("Prices must satisfy stop–entry–target ordering.", "warn");
     return;
   }
   const sf = mlSizingFactor(state.rows.length > 0 ? analyze(state.rows, loadStrategyConfig()) : null, 0.5);
   addPaperTrade(direction, `${state.base}/${state.quote}`, entry, stop, target, null, sf);
-  if (window.showToast) showToast(`Opened paper ${direction} on ${state.base}/${state.quote} (size ${sf.toFixed(2)}x)`, "ok");
+  showToast(`Opened paper ${direction} on ${state.base}/${state.quote} (size ${sf.toFixed(2)}x)`, "ok");
   render();
 }
 

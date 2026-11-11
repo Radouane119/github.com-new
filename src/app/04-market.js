@@ -642,8 +642,13 @@ async function fetchBinanceRows(base, quote, interval = "1d", limitOverride) {
     if (!rowsAreStale(rows, interval)) { lastCryptoSource = "Bybit"; return rows; }
   } catch {}
   try {
-    const rows = await fetchCoinbaseRows(base, quote, interval, limit);
-    if (!rowsAreStale(rows, interval)) { lastCryptoSource = "Coinbase"; return rows; }
+    // Coinbase only lists crypto products. Fiat bases such as EUR/GBP/AUD have
+    // Binance USDT books but no Coinbase product (EURUSDT-USD 404s), so skip it
+    // rather than issue a request that is known to fail.
+    if (nonFiat.has(base)) {
+      const rows = await fetchCoinbaseRows(base, quote, interval, limit);
+      if (!rowsAreStale(rows, interval)) { lastCryptoSource = "Coinbase"; return rows; }
+    }
   } catch {}
   throw new Error(`Live data unavailable or stale for ${base}/${quote} on Binance, Bybit and Coinbase.`);
 }

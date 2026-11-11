@@ -41,6 +41,7 @@ const ctx = {
   window: { showToast: () => {}, addEventListener: () => {}, getComputedStyle: () => ({}) },
   navigator: { serviceWorker: { register: () => Promise.resolve() } },
   fetch: () => new Promise(() => {}),
+  AbortController: class { constructor() { this.signal = undefined; } abort() {} },
   WebSocket: class { constructor() {} close() {} },
   AudioContext: class { createGain() { return { connect() {}, gain: { setValueAtTime() {} } }; } createOscillator() { return { connect() {}, frequency: { setValueAtTime() {} }, start() {} }; } },
   requestAnimationFrame: (fn) => 0,
@@ -1292,6 +1293,19 @@ const bgnUsd = await ctx.fetchLivePrice("BGN", "USD");
 assert(bgnUsd && bgnUsd.price === 0.55, "BGN/USD resolves through currency-api, got " + (bgnUsd && bgnUsd.price));
 assert(!bgnCalls.some((u) => u.includes("from=BGN")), "BGN never requests the unsupported Frankfurter endpoint");
 
+// Fiat FX pairs must never reach the crypto-only Coinbase fallback: Coinbase has
+// no EURUSDT-USD product, so that request always 404s.
+vm.runInContext("clearMarketCache();", ctx);
+const fiatCalls = [];
+ctx.fetch = (url) => {
+  const u = String(url);
+  fiatCalls.push(u);
+  return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+};
+try { await ctx.fetchBinanceRows("EUR", "USD", "1h", 120); } catch {}
+assert(fiatCalls.some((u) => u.includes("binance.com")), "EUR/USD still tries the Binance USDT leg first");
+assert(!fiatCalls.some((u) => u.includes("coinbase.com")), "EUR/USD never requests the non-existent Coinbase EURUSDT-USD product");
+
 // The 15s overview poll must not fire the three noisy requests.
 vm.runInContext("clearMarketCache();", ctx);
 const overviewCalls = [];
@@ -1385,6 +1399,7 @@ assert(toastEl.attrs.role === "status" && toastEl.attrs["aria-live"] === "polite
 assert(toastEl.attrs["aria-atomic"] === "true", "toasts are announced as a whole");
 ctx.showToast("Blocked", "warn");
 assert(toastEl.attrs.role === "alert" && toastEl.attrs["aria-live"] === "assertive", "warning toasts are assertive alerts");
+assert(!/\bwindow\.showToast\b/.test(js), "toast calls do not depend on a window global that the bundled IIFE hides");
 ctx.document.createElement = realCreate;
 ctx.document.getElementById = realGetById;
 

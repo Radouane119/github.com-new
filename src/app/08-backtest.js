@@ -193,7 +193,6 @@ async function runBacktestImpl() {
       const result = exit.result;
       const exitPrice = exit.exitPrice;
       const pnlPct = result === "win" ? rewardPct : result === "loss" ? -riskPct : 0;
-      if (result === "pending") { pnlPct = 0; }
       const fee = cfg.feePct || 0;
       const riskSize = cfg.riskPerTradePct || 1;
       const rr = riskPct > 0 ? rewardPct / riskPct : 0;

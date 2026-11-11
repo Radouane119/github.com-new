@@ -26,8 +26,8 @@ if (!scriptMatch) {
     fail(`inline script does not compile: ${error.message}`);
   }
 
-  if (!js.includes("\nloadHistory();")) {
-    fail("bootstrap marker \"\\nloadHistory();\" is missing");
+  if (!/\n\s*loadHistory\(\);/.test(js)) {
+    fail("bootstrap marker \"loadHistory();\" is missing");
   }
 
   if (/\beval\s*\(|new\s+Function\s*\(/.test(js)) {

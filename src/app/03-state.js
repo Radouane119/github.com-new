@@ -398,7 +398,7 @@ function openTrade(pair, direction, entry, stop, target) {
   const guard = canOpenTrade(pair);
   if (!guard.ok) {
     pushAlertHistory(pair, "risk", "Trade blocked: " + guard.reason);
-    if (window.showToast) showToast("Trade blocked: " + guard.reason, "warn");
+    showToast("Trade blocked: " + guard.reason, "warn");
     return { ok: false, reason: guard.reason };
   }
   positions.push({ id: Date.now(), pair, direction, entry, stop, target, openedAt: new Date(), closedAt: null, exitPrice: null, pnl: null, pnlPct: null, originalStop: stop, trailingStop: false, highWater: null, lowWater: null });

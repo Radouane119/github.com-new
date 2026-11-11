@@ -24,6 +24,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
       - name: Check generated index.html is up to date
         run: node build.mjs --check
       - name: Verify HTML guardrails

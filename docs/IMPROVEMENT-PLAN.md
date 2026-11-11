@@ -1,19 +1,19 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D and 4A–4C implemented · Baseline: `9fbb8e3` · Tests: 345 pass / 0 fail
+Status: Phases 0–3D and 4A–4D implemented · Baseline: `9fbb8e3` · Tests: 348 pass / 0 fail
 
 ## Snapshot
 
 | Metric | Value |
 | --- | --- |
-| `index.html` | 375 KB, 6,110 lines (generated) |
-| Inline JS | 340 KB across `src/app/*.js` |
+| `index.html` | 377 KB, 7,160 lines (generated) |
+| Inline JS | 348 KB bundled from 12 files under `src/app/` |
 | Inline CSS | 27 KB in `src/styles.css` |
 | Inline `style=` attributes | 545 |
 | `fetch()` call sites | 17 providers in 1 script |
 | Inline event handlers | 0 |
 | `innerHTML =` writes | 7 |
-| Build step | `node build.mjs` (zero-dependency, inlines `src/`) |
+| Build step | `node build.mjs` (esbuild dev dependency; bundles + inlines `src/`) |
 | CI | build-parity check + guardrails + tests, gating deploy |
 | Distribution | single file, works from `file://`, GitHub Pages |
 
@@ -152,6 +152,8 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 **4B (done):** `src/app.js` is split into twelve contiguous files under `src/app/` — universe, safety, cache, state, market, analysis, signals, render, backtest, scans, chart, and events. `src/app/manifest.json` fixes the concatenation order, and `build.mjs` joins the files verbatim, so the inline script and CSP hash are still byte-identical (`sha256-ryb+vk8wCqgJj4eUBi4i2nI02piVDKC29N2Gnf4PMVk=`) and the tests keep using the existing inline-script harness. Every slice parses on its own with `node --check`. The esbuild bundle and a full ESM migration remain for a later slice.
 
 **4C (done):** the test suite no longer extracts the inline script from `index.html`. It reads `src/app/manifest.json`, concatenates the sources in the same order as the build, and runs them in the existing `vm` sandbox, so the 345 assertions now cover the sources directly. A new `scripts/verify-sources.mjs` guardrail checks that the manifest lists every `src/app/*.js` exactly once, that no listed file is missing or empty, and that each file parses as a standalone script. Both CI jobs run it, and `npm run check` includes it. `index.html` and the CSP hash are unchanged. The next slice can replace the concatenation with a real bundle without having to rewrite the tests at the same time.
+
+**4D (done):** `build.mjs` now feeds the manifest sources to esbuild (`buildSync`, `bundle: true`, `format: "iife"`, `target: "es2020"`, `charset: "utf8"`, no minification) and inlines the returned script, so the shipped page is still one self-contained file that opens from `file://`. esbuild is pinned as the only dev dependency (`esbuild@0.28.2`, `package-lock.json` committed, `node_modules/` ignored), and both workflows run `npm ci` before the build check. This is the first slice whose output intentionally changes: the bundle adds the IIFE wrapper and esbuild's formatting, so `index.html` grows to 377 KB / 7,160 lines and the CSP hash becomes `sha256-DBnTdytC2JzBb4ouL/omm8ToX+M+1zr825giuuRJfQc=`. The runtime tests still read `src/app` and now stand at 348 pass / 0 fail. The bundler surfaced two latent bugs that the concatenated global script had hidden. First, a redundant `if (result === "pending") pnlPct = 0;` in `src/app/08-backtest.js` assigned to a `const`; it is removed, and `transformSync` alone did not catch it, so the build keeps the bundler path. Second, several `if (window.showToast)` guards silently skipped their toast once the IIFE stopped publishing the function globally; they now call `showToast` directly, and a test asserts no source depends on `window.showToast`. While smoke-testing the bundle, the live scan was also seen requesting the non-existent Coinbase `EURUSDT-USD` product for EUR/USD; the Coinbase fallback now runs only for crypto/gold bases (`nonFiat`), with a test asserting fiat FX never reaches it. The service-worker cache name and asset list are still manual, so the content-hash cache remains for a later slice.
 
 ---
 

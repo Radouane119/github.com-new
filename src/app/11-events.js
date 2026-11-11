@@ -329,12 +329,12 @@ function setupEvents() {
         try {
           const rows = await fetchTwelveDataRows("EUR", "JPY", "1h");
           if (rows && rows.length >= 80) {
-            if (window.showToast) showToast(`Twelve Data OK: ${rows.length} EUR/JPY 1h bars`, "ok");
+            showToast(`Twelve Data OK: ${rows.length} EUR/JPY 1h bars`, "ok");
           } else {
             throw new Error(rows ? "No usable bars returned" : "Enter a key or tick enable first");
           }
         } catch (e) {
-          if (window.showToast) showToast("Twelve Data failed: " + (e && e.message ? e.message : e), "error");
+          showToast("Twelve Data failed: " + (e && e.message ? e.message : e), "error");
         }
       })();
       return;
@@ -343,7 +343,7 @@ function setupEvents() {
     if (target.id === "clearCache") {
       clearMarketCache();
       render();
-      if (window.showToast) showToast("Market cache cleared.", "ok");
+      showToast("Market cache cleared.", "ok");
       return;
     }
     if (target.id === "exportStrategy") { exportStrategy(); return; }
@@ -351,7 +351,7 @@ function setupEvents() {
       const entry = autoScan.history.find(e => e.id === Number(target.dataset.trade));
       if (entry && entry.direction !== "WAIT") {
         const pred = mlPredictEntry(entry);
-        if (mlFilterEnabled && pred && pred.label === "loss") { if (window.showToast) showToast(`Trade blocked: ML predicts loss (${(pred.win * 100).toFixed(0)}% win)`, "warn"); return; }
+        if (mlFilterEnabled && pred && pred.label === "loss") { showToast(`Trade blocked: ML predicts loss (${(pred.win * 100).toFixed(0)}% win)`, "warn"); return; }
         openTrade(entry.pair, entry.direction, entry.entry, entry.stop, entry.target);
       }
       return;
@@ -361,7 +361,7 @@ function setupEvents() {
       const r = multiScan.results[pair];
       if (r && r.direction !== "WAIT" && r.entry != null) {
         const pred = mlPredictEntry(r);
-        if (mlFilterEnabled && pred && pred.label === "loss") { if (window.showToast) showToast(`Trade blocked: ML predicts loss (${(pred.win * 100).toFixed(0)}% win)`, "warn"); return; }
+        if (mlFilterEnabled && pred && pred.label === "loss") { showToast(`Trade blocked: ML predicts loss (${(pred.win * 100).toFixed(0)}% win)`, "warn"); return; }
         openTrade(pair, r.direction, r.entry, r.stop, r.target);
       }
       return;
