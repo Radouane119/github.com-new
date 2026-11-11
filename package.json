@@ -6,9 +6,9 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node test/dashboard.test.js",
-    "verify": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs",
+    "verify": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs",
     "sync-csp": "node scripts/sync-csp.mjs",
-    "check": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node test/dashboard.test.js"
+    "check": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs && node test/dashboard.test.js"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

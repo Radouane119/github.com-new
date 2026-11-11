@@ -1,5 +1,5 @@
-const CACHE = "signals-v3";
-const ASSETS = ["./", "./index.html", "./manifest.json", "./icon.svg"];
+const CACHE = "signals-6cc003225cb0";
+const ASSETS = ["./","./index.html","./manifest.json","./icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

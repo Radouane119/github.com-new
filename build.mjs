@@ -6,15 +6,17 @@
 //   src/styles.css           inline CSS
 //   src/app/manifest.json    ordered list of JavaScript sources
 //   src/app/*.js             JavaScript bundled by esbuild in manifest order
+//   src/sw.template.js       service worker with {{CACHE}} and {{ASSETS}}
 //
-// Generated artifact:
+// Generated artifacts:
 //   index.html               committed, so the site keeps working from file://
 //                            and GitHub Pages with no build step at deploy time.
+//   sw.js                    cache name derived from index.html, assets verified
 //
 // Usage:
-//   node build.mjs            regenerate index.html
-//   node build.mjs --check    fail when index.html differs from the sources
-import { readFileSync, writeFileSync } from "node:fs";
+//   node build.mjs            regenerate index.html and sw.js
+//   node build.mjs --check    fail when either file differs from the sources
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
@@ -28,6 +30,33 @@ function read(name) {
 
 export function hashScript(script) {
   return `sha256-${createHash("sha256").update(script, "utf8").digest("base64")}`;
+}
+
+// Static files the worker precaches. The list is verified against disk on every
+// build, and the cache name is derived from the generated index.html so a deploy
+// can never reuse a stale cache.
+const SW_ASSETS = ["./", "./index.html", "./manifest.json", "./icon.svg"];
+
+function renderServiceWorker(html) {
+  for (const asset of SW_ASSETS) {
+    const file = asset === "./" ? "index.html" : asset.replace(/^\.\//, "");
+    if (!existsSync(new URL(file, root))) {
+      throw new Error(`build: service worker asset is missing: ${asset}`);
+    }
+  }
+
+  const version = createHash("sha256").update(html, "utf8").digest("hex").slice(0, 12);
+  const cache = `signals-${version}`;
+  const template = read("src/sw.template.js");
+  const sw = template
+    .replace("{{CACHE}}", () => cache)
+    .replace("{{ASSETS}}", () => JSON.stringify(SW_ASSETS));
+
+  for (const marker of ["{{CACHE}}", "{{ASSETS}}"]) {
+    if (sw.includes(marker)) throw new Error(`build: unresolved placeholder ${marker} in service worker`);
+  }
+
+  return { sw, cache };
 }
 
 function readApp() {
@@ -74,12 +103,15 @@ export function render() {
     if (html.includes(marker)) throw new Error(`build: unresolved placeholder ${marker}`);
   }
 
-  return { html, hash };
+  const { sw, cache } = renderServiceWorker(html);
+
+  return { html, hash, sw, cache };
 }
 
 export function writeBuild() {
   const result = render();
   writeFileSync(new URL("index.html", root), result.html, "utf8");
+  writeFileSync(new URL("sw.js", root), result.sw, "utf8");
   return result;
 }
 
@@ -99,36 +131,48 @@ function main(argv) {
   const check = argv.includes("--check");
 
   if (!check) {
-    const { hash } = writeBuild();
+    const { hash, cache } = writeBuild();
     console.log(`build: wrote index.html (${hash})`);
+    console.log(`build: wrote sw.js (${cache})`);
     return;
   }
 
-  const { html, hash } = render();
-  let current = null;
-  try {
-    current = read("index.html");
-  } catch {
-    current = null;
-  }
+  const { html, hash, sw, cache } = render();
+  const outputs = [
+    { name: "index.html", expected: html },
+    { name: "sw.js", expected: sw },
+  ];
 
-  if (current === html) {
-    console.log(`build: index.html is up to date (${hash})`);
-    return;
-  }
+  let stale = false;
+  for (const output of outputs) {
+    let current = null;
+    try {
+      current = read(output.name);
+    } catch {
+      current = null;
+    }
 
-  console.error("build: index.html is out of date — run `node build.mjs`");
-  if (current === null) {
-    console.error("  index.html is missing");
-  } else {
-    const diff = firstDifference(html, current);
-    if (diff) {
-      console.error(`  first difference at line ${diff.line}`);
-      console.error(`    expected: ${diff.expected}`);
-      console.error(`    actual:   ${diff.actual}`);
+    if (current === output.expected) continue;
+    stale = true;
+    console.error(`build: ${output.name} is out of date — run \`node build.mjs\``);
+    if (current === null) {
+      console.error(`  ${output.name} is missing`);
+    } else {
+      const diff = firstDifference(output.expected, current);
+      if (diff) {
+        console.error(`  first difference at line ${diff.line}`);
+        console.error(`    expected: ${diff.expected}`);
+        console.error(`    actual:   ${diff.actual}`);
+      }
     }
   }
-  process.exitCode = 1;
+
+  if (stale) {
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`build: index.html and sw.js are up to date (${hash}, ${cache})`);
 }
 
 const invokedDirectly =

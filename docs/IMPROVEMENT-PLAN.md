@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D and 4A–4D implemented · Baseline: `9fbb8e3` · Tests: 348 pass / 0 fail
+Status: Phases 0–3D and 4A–4E implemented · Baseline: `9fbb8e3` · Tests: 348 pass / 0 fail
 
 ## Snapshot
 
@@ -13,7 +13,8 @@ Status: Phases 0–3D and 4A–4D implemented · Baseline: `9fbb8e3` · Tests: 3
 | `fetch()` call sites | 17 providers in 1 script |
 | Inline event handlers | 0 |
 | `innerHTML =` writes | 7 |
-| Build step | `node build.mjs` (esbuild dev dependency; bundles + inlines `src/`) |
+| Build step | `node build.mjs` (esbuild dev dependency; bundles `src/`, generates `index.html` + `sw.js`) |
+| Service worker | `sw.js` with a cache name derived from `index.html` |
 | CI | build-parity check + guardrails + tests, gating deploy |
 | Distribution | single file, works from `file://`, GitHub Pages |
 
@@ -154,6 +155,8 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 **4C (done):** the test suite no longer extracts the inline script from `index.html`. It reads `src/app/manifest.json`, concatenates the sources in the same order as the build, and runs them in the existing `vm` sandbox, so the 345 assertions now cover the sources directly. A new `scripts/verify-sources.mjs` guardrail checks that the manifest lists every `src/app/*.js` exactly once, that no listed file is missing or empty, and that each file parses as a standalone script. Both CI jobs run it, and `npm run check` includes it. `index.html` and the CSP hash are unchanged. The next slice can replace the concatenation with a real bundle without having to rewrite the tests at the same time.
 
 **4D (done):** `build.mjs` now feeds the manifest sources to esbuild (`buildSync`, `bundle: true`, `format: "iife"`, `target: "es2020"`, `charset: "utf8"`, no minification) and inlines the returned script, so the shipped page is still one self-contained file that opens from `file://`. esbuild is pinned as the only dev dependency (`esbuild@0.28.2`, `package-lock.json` committed, `node_modules/` ignored), and both workflows run `npm ci` before the build check. This is the first slice whose output intentionally changes: the bundle adds the IIFE wrapper and esbuild's formatting, so `index.html` grows to 377 KB / 7,160 lines and the CSP hash becomes `sha256-DBnTdytC2JzBb4ouL/omm8ToX+M+1zr825giuuRJfQc=`. The runtime tests still read `src/app` and now stand at 348 pass / 0 fail. The bundler surfaced two latent bugs that the concatenated global script had hidden. First, a redundant `if (result === "pending") pnlPct = 0;` in `src/app/08-backtest.js` assigned to a `const`; it is removed, and `transformSync` alone did not catch it, so the build keeps the bundler path. Second, several `if (window.showToast)` guards silently skipped their toast once the IIFE stopped publishing the function globally; they now call `showToast` directly, and a test asserts no source depends on `window.showToast`. While smoke-testing the bundle, the live scan was also seen requesting the non-existent Coinbase `EURUSDT-USD` product for EUR/USD; the Coinbase fallback now runs only for crypto/gold bases (`nonFiat`), with a test asserting fiat FX never reaches it. The service-worker cache name and asset list are still manual, so the content-hash cache remains for a later slice.
+
+**4E (done):** `sw.js` is now generated. `src/sw.template.js` holds the worker, and the build fills in a cache name derived from the committed `index.html` (`signals-<first 12 hex chars of its sha256>`) plus the precache list, after checking that every listed asset exists on disk. `node build.mjs` writes both artifacts, and `--check` fails if either drifts. A new `scripts/verify-sw.mjs` guardrail parses the generated worker, confirms the cache name matches `index.html`, confirms the four precached assets are present and real, and confirms the navigation path is still network-first with an offline fallback. Both workflows and `npm run check` run it. The manual `signals-v3` bump is gone; any app change now produces a new cache name and the old caches are deleted on activation.
 
 ---
 

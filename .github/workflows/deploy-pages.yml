@@ -33,6 +33,8 @@ jobs:
         run: node scripts/verify-html.mjs
       - name: Verify source manifest
         run: node scripts/verify-sources.mjs
+      - name: Verify service worker
+        run: node scripts/verify-sw.mjs
       - name: Run tests
         run: node test/dashboard.test.js
 
