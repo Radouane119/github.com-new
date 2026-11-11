@@ -30,5 +30,7 @@ jobs:
         run: node scripts/verify-sources.mjs
       - name: Verify service worker
         run: node scripts/verify-sw.mjs
+      - name: Verify PWA icons and manifest
+        run: node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs
       - name: Run tests
         run: node test/dashboard.test.js

@@ -574,4 +574,3 @@ setInterval(checkPriceLevelAlerts, 15000);
 setInterval(function() { refreshSessionBar(); }, 60000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

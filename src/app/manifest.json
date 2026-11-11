@@ -11,6 +11,7 @@
     "08-backtest.js",
     "09-scans.js",
     "10-chart.js",
-    "11-events.js"
+    "11-pwa.js",
+    "12-events.js"
   ]
 }

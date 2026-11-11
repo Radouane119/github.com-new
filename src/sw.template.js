@@ -3,10 +3,15 @@ const ASSETS = {{ASSETS}};
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
-      .then(() => self.skipWaiting())
+    caches.open(CACHE).then((cache) => cache.addAll(ASSETS))
   );
+});
+
+// A new worker installs but stays waiting so the page can offer a reload. The
+// page posts SKIP_WAITING when the visitor accepts the update; if they ignore
+// the prompt, the browser activates it when every tab of the app is closed.
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

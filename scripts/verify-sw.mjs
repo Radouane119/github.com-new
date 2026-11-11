@@ -48,7 +48,17 @@ if (!assetsMatch) {
     fail(`ASSETS is not valid JSON: ${error.message}`);
   }
   if (Array.isArray(assets)) {
-    for (const asset of ["./", "./index.html", "./manifest.json", "./icon.svg"]) {
+    const expected = ["./", "./index.html", "./manifest.json", "./icon.svg"];
+    let manifest = null;
+    try {
+      manifest = JSON.parse(read("manifest.json"));
+    } catch (error) {
+      fail(`manifest.json does not parse: ${error.message}`);
+    }
+    for (const icon of (manifest && manifest.icons) || []) {
+      expected.push(`./${String(icon.src).replace(/^\.\//, "")}`);
+    }
+    for (const asset of expected) {
       if (!assets.includes(asset)) fail(`ASSETS is missing ${asset}`);
     }
     for (const asset of assets) {
@@ -56,6 +66,14 @@ if (!assetsMatch) {
       if (!existsSync(new URL(file, root))) fail(`ASSETS points at a missing file: ${asset}`);
     }
   }
+}
+
+const installBlock = sw.match(/addEventListener\("install"[\s\S]*?\n\}\);/);
+if (installBlock && /skipWaiting\(\)/.test(installBlock[0])) {
+  fail("sw.js install calls skipWaiting(), so updates swap mid-session and the reload prompt never appears");
+}
+if (!/addEventListener\("message"[\s\S]*?SKIP_WAITING[\s\S]*?skipWaiting\(\)/.test(sw)) {
+  fail("sw.js does not honour the SKIP_WAITING message from the update prompt");
 }
 
 if (!/event\.request\.mode === "navigate"/.test(sw)) {

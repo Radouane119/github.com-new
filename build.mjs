@@ -35,7 +35,16 @@ export function hashScript(script) {
 // Static files the worker precaches. The list is verified against disk on every
 // build, and the cache name is derived from the generated index.html so a deploy
 // can never reuse a stale cache.
-const SW_ASSETS = ["./", "./index.html", "./manifest.json", "./icon.svg"];
+const SW_ASSETS = [
+  "./",
+  "./index.html",
+  "./manifest.json",
+  "./icon.svg",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
+  "./icons/icon-maskable-512.png",
+  "./icons/apple-touch-icon.png",
+];
 
 function renderServiceWorker(html) {
   for (const asset of SW_ASSETS) {

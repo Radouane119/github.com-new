@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-oDS+XkNAijuy8hx7ih1OraEyMd1ApRev9A3ErO9quf8='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-PrDpKINqDp1OtVV9G2dt7dSdqlHdZNGCnm7PRJIaJuA='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
 <meta name="theme-color" content="#0b1117">
@@ -6294,6 +6296,74 @@ This will overwrite your current strategy config and scan pairs.`)) return;
       drawChart(canvas, analysis.chartRows, `${state.base}/${state.quote}`, state.timeframe);
     }
   }
+  var updatePromptShown = false;
+  var reloadOnControllerChange = false;
+  function showUpdatePrompt(registration, win) {
+    if (updatePromptShown) return;
+    updatePromptShown = true;
+    try {
+      let el = document.getElementById("update-toast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "update-toast";
+        el.setAttribute("role", "status");
+        el.setAttribute("aria-live", "polite");
+        el.style.cssText = "position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:99999;display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:8px;background:#1f2a36;color:#fff;font-size:.8rem;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.4);max-width:90vw";
+        const text = document.createElement("span");
+        text.textContent = "A new version is available.";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Reload";
+        button.style.cssText = "padding:6px 12px;border-radius:6px;border:0;background:#3fb950;color:#0b1117;font-weight:700;cursor:pointer";
+        button.addEventListener("click", () => {
+          if (registration && registration.waiting) {
+            reloadOnControllerChange = true;
+            registration.waiting.postMessage({ type: "SKIP_WAITING" });
+            setTimeout(() => {
+              if (!reloadOnControllerChange) return;
+              reloadOnControllerChange = false;
+              if (win && win.location) win.location.reload();
+            }, 3e3);
+          } else if (win && win.location) {
+            win.location.reload();
+          }
+        });
+        el.appendChild(text);
+        el.appendChild(button);
+        document.body.appendChild(el);
+      }
+      el.style.display = "flex";
+    } catch {
+    }
+  }
+  function bindServiceWorker(registration, serviceWorker, win) {
+    if (!registration) return;
+    if (registration.waiting && serviceWorker && serviceWorker.controller) showUpdatePrompt(registration, win);
+    if (typeof registration.addEventListener !== "function") return;
+    registration.addEventListener("updatefound", () => {
+      const worker = registration.installing;
+      if (!worker || typeof worker.addEventListener !== "function") return;
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && serviceWorker && serviceWorker.controller) {
+          showUpdatePrompt(registration, win);
+        }
+      });
+    });
+  }
+  function setupServiceWorker(nav, win) {
+    if (!nav || !("serviceWorker" in nav)) return;
+    const serviceWorker = nav.serviceWorker;
+    serviceWorker.register("sw.js").then((registration) => bindServiceWorker(registration, serviceWorker, win)).catch(() => {
+    });
+    if (typeof serviceWorker.addEventListener === "function") {
+      serviceWorker.addEventListener("controllerchange", () => {
+        if (!reloadOnControllerChange) return;
+        reloadOnControllerChange = false;
+        if (win && win.location && typeof win.location.reload === "function") win.location.reload();
+      });
+    }
+  }
+  setupServiceWorker(navigator, window);
   var ssPoints = [];
   var ssImg = null;
   function ssUpload(file) {
@@ -7095,8 +7165,6 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1e3);
   }
   setInterval(autoCheckPaperPositions, 3e4);
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {
-  });
 })();
 </script>
 </body>

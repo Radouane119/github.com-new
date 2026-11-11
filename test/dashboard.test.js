@@ -1438,6 +1438,112 @@ ctx.localStorage.setItem = realSetItem;
 ctx.showToast = realShowToast;
 assert(ctx.storageSet("m43", "value") === true, "a successful write reports true");
 
+console.log("--- M44: installable PWA manifest, icons and document links ---");
+const webManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
+assert(webManifest.id === "./", "the manifest has a stable relative id");
+assert(webManifest.start_url === "./" && webManifest.scope === "./", "the manifest start_url and scope stay relative to the deploy path");
+assert(webManifest.display === "standalone", "the manifest requests a standalone window");
+assert(webManifest.theme_color === "#0b1117" && webManifest.background_color === "#0b1117", "the manifest colours match the dashboard shell");
+const webIcons = Array.isArray(webManifest.icons) ? webManifest.icons : [];
+const iconFor = (sizes, purpose) => webIcons.find((icon) => icon.sizes === sizes && String(icon.purpose || "any").split(/\s+/).includes(purpose));
+const pngDimensions = (file) => {
+  const buffer = fs.readFileSync(path.join(ROOT, file));
+  if (buffer.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return null;
+  if (buffer.toString("ascii", 12, 16) !== "IHDR") return null;
+  return buffer.readUInt32BE(16) + "x" + buffer.readUInt32BE(20);
+};
+for (const [sizes, purpose] of [["192x192", "any"], ["512x512", "any"], ["512x512", "maskable"]]) {
+  const icon = iconFor(sizes, purpose);
+  assert(icon && icon.type === "image/png", "the manifest lists a " + sizes + " " + purpose + " PNG icon");
+  assert(icon && pngDimensions(icon.src) === sizes, "the " + sizes + " " + purpose + " icon file is a real PNG of that size");
+}
+assert(pngDimensions("icons/apple-touch-icon.png") === "180x180", "the Apple touch icon is a 180x180 PNG");
+assert(webIcons.some((icon) => icon.type === "image/svg+xml"), "the scalable SVG icon is still offered");
+assert(html.includes('<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">'), "index.html links the Apple touch icon");
+assert(/<link rel="manifest" href="manifest\.json">/.test(html), "index.html links the manifest");
+const generatedSw = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
+for (const asset of ["./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png"]) {
+  assert(generatedSw.includes(JSON.stringify(asset)), "the service worker precaches " + asset);
+}
+
+console.log("--- M45: a waiting worker offers a reload prompt ---");
+assert(typeof ctx.setupServiceWorker === "function" && typeof ctx.bindServiceWorker === "function", "the PWA module exposes its service-worker wiring");
+assert(js.includes("setupServiceWorker(navigator, window)"), "the app registers the service worker through the PWA module");
+const installBlock = generatedSw.match(/addEventListener\("install"[\s\S]*?\n\}\);/);
+assert(installBlock && !/skipWaiting\(\)/.test(installBlock[0]), "install no longer swaps the app out mid-session");
+assert(/addEventListener\("message"[\s\S]*?SKIP_WAITING[\s\S]*?skipWaiting\(\)/.test(generatedSw), "the worker honours SKIP_WAITING when the visitor accepts an update");
+
+const appendedEls = [];
+const realPwaCreateElement = ctx.document.createElement;
+const realBodyAppend = ctx.document.body.appendChild;
+ctx.document.createElement = (tag) => {
+  const el = {
+    tag,
+    style: {},
+    attrs: {},
+    children: [],
+    listeners: {},
+    textContent: "",
+    setAttribute(name, value) { this.attrs[name] = value; },
+    addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); },
+    appendChild(child) { this.children.push(child); },
+  };
+  return el;
+};
+ctx.document.body.appendChild = (el) => appendedEls.push(el);
+
+const swEvents = {};
+const serviceWorker = {
+  controller: null,
+  addEventListener(name, fn) { swEvents[name] = fn; },
+  register: () => Promise.resolve(null),
+};
+let reloads = 0;
+const win = { location: { reload: () => { reloads += 1; } } };
+let registrationListeners = {};
+const firstWorker = { state: "installing", addEventListener(name, fn) { this.statechange = fn; } };
+const firstRegistration = {
+  waiting: null,
+  installing: firstWorker,
+  addEventListener(name, fn) { registrationListeners[name] = fn; },
+};
+ctx.setupServiceWorker({ serviceWorker }, win);
+ctx.bindServiceWorker(firstRegistration, serviceWorker, win);
+registrationListeners.updatefound();
+firstWorker.state = "installed";
+firstWorker.statechange();
+assert(appendedEls.length === 0, "the first install shows no update prompt");
+
+serviceWorker.controller = {};
+let waitingMessage = null;
+const waitingWorker = { postMessage: (message) => { waitingMessage = message; } };
+const updateWorker = { state: "installing", addEventListener(name, fn) { this.statechange = fn; } };
+const updateRegistration = {
+  waiting: null,
+  installing: updateWorker,
+  addEventListener(name, fn) { registrationListeners[name] = fn; },
+};
+ctx.bindServiceWorker(updateRegistration, serviceWorker, win);
+assert(appendedEls.length === 0, "a new worker does not prompt before it finishes installing");
+registrationListeners.updatefound();
+updateWorker.state = "installed";
+updateWorker.statechange();
+assert(appendedEls.length === 1, "an installed update with a controller shows one prompt");
+const promptEl = appendedEls[0];
+assert(promptEl.id === "update-toast" && promptEl.attrs.role === "status" && promptEl.attrs["aria-live"] === "polite", "the update prompt is a polite status message");
+const promptText = promptEl.children[0];
+const promptButton = promptEl.children[1];
+assert(promptText.textContent === "A new version is available.", "the prompt explains that a new version exists");
+assert(promptButton.tag === "button" && promptButton.type === "button" && promptButton.textContent === "Reload", "the prompt offers an explicit Reload button");
+updateRegistration.waiting = waitingWorker;
+promptButton.listeners.click[0]();
+assert(waitingMessage && waitingMessage.type === "SKIP_WAITING", "Reload asks the waiting worker to activate");
+assert(reloads === 0, "the page waits for the new worker before reloading");
+swEvents.controllerchange();
+assert(reloads === 1, "controllerchange reloads the page once");
+ctx.document.createElement = realPwaCreateElement;
+ctx.document.body.appendChild = realBodyAppend;
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

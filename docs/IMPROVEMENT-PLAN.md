@@ -1,13 +1,13 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D, 4A–4E and 5.3 implemented · Baseline: `9fbb8e3` · Tests: 354 pass / 0 fail
+Status: Phases 0–3D, 4A–4E, 5.3 and 5.4 implemented · Baseline: `9fbb8e3` · Tests: 386 pass / 0 fail
 
 ## Snapshot
 
 | Metric | Value |
 | --- | --- |
 | `index.html` | 377 KB, 7,160 lines (generated) |
-| Inline JS | 348 KB bundled from 12 files under `src/app/` |
+| Inline JS | 352 KB bundled from 13 files under `src/app/` |
 | Inline CSS | 27 KB in `src/styles.css` |
 | Inline `style=` attributes | 545 |
 | `fetch()` call sites | 17 providers in 1 script |
@@ -165,11 +165,13 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 1. ESLint flat config (`no-undef`, `no-unused-vars`, `no-redeclare`) on `src/`; warnings first, then errors.
 2. Playwright smoke test: load → wait for ready → switch timeframe → toggle theme/overlay → run backtest → export/import. Catches render crashes the `vm` harness cannot.
 3. Surface storage failures: the ~20 `catch {}` blocks around `localStorage` silently discard data on quota errors. Toast on `QuotaExceededError`.
-4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, screenshots, `id`/`scope`, and a "new version available" update prompt.
+4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, `id`/`scope`, and a "new version available" update prompt. (Screenshots are optional and still need real captures.)
 5. README: architecture, dev commands, and an explicit privacy note (webhook URL and API key are readable by anything on the same origin).
 6. Optional domain track: confidence calibration (predicted vs realized win rate), per-pair performance table, slippage realism, and a persistent "demo data" watermark on every panel while fallback data is active.
 
 **5.3 (done):** every user-data write — settings, theme, positions, notes, alerts, watchlist, signal history, ML state — now goes through `storageSet` in `src/app/03-state.js`. It catches quota and blocked-storage failures, shows one error toast per session, and returns `false` so callers can react; previously the surrounding `catch {}` blocks discarded the change silently. Market-cache writes stay best-effort because that cache is disposable. Test M43 covers the failed write, the single warning, and the success path.
+
+**5.4 (done):** the app is installable. `manifest.json` now declares a stable relative `id`, `scope`, `start_url`, `lang`, categories and display overrides, and lists 192/512 PNG icons plus a full-bleed 512 maskable icon and the scalable SVG. `scripts/make-icons.mjs` draws the four PNGs deterministically (4× supersampled, no image dependency), and `--check` fails when `icons/` drifts. The page links a 180 px `apple-touch-icon`, and the worker precaches every icon. Updates no longer call `skipWaiting()` during install: `src/app/11-pwa.js` binds `updatefound`/`statechange`, shows a polite "A new version is available" prompt with a Reload button, posts `SKIP_WAITING`, and reloads once on `controllerchange`. `scripts/verify-pwa.mjs` checks the manifest fields, real PNG dimensions, document links and precache list; tests M44/M45 cover the static surface and the prompt flow. Screenshots remain optional because they need real captures.
 
 ---
 
