@@ -1,4 +1,4 @@
-const CACHE = "signals-6cc003225cb0";
+const CACHE = "signals-87f1ac849644";
 const ASSETS = ["./","./index.html","./manifest.json","./icon.svg"];
 
 self.addEventListener("install", (event) => {

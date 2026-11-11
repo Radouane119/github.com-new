@@ -196,8 +196,8 @@ function mlLoad() {
   try { const s = localStorage.getItem("mlStats"); if (s) Object.assign(mlStats, JSON.parse(s)); } catch {}
 }
 function mlSave() {
-  try { localStorage.setItem("mlModel", JSON.stringify(mlModel)); } catch {}
-  try { localStorage.setItem("mlStats", JSON.stringify(mlStats)); } catch {}
+  storageSet("mlModel", JSON.stringify(mlModel));
+  storageSet("mlStats", JSON.stringify(mlStats));
 }
 function mlReset() {
   mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
@@ -321,28 +321,44 @@ const optimizerState = { results: null, running: false, progress: "" };
 const scheduleState = { enabled: false, intervalId: null, lastSent: null };
 const corrData = { matrix: null, pairs: [], running: false };
 
+// Persist user data through one helper so a quota or privacy-mode failure is
+// visible once instead of being swallowed by every save function.
+let storageWarningShown = false;
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    if (!storageWarningShown) {
+      storageWarningShown = true;
+      showToast("Browser storage is full or unavailable; recent changes may not be saved. Export a backup from Settings.", "error");
+    }
+    return false;
+  }
+}
+
 function loadOverlayPrefs() {
   try { const s = localStorage.getItem("overlayPrefs"); if (s) { const d = JSON.parse(s); ichimokuOverlay = !!d.ichimoku; fibOverlay = !!d.fib; macdHistVote = !!d.macdHist; kellyEnabled = !!d.kelly; vwapOverlay = !!d.vwap; mlFilterEnabled = !!d.ml; paperAutotrade = !!d.paperAuto; } } catch {}
 }
-function saveOverlayPrefs() { try { localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled, paperAuto: paperAutotrade })); } catch {} }
+function saveOverlayPrefs() { storageSet("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled, paperAuto: paperAutotrade })); }
 function loadPaperState() { try { const s = localStorage.getItem("paperState"); if (s) { const d = JSON.parse(s); Object.assign(paperState, d); paperState.trades = (d.trades || []).map(t => ({...t, time: new Date(t.time)})); paperState.openPositions = (d.openPositions || []).map(t => ({...t, time: new Date(t.time)})); } } catch {} }
-function savePaperState() { try { localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); } catch {} }
+function savePaperState() { storageSet("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map(t => ({...t, time: t.time.toISOString()})), openPositions: paperState.openPositions.map(t => ({...t, time: t.time.toISOString()})) })); }
 function loadScheduleState() { try { const s = localStorage.getItem("scheduleState"); if (s) { const d = JSON.parse(s); scheduleState.enabled = !!d.enabled; scheduleState.lastSent = d.lastSent ? new Date(d.lastSent) : null; } } catch {} }
 function loadTheme() { try { darkTheme = localStorage.getItem("theme") !== "light"; } catch {} applyTheme(); }
-function saveTheme() { try { localStorage.setItem("theme", darkTheme ? "dark" : "light"); } catch {} }
+function saveTheme() { storageSet("theme", darkTheme ? "dark" : "light"); }
 function applyTheme() { if (darkTheme) { document.documentElement.removeAttribute("data-theme"); } else { document.documentElement.setAttribute("data-theme", "light"); } }
-function saveScheduleState() { try { localStorage.setItem("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null })); } catch {} }
+function saveScheduleState() { storageSet("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null })); }
 
 function loadAlertHistory() {
   try { const s = localStorage.getItem("alertHistory"); if (s) alertHistory = sanitizeAlertHistory(JSON.parse(s)); } catch {}
 }
 function saveAlertHistory() {
-  try { localStorage.setItem("alertHistory", JSON.stringify(alertHistory)); } catch {}
+  storageSet("alertHistory", JSON.stringify(alertHistory));
 }
 function loadPriceLevelAlerts() { try { const s = localStorage.getItem("priceLevelAlerts"); if (s) priceLevelAlerts = sanitizePriceLevelAlerts(JSON.parse(s)); } catch {} }
-function savePriceLevelAlerts() { try { localStorage.setItem("priceLevelAlerts", JSON.stringify(priceLevelAlerts)); } catch {} }
+function savePriceLevelAlerts() { storageSet("priceLevelAlerts", JSON.stringify(priceLevelAlerts)); }
 function loadSlippageConfig() { try { const s = localStorage.getItem("slippageConfig"); if (s) { const d = JSON.parse(s); slippageConfig.spreadPips = Math.max(0, numOrNull(d.spreadPips) ?? 0); slippageConfig.slippagePips = Math.max(0, numOrNull(d.slippagePips) ?? 0); } } catch {} }
-function saveSlippageConfig() { try { localStorage.setItem("slippageConfig", JSON.stringify(slippageConfig)); } catch {} }
+function saveSlippageConfig() { storageSet("slippageConfig", JSON.stringify(slippageConfig)); }
 
 function pushAlertHistory(pair, type, message) {
   alertHistory.unshift({ timestamp: new Date().toISOString(), pair, type, message });
@@ -375,7 +391,7 @@ function loadStrategyName() {
   try { const s = localStorage.getItem("strategyName"); if (s) strategyName = cleanText(s, 64); } catch {}
 }
 function saveStrategyName() {
-  try { localStorage.setItem("strategyName", strategyName); } catch {}
+  storageSet("strategyName", strategyName);
 }
 
 let positions = [];
@@ -391,7 +407,7 @@ function loadPositions() {
 }
 
 function savePositions() {
-  try { localStorage.setItem("positions", JSON.stringify(positions)); } catch {}
+  storageSet("positions", JSON.stringify(positions));
 }
 
 function openTrade(pair, direction, entry, stop, target) {
@@ -481,7 +497,7 @@ const livePrice = {
 let webhookUrl = "";
 
 function loadWebhook() { try { const s = localStorage.getItem("webhookUrl"); if (s) webhookUrl = cleanText(s, 2048); } catch {} }
-function saveWebhook() { try { localStorage.setItem("webhookUrl", webhookUrl); } catch {} }
+function saveWebhook() { storageSet("webhookUrl", webhookUrl); }
 
 // Optional browser-readable intraday FX feed. Twelve Data is the only free
 // source we found that serves intraday FX (down to 1 minute, EUR/JPY included)
@@ -497,7 +513,7 @@ function loadFxApiPrefs() {
     if (s) { const p = JSON.parse(s); fxApiPrefs.enabled = !!p.enabled; fxApiPrefs.key = cleanText(p.key, 128).trim(); }
   } catch {}
 }
-function saveFxApiPrefs() { try { localStorage.setItem("fxApiPrefs", JSON.stringify(fxApiPrefs)); } catch {} }
+function saveFxApiPrefs() { storageSet("fxApiPrefs", JSON.stringify(fxApiPrefs)); }
 
 function loadRiskConfig() {
   try {
@@ -514,7 +530,7 @@ function getLossStreak() {
   try { return JSON.parse(localStorage.getItem("lossStreak") || "0"); } catch { return 0; }
 }
 function setLossStreak(n) {
-  try { localStorage.setItem("lossStreak", JSON.stringify(n)); } catch {}
+  storageSet("lossStreak", JSON.stringify(n));
 }
 function corrOverLimitFor(pair) {
   try {
@@ -540,7 +556,7 @@ function canOpenTrade(pair) {
 }
 
 function saveRiskConfig(cfg) {
-  try { localStorage.setItem("riskConfig", JSON.stringify(normalizeRiskConfig(cfg))); } catch {}
+  storageSet("riskConfig", JSON.stringify(normalizeRiskConfig(cfg)));
 }
 
 function loadStrategyConfig() {
@@ -552,7 +568,7 @@ function loadStrategyConfig() {
 }
 
 function saveStrategyConfig(cfg) {
-  try { localStorage.setItem("strategyConfig", JSON.stringify(normalizeStrategyConfig(cfg))); } catch {}
+  storageSet("strategyConfig", JSON.stringify(normalizeStrategyConfig(cfg)));
 }
 
 function recordDailyPnl(amount) {
@@ -560,7 +576,7 @@ function recordDailyPnl(amount) {
     const todayKey = new Date().toISOString().slice(0,10);
     const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}");
     dl[todayKey] = (dl[todayKey] || 0) + amount;
-    localStorage.setItem("dailyLoss", JSON.stringify(dl));
+    storageSet("dailyLoss", JSON.stringify(dl));
   } catch {}
 }
 
@@ -608,7 +624,7 @@ function loadOverviewPrefs() {
 }
 
 function saveOverviewPrefs() {
-  try { localStorage.setItem("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter, timeframe: multiScan.timeframe })); } catch {}
+  storageSet("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter, timeframe: multiScan.timeframe }));
 }
 
 function overviewFilteredPairs() {
@@ -675,7 +691,7 @@ function loadScanConfig() {
 }
 
 function saveScanConfig() {
-  try { localStorage.setItem("scanConfig", JSON.stringify({ pairs: scanPairs, known: [...allScanPairs] })); } catch {}
+  storageSet("scanConfig", JSON.stringify({ pairs: scanPairs, known: [...allScanPairs] }));
 }
 
 function loadAlertConditions() {
@@ -686,7 +702,7 @@ function loadAlertConditions() {
 }
 
 function saveAlertConditions() {
-  try { localStorage.setItem("alertConditions", JSON.stringify(alertConditions)); } catch {}
+  storageSet("alertConditions", JSON.stringify(alertConditions));
 }
 
 function evaluateAlertConditions(testMode = false) {
@@ -750,7 +766,7 @@ let alerts = [];
 function loadWatchlist() {
   try { const s = localStorage.getItem("watchlist"); if (s) watchlist = sanitizePairList(JSON.parse(s)); } catch {}
 }
-function saveWatchlist() { try { localStorage.setItem("watchlist", JSON.stringify(watchlist)); } catch {} }
+function saveWatchlist() { storageSet("watchlist", JSON.stringify(watchlist)); }
 function toggleWatchlist(pair) {
   const idx = watchlist.indexOf(pair);
   if (idx >= 0) watchlist.splice(idx, 1); else watchlist.push(pair);
@@ -760,7 +776,7 @@ function toggleWatchlist(pair) {
 function loadAlerts() {
   try { const s = localStorage.getItem("priceAlerts"); if (s) alerts = sanitizeAlerts(JSON.parse(s)); } catch {}
 }
-function saveAlerts() { try { localStorage.setItem("priceAlerts", JSON.stringify(alerts)); } catch {} }
+function saveAlerts() { storageSet("priceAlerts", JSON.stringify(alerts)); }
 function setAlert(pair, price, dir) {
   alerts.push({ id: Date.now(), pair, price: Number(price), dir: dir || "above", createdAt: Date.now() });
   saveAlerts(); render();

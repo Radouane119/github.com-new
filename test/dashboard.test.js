@@ -1419,6 +1419,25 @@ const downSummary = ctx.chartSummary([{ date: "a", open: 2, high: 2.1, low: 1.9,
 assert(downSummary.includes("down 10.00%"), "the chart summary reports a falling period, got: " + downSummary);
 assert(ctx.chartSummary([], "EUR/USD", "1h").includes("no data available"), "an empty chart gets an explicit summary");
 
+console.log("--- M43: storage failures surface instead of disappearing ---");
+const storageToasts = [];
+const realShowToast = ctx.showToast;
+const realSetItem = ctx.localStorage.setItem;
+ctx.showToast = (message, type) => storageToasts.push({ message, type });
+ctx.localStorage.setItem = () => {
+  const error = new Error("quota");
+  error.name = "QuotaExceededError";
+  throw error;
+};
+assert(ctx.storageSet("m43", "value") === false, "a failed storage write reports false");
+assert(storageToasts.length === 1 && storageToasts[0].type === "error", "a failed storage write shows one error toast");
+assert(/storage/i.test(storageToasts[0].message), "the storage toast explains the failure");
+assert(ctx.storageSet("m43b", "value") === false, "later failed writes still report false");
+assert(storageToasts.length === 1, "the storage warning is shown only once per session");
+ctx.localStorage.setItem = realSetItem;
+ctx.showToast = realShowToast;
+assert(ctx.storageSet("m43", "value") === true, "a successful write reports true");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);

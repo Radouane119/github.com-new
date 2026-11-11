@@ -14,7 +14,7 @@ function getTradeNotes() {
 function flushTradeNotes() {
   if (tradeNotesSaveTimer) { clearTimeout(tradeNotesSaveTimer); tradeNotesSaveTimer = null; }
   if (!tradeNotesCache) return;
-  try { localStorage.setItem("tradeNotes", JSON.stringify(tradeNotesCache)); } catch {}
+  storageSet("tradeNotes", JSON.stringify(tradeNotesCache));
 }
 
 function saveTradeNotesDebounced() {
@@ -541,8 +541,8 @@ function recordSignal() {
 
 function saveHistory() {
   try {
-    localStorage.setItem("signalHistory", JSON.stringify(autoScan.history));
-    localStorage.setItem("signalHistoryTotal", String(autoScan.totalGenerated));
+    storageSet("signalHistory", JSON.stringify(autoScan.history));
+    storageSet("signalHistoryTotal", String(autoScan.totalGenerated));
   } catch {}
 }
 

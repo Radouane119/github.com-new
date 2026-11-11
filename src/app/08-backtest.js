@@ -1,7 +1,7 @@
 const backtest = { results: null, running: false, progress: "", comparison: null, comparing: false, multiPairMode: false, multiPairSelected: [], multiResults: null, multiRunning: false, multiProgress: "" };
 
 function saveBacktestMulti() {
-  try { localStorage.setItem("backtestMulti", JSON.stringify({ multiPairMode: backtest.multiPairMode, multiPairSelected: backtest.multiPairSelected })); } catch {}
+  storageSet("backtestMulti", JSON.stringify({ multiPairMode: backtest.multiPairMode, multiPairSelected: backtest.multiPairSelected }));
 }
 
 function loadBacktestMulti() {

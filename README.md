@@ -17,7 +17,7 @@ node build.mjs --check           # fail if index.html or sw.js is out of date
 node scripts/verify-html.mjs     # inline script parses, CSP hash is current, no inline handlers
 node scripts/verify-sources.mjs  # manifest lists every source and each file parses
 node scripts/verify-sw.mjs       # sw.js cache tracks index.html and precaches real files
-node test/dashboard.test.js      # 348 regression tests against src/app
+node test/dashboard.test.js      # 354 regression tests against src/app
 npm run check                    # run every check above in order
 ```
 
@@ -27,6 +27,7 @@ Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`,
 
 - Market data comes from public third-party endpoints. When live data cannot be reached, the app labels its generated fallback data clearly; it must not be used for trading decisions.
 - Webhook URLs, settings, and paper-trading records are saved only in that browser's local storage. Nothing is uploaded to a server owned by this project.
+- User-data writes go through one helper: if browser storage is full or blocked, the save reports failure and a single error toast tells you to export a backup, instead of losing the change silently. The disposable market cache still degrades quietly.
 - Imported backups and stored data are treated as untrusted: pairs, prices, dates, and counts are validated, and all rendered text is escaped before it reaches the page.
 - Webhooks are restricted to `https` Discord and Telegram endpoints. Other URLs are rejected rather than contacted.
 - Provider responses are cached in local storage (`mdc:v1:*`) with short TTLs, so repeated scans and reloads reuse recent candles and tickers. **Settings → Clear market cache** forces a fresh download; this cache contains only public market data.

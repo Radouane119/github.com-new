@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-DBnTdytC2JzBb4ouL/omm8ToX+M+1zr825giuuRJfQc='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-oDS+XkNAijuy8hx7ih1OraEyMd1ApRev9A3ErO9quf8='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="A browser-based dashboard for reviewing forex, crypto, and gold trading ideas.">
@@ -1122,14 +1122,8 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function mlSave() {
-    try {
-      localStorage.setItem("mlModel", JSON.stringify(mlModel));
-    } catch {
-    }
-    try {
-      localStorage.setItem("mlStats", JSON.stringify(mlStats));
-    } catch {
-    }
+    storageSet("mlModel", JSON.stringify(mlModel));
+    storageSet("mlStats", JSON.stringify(mlStats));
   }
   function mlReset() {
     mlModel.n = 0;
@@ -1258,6 +1252,19 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
   var optimizerState = { results: null, running: false, progress: "" };
   var scheduleState = { enabled: false, intervalId: null, lastSent: null };
   var corrData = { matrix: null, pairs: [], running: false };
+  var storageWarningShown = false;
+  function storageSet(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch {
+      if (!storageWarningShown) {
+        storageWarningShown = true;
+        showToast("Browser storage is full or unavailable; recent changes may not be saved. Export a backup from Settings.", "error");
+      }
+      return false;
+    }
+  }
   function loadOverlayPrefs() {
     try {
       const s = localStorage.getItem("overlayPrefs");
@@ -1275,10 +1282,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveOverlayPrefs() {
-    try {
-      localStorage.setItem("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled, paperAuto: paperAutotrade }));
-    } catch {
-    }
+    storageSet("overlayPrefs", JSON.stringify({ ichimoku: ichimokuOverlay, fib: fibOverlay, macdHist: macdHistVote, kelly: kellyEnabled, vwap: vwapOverlay, ml: mlFilterEnabled, paperAuto: paperAutotrade }));
   }
   function loadPaperState() {
     try {
@@ -1293,10 +1297,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function savePaperState() {
-    try {
-      localStorage.setItem("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map((t) => ({ ...t, time: t.time.toISOString() })), openPositions: paperState.openPositions.map((t) => ({ ...t, time: t.time.toISOString() })) }));
-    } catch {
-    }
+    storageSet("paperState", JSON.stringify({ ...paperState, trades: paperState.trades.map((t) => ({ ...t, time: t.time.toISOString() })), openPositions: paperState.openPositions.map((t) => ({ ...t, time: t.time.toISOString() })) }));
   }
   function loadScheduleState() {
     try {
@@ -1317,10 +1318,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     applyTheme();
   }
   function saveTheme() {
-    try {
-      localStorage.setItem("theme", darkTheme ? "dark" : "light");
-    } catch {
-    }
+    storageSet("theme", darkTheme ? "dark" : "light");
   }
   function applyTheme() {
     if (darkTheme) {
@@ -1330,10 +1328,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveScheduleState() {
-    try {
-      localStorage.setItem("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null }));
-    } catch {
-    }
+    storageSet("scheduleState", JSON.stringify({ enabled: scheduleState.enabled, lastSent: scheduleState.lastSent ? scheduleState.lastSent.toISOString() : null }));
   }
   function loadAlertHistory() {
     try {
@@ -1343,10 +1338,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveAlertHistory() {
-    try {
-      localStorage.setItem("alertHistory", JSON.stringify(alertHistory));
-    } catch {
-    }
+    storageSet("alertHistory", JSON.stringify(alertHistory));
   }
   function loadPriceLevelAlerts() {
     try {
@@ -1356,10 +1348,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function savePriceLevelAlerts() {
-    try {
-      localStorage.setItem("priceLevelAlerts", JSON.stringify(priceLevelAlerts));
-    } catch {
-    }
+    storageSet("priceLevelAlerts", JSON.stringify(priceLevelAlerts));
   }
   function loadSlippageConfig() {
     try {
@@ -1373,10 +1362,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveSlippageConfig() {
-    try {
-      localStorage.setItem("slippageConfig", JSON.stringify(slippageConfig));
-    } catch {
-    }
+    storageSet("slippageConfig", JSON.stringify(slippageConfig));
   }
   function pushAlertHistory(pair, type, message) {
     alertHistory.unshift({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), pair, type, message });
@@ -1415,10 +1401,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveStrategyName() {
-    try {
-      localStorage.setItem("strategyName", strategyName);
-    } catch {
-    }
+    storageSet("strategyName", strategyName);
   }
   var positions = [];
   function loadPositions() {
@@ -1432,10 +1415,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function savePositions() {
-    try {
-      localStorage.setItem("positions", JSON.stringify(positions));
-    } catch {
-    }
+    storageSet("positions", JSON.stringify(positions));
   }
   function openTrade(pair, direction, entry, stop, target) {
     const guard = canOpenTrade(pair);
@@ -1536,10 +1516,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveWebhook() {
-    try {
-      localStorage.setItem("webhookUrl", webhookUrl);
-    } catch {
-    }
+    storageSet("webhookUrl", webhookUrl);
   }
   var fxApiPrefs = { enabled: false, key: "" };
   var fxApiLastUsed = null;
@@ -1555,10 +1532,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function saveFxApiPrefs() {
-    try {
-      localStorage.setItem("fxApiPrefs", JSON.stringify(fxApiPrefs));
-    } catch {
-    }
+    storageSet("fxApiPrefs", JSON.stringify(fxApiPrefs));
   }
   function loadRiskConfig() {
     try {
@@ -1584,10 +1558,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
   }
   function setLossStreak(n) {
-    try {
-      localStorage.setItem("lossStreak", JSON.stringify(n));
-    } catch {
-    }
+    storageSet("lossStreak", JSON.stringify(n));
   }
   function corrOverLimitFor(pair) {
     try {
@@ -1614,10 +1585,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     return { ok: true, reason: "" };
   }
   function saveRiskConfig(cfg) {
-    try {
-      localStorage.setItem("riskConfig", JSON.stringify(normalizeRiskConfig(cfg)));
-    } catch {
-    }
+    storageSet("riskConfig", JSON.stringify(normalizeRiskConfig(cfg)));
   }
   function loadStrategyConfig() {
     try {
@@ -1628,17 +1596,14 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     return normalizeStrategyConfig(null);
   }
   function saveStrategyConfig(cfg) {
-    try {
-      localStorage.setItem("strategyConfig", JSON.stringify(normalizeStrategyConfig(cfg)));
-    } catch {
-    }
+    storageSet("strategyConfig", JSON.stringify(normalizeStrategyConfig(cfg)));
   }
   function recordDailyPnl(amount) {
     try {
       const todayKey = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
       const dl = JSON.parse(localStorage.getItem("dailyLoss") || "{}");
       dl[todayKey] = (dl[todayKey] || 0) + amount;
-      localStorage.setItem("dailyLoss", JSON.stringify(dl));
+      storageSet("dailyLoss", JSON.stringify(dl));
     } catch {
     }
   }
@@ -1815,10 +1780,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
     }
   }
   function saveOverviewPrefs() {
-    try {
-      localStorage.setItem("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter, timeframe: multiScan.timeframe }));
-    } catch {
-    }
+    storageSet("overviewPrefs", JSON.stringify({ sortMode: multiScan.sortMode, filter: multiScan.filter, timeframe: multiScan.timeframe }));
   }
   function overviewFilteredPairs() {
     const base = multiScan.watchlistOnly ? scanPairs.filter((p) => watchlist.includes(p)) : scanPairs;
@@ -1885,10 +1847,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
     }
   }
   function saveScanConfig() {
-    try {
-      localStorage.setItem("scanConfig", JSON.stringify({ pairs: scanPairs, known: [...allScanPairs] }));
-    } catch {
-    }
+    storageSet("scanConfig", JSON.stringify({ pairs: scanPairs, known: [...allScanPairs] }));
   }
   function loadAlertConditions() {
     try {
@@ -1898,10 +1857,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
     }
   }
   function saveAlertConditions() {
-    try {
-      localStorage.setItem("alertConditions", JSON.stringify(alertConditions));
-    } catch {
-    }
+    storageSet("alertConditions", JSON.stringify(alertConditions));
   }
   function evaluateAlertConditions(testMode = false) {
     const now = Date.now();
@@ -1970,10 +1926,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
     }
   }
   function saveWatchlist() {
-    try {
-      localStorage.setItem("watchlist", JSON.stringify(watchlist));
-    } catch {
-    }
+    storageSet("watchlist", JSON.stringify(watchlist));
   }
   function toggleWatchlist(pair) {
     const idx = watchlist.indexOf(pair);
@@ -1990,10 +1943,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
     }
   }
   function saveAlerts() {
-    try {
-      localStorage.setItem("priceAlerts", JSON.stringify(alerts));
-    } catch {
-    }
+    storageSet("priceAlerts", JSON.stringify(alerts));
   }
   function setAlert(pair, price, dir) {
     alerts.push({ id: Date.now(), pair, price: Number(price), dir: dir || "above", createdAt: Date.now() });
@@ -3850,10 +3800,7 @@ Timestamp: ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
       tradeNotesSaveTimer = null;
     }
     if (!tradeNotesCache) return;
-    try {
-      localStorage.setItem("tradeNotes", JSON.stringify(tradeNotesCache));
-    } catch {
-    }
+    storageSet("tradeNotes", JSON.stringify(tradeNotesCache));
   }
   function saveTradeNotesDebounced() {
     if (tradeNotesSaveTimer) clearTimeout(tradeNotesSaveTimer);
@@ -4545,8 +4492,8 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
   }
   function saveHistory() {
     try {
-      localStorage.setItem("signalHistory", JSON.stringify(autoScan.history));
-      localStorage.setItem("signalHistoryTotal", String(autoScan.totalGenerated));
+      storageSet("signalHistory", JSON.stringify(autoScan.history));
+      storageSet("signalHistoryTotal", String(autoScan.totalGenerated));
     } catch {
     }
   }
@@ -4875,10 +4822,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
   var renderPending = false;
   var backtest = { results: null, running: false, progress: "", comparison: null, comparing: false, multiPairMode: false, multiPairSelected: [], multiResults: null, multiRunning: false, multiProgress: "" };
   function saveBacktestMulti() {
-    try {
-      localStorage.setItem("backtestMulti", JSON.stringify({ multiPairMode: backtest.multiPairMode, multiPairSelected: backtest.multiPairSelected }));
-    } catch {
-    }
+    storageSet("backtestMulti", JSON.stringify({ multiPairMode: backtest.multiPairMode, multiPairSelected: backtest.multiPairSelected }));
   }
   function loadBacktestMulti() {
     try {

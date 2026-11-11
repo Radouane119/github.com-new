@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D and 4A–4E implemented · Baseline: `9fbb8e3` · Tests: 348 pass / 0 fail
+Status: Phases 0–3D, 4A–4E and 5.3 implemented · Baseline: `9fbb8e3` · Tests: 354 pass / 0 fail
 
 ## Snapshot
 
@@ -168,6 +168,8 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, screenshots, `id`/`scope`, and a "new version available" update prompt.
 5. README: architecture, dev commands, and an explicit privacy note (webhook URL and API key are readable by anything on the same origin).
 6. Optional domain track: confidence calibration (predicted vs realized win rate), per-pair performance table, slippage realism, and a persistent "demo data" watermark on every panel while fallback data is active.
+
+**5.3 (done):** every user-data write — settings, theme, positions, notes, alerts, watchlist, signal history, ML state — now goes through `storageSet` in `src/app/03-state.js`. It catches quota and blocked-storage failures, shows one error toast per session, and returns `false` so callers can react; previously the surrounding `catch {}` blocks discarded the change silently. Market-cache writes stay best-effort because that cache is disposable. Test M43 covers the failed write, the single warning, and the success path.
 
 ---
 
