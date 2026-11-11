@@ -48,15 +48,34 @@ function showUpdatePrompt(registration, win) {
   } catch {}
 }
 
+function canPromptUpdate(registration, serviceWorker, worker) {
+  // A worker that is already activating is not a new version waiting for the
+  // visitor: this happens briefly when the page reloads right after accepting
+  // an update, and prompting again there would be wrong.
+  if (!serviceWorker || !serviceWorker.controller) return false;
+  if (!registration) return false;
+  const candidate = worker || registration.waiting;
+  if (!candidate || candidate.state !== "installed") return false;
+  if (registration.installing && registration.installing !== candidate) return false;
+  return !registration.active || registration.active.state === "activated";
+}
+
 function bindServiceWorker(registration, serviceWorker, win) {
   if (!registration) return;
-  if (registration.waiting && serviceWorker && serviceWorker.controller) showUpdatePrompt(registration, win);
+  if (registration.waiting) {
+    // A worker can still be finishing activation for a moment after the page
+    // reloads from an accepted update. Wait for that to settle so the visitor
+    // is not prompted again for the version they just opened.
+    setTimeout(() => {
+      if (canPromptUpdate(registration, serviceWorker)) showUpdatePrompt(registration, win);
+    }, 1500);
+  }
   if (typeof registration.addEventListener !== "function") return;
   registration.addEventListener("updatefound", () => {
     const worker = registration.installing;
     if (!worker || typeof worker.addEventListener !== "function") return;
     worker.addEventListener("statechange", () => {
-      if (worker.state === "installed" && serviceWorker && serviceWorker.controller) {
+      if (worker.state === "installed" && canPromptUpdate(registration, serviceWorker, worker)) {
         showUpdatePrompt(registration, win);
       }
     });

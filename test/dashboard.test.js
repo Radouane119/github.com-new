@@ -1515,11 +1515,24 @@ firstWorker.statechange();
 assert(appendedEls.length === 0, "the first install shows no update prompt");
 
 serviceWorker.controller = {};
+const activatingRegistration = {
+  waiting: { state: "activating", postMessage() {} },
+  active: { state: "activated" },
+  installing: null,
+  addEventListener() {},
+};
+ctx.bindServiceWorker(activatingRegistration, serviceWorker, win);
+assert(appendedEls.length === 0, "a worker that is already activating does not re-prompt after a reload");
+assert(ctx.canPromptUpdate({ waiting: { state: "installed" }, active: { state: "activated" }, installing: null }, serviceWorker) === true, "an installed waiting worker with a controller can prompt");
+assert(ctx.canPromptUpdate({ waiting: { state: "activating" }, active: { state: "activated" }, installing: null }, serviceWorker) === false, "a worker that is still activating cannot prompt");
+assert(ctx.canPromptUpdate({ waiting: { state: "installed" }, active: { state: "activated" }, installing: null }, { controller: null }) === false, "a first install cannot prompt");
+
 let waitingMessage = null;
 const waitingWorker = { postMessage: (message) => { waitingMessage = message; } };
 const updateWorker = { state: "installing", addEventListener(name, fn) { this.statechange = fn; } };
 const updateRegistration = {
   waiting: null,
+  active: { state: "activated" },
   installing: updateWorker,
   addEventListener(name, fn) { registrationListeners[name] = fn; },
 };
