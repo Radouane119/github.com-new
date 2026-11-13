@@ -277,7 +277,10 @@ async function fetchBybitRows(base, quote, interval, limit) {
 
 async function fetchCoinbaseRows(base, quote, interval, limit) {
   if (quote !== "USD") throw new Error("Coinbase fallback only supports USD quotes.");
-  const symbol = binanceSymbol(base, quote);
+  // Coinbase product IDs are BASE-USD. Do not reuse binanceSymbol(), which
+  // deliberately turns a USD quote into USDT (e.g. MATICUSDT-USD is invalid).
+  // Polygon migrated its Coinbase market from MATIC to POL.
+  const symbol = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
   const granularity = coinbaseGranularity[interval] || 86400;
   const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`;
   const result = await cachedJson(url, {
@@ -689,7 +692,8 @@ async function fetchLivePrice(base, quote) {
       } catch {}
       if (quote === "USD") {
         try {
-          const result = await cachedJson(`https://api.exchange.coinbase.com/products/${symbol}-USD/ticker`, { ttl: MARKET_TTL.ticker, key: `coinbase-ticker:${symbol}`, provider: "coinbase" });
+          const coinbaseBase = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
+          const result = await cachedJson(`https://api.exchange.coinbase.com/products/${coinbaseBase}-USD/ticker`, { ttl: MARKET_TTL.ticker, key: `coinbase-ticker:${coinbaseBase}`, provider: "coinbase" });
           const d = result.data;
           if (d && d.price) return { price: Number(d.price), change: null };
         } catch {}

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-3Ybzmajwf7ecc5Px8Mzrb74Ukah5NUmuj1yv2bv4+3Q='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-KCJdkj0J7jG3eU+sIlSVQZjE+tjLmfHIlGXQcW4MMjk='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -2236,7 +2236,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
   }
   async function fetchCoinbaseRows(base, quote, interval, limit) {
     if (quote !== "USD") throw new Error("Coinbase fallback only supports USD quotes.");
-    const symbol = binanceSymbol(base, quote);
+    const symbol = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
     const granularity = coinbaseGranularity[interval] || 86400;
     const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`;
     const result = await cachedJson(url, {
@@ -2599,7 +2599,8 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
         }
         if (quote === "USD") {
           try {
-            const result = await cachedJson(`https://api.exchange.coinbase.com/products/${symbol}-USD/ticker`, { ttl: MARKET_TTL.ticker, key: `coinbase-ticker:${symbol}`, provider: "coinbase" });
+            const coinbaseBase = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
+            const result = await cachedJson(`https://api.exchange.coinbase.com/products/${coinbaseBase}-USD/ticker`, { ttl: MARKET_TTL.ticker, key: `coinbase-ticker:${coinbaseBase}`, provider: "coinbase" });
             const d = result.data;
             if (d && d.price) return { price: Number(d.price), change: null };
           } catch {
