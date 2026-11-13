@@ -41,6 +41,10 @@ jobs:
         run: node scripts/lint-sources.mjs
       - name: Run tests
         run: node test/dashboard.test.js
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser smoke test
+        run: npm run smoke
 
   deploy:
     needs: test

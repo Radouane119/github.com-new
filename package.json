@@ -10,6 +10,8 @@
     "build": "node build.mjs",
     "test": "node test/dashboard.test.js",
     "lint": "node scripts/lint-sources.mjs",
+    "serve": "node scripts/serve.mjs",
+    "smoke": "playwright test",
     "verify": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs && node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs",
     "sync-csp": "node scripts/sync-csp.mjs",
     "icons": "node scripts/make-icons.mjs",
@@ -17,6 +19,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.65.1",
     "esbuild": "^0.28.2",
     "eslint": "^10.14.0",
     "globals": "^17.14.0"

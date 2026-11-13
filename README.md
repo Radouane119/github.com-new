@@ -23,9 +23,13 @@ node scripts/make-icons.mjs --check  # fail if the committed icons differ from t
 node scripts/lint-sources.mjs    # ESLint the manifest-ordered bundle and the generated worker
 node test/dashboard.test.js      # 390 regression tests against src/app
 npm run check                    # run every check above in order
+npx playwright install chromium  # one-time browser download for the smoke test
+npm run smoke                    # browser smoke test against a local static server
 ```
 
 Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, bundles them into a single IIFE with esbuild, inlines the result, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. The same run regenerates `sw.js` from `src/sw.template.js`, naming its cache after the generated `index.html` and verifying every precached asset exists, so the cache can no longer go stale by hand. The bundle keeps the output a plain script, so `file://` and GitHub Pages still work with no runtime build. The test suite loads those same sources directly, so it stays independent of the generated HTML. `node scripts/sync-csp.mjs` remains as an alias for the build. `node scripts/lint-sources.mjs` lints the concatenated bundle as one program, so cross-file references resolve while duplicate declarations and undefined globals are still caught; it also lints the generated `sw.js`. All checks are wired into `npm run check`, and CI gates deployment on them.
+
+`npm run smoke` runs a Playwright test against the committed `index.html` served by `scripts/serve.mjs`. It blocks service workers, synthesizes Binance candles, and aborts every other third-party request, so the run is deterministic and offline: it exercises load, timeframe switching, theme toggle, an indicator overlay, a full backtest, and export/import without depending on a provider's uptime. Set `PLAYWRIGHT_CHANNEL=chrome` to use an installed Chrome when the bundled Chromium download is unavailable. CI installs Chromium and runs the same test before deploying.
 
 ## Install as an app
 

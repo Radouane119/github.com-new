@@ -1,6 +1,6 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D, 4A–4E, 5.1, 5.3 and 5.4 implemented · Baseline: `9fbb8e3` · Tests: 390 pass / 0 fail
+Status: Phases 0–3D, 4A–4E, 5.1–5.4 implemented · Baseline: `9fbb8e3` · Tests: 390 pass / 0 fail
 
 ## Snapshot
 
@@ -163,13 +163,15 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 ## Phase 5 — Quality depth & polish (M · ongoing)
 
 1. ESLint flat config (`no-undef`, `no-unused-vars`, `no-redeclare`) on `src/`; warnings first, then errors. **Done in 5.1.**
-2. Playwright smoke test: load → wait for ready → switch timeframe → toggle theme/overlay → run backtest → export/import. Catches render crashes the `vm` harness cannot.
+2. Playwright smoke test: load → wait for ready → switch timeframe → toggle theme/overlay → run backtest → export/import. Catches render crashes the `vm` harness cannot. **Done in 5.2.**
 3. Surface storage failures: the ~20 `catch {}` blocks around `localStorage` silently discard data on quota errors. Toast on `QuotaExceededError`.
 4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, `id`/`scope`, and a "new version available" update prompt. (Screenshots are optional and still need real captures.)
 5. README: architecture, dev commands, and an explicit privacy note (webhook URL and API key are readable by anything on the same origin).
 6. Optional domain track: confidence calibration (predicted vs realized win rate), per-pair performance table, slippage realism, and a persistent "demo data" watermark on every panel while fallback data is active.
 
 **5.1 (done):** ESLint now runs through a flat config (`eslint.config.mjs`) with `@eslint/js` and browser globals. Linting the split files individually would report every cross-file reference as undefined, so `scripts/lint-sources.mjs` concatenates `src/app` in manifest order and lints the result as one classic script through a virtual path; it maps each reported line back to its real source file. The generated `sw.js` is linted too. `no-undef` and `no-redeclare` are errors, and `no-unused-vars` starts as a warning (20 existing warnings are surfaced, not hidden). The pass found and fixed three real issues: a dead duplicate `scheduleRender` in `07-render.js` (the live copy is in `09-scans.js`), a duplicate `var pair` in the events handler, and two dead initial assignments. The script runs in `npm run check` and both workflows; `package.json` now requires Node 20.19+ for ESLint 10.
+
+**5.2 (done):** `npm run smoke` runs one Playwright test against the committed `index.html`, served by a small static server (`scripts/serve.mjs`) so the page loads from HTTP without adding a runtime server to the product. The test blocks service workers, synthesizes Binance klines, and aborts every other third-party request, so it is deterministic and offline. It covers load and title, timeframe switching, theme toggle with its accessible label, an overlay's `aria-pressed`, a full backtest, export of a valid JSON backup, import of a replacement backup, and asserts no page errors. Running it found a real markup bug: the single-pair result section was built with its own `<section>`/`#backtestBody` wrapper and then interpolated inside the outer `#backtestBody`, producing a duplicate nested section once results replaced the progress view. `renderBacktest` now uses the inner result markup only. The test runs in both workflows after `npx playwright install --with-deps chromium`; `PLAYWRIGHT_CHANNEL=chrome` keeps local runs working where the browser download is blocked.
 
 **5.3 (done):** every user-data write — settings, theme, positions, notes, alerts, watchlist, signal history, ML state — now goes through `storageSet` in `src/app/03-state.js`. It catches quota and blocked-storage failures, shows one error toast per session, and returns `false` so callers can react; previously the surrounding `catch {}` blocks discarded the change silently. Market-cache writes stay best-effort because that cache is disposable. Test M43 covers the failed write, the single warning, and the success path.
 
