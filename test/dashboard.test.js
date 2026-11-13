@@ -332,23 +332,25 @@ const kellyCase = vm.runInContext(`(() => {
   autoScan.history = [hist("win"), hist("win"), hist("win"), hist("loss"), hist("win")];
   state.base = "EUR"; state.quote = "USD";
   state.rows = ${JSON.stringify(upRows)};
-  document.getElementById("root").innerHTML = "";
+  const originalRenderIntoRoot = renderIntoRoot;
   const out = {};
+  renderIntoRoot = (html) => { out.current = html; };
   kellyEnabled = false; render();
-  out.fixed = document.getElementById("root").innerHTML;
+  out.fixed = out.current;
   kellyEnabled = true; render();
-  out.kelly = document.getElementById("root").innerHTML;
+  out.kelly = out.current;
+  renderIntoRoot = originalRenderIntoRoot;
   return out;
 })()`, ctx);
 const grabUnits = (html) => {
-  const m = /font-size:\.85rem[^>]*>([\d,]+)\s*units</.exec(html || "");
-  return m ? Number(m[1].replace(/,/g, "")) : null;
+  const m = /font-size:\.85rem[^>]*>([\d,\s\u202f\u00a0]+)units</.exec(html || "");
+  return m ? Number(m[1].replace(/[^\d-]/g, "")) : null;
 };
 const fixedUnits = grabUnits(kellyCase.fixed), kellyUnits = grabUnits(kellyCase.kelly);
 assert(kellyCase.fixed !== null && kellyCase.kelly !== null, "risk panel renders a position size in both modes");
 assert(kellyCase.fixed.includes("Position Size (Fixed)") && kellyCase.kelly.includes("Position Size (Kelly)"), "Kelly toggle swaps the card label");
 assert(fixedUnits !== kellyUnits, "Kelly toggle changes the recommended size (" + fixedUnits + " vs " + kellyUnits + ")");
-assert(kellyUnits === 0 || kellyUnits > 0, "Kelly size is a finite number");
+assert(Number.isFinite(kellyUnits) && kellyUnits >= 0, "Kelly size is a finite number");
 
 console.log("");
 console.log("--- M20: stale exchange books are rejected (never analysed as live) ---");

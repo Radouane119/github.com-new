@@ -216,10 +216,13 @@ async function computeCorrelationMatrix() {
 }
 
 function kellyFraction(winRate, avgWin, avgLoss) {
-  if (avgWin <= 0 || avgLoss <= 0) return 0;
+  if (![winRate, avgWin, avgLoss].every(Number.isFinite) || avgWin <= 0 || avgLoss <= 0) return 0;
+  winRate = Math.max(0, Math.min(1, winRate));
   const b = avgWin / avgLoss;
   const kelly = (winRate * b - (1 - winRate)) / b;
-  return Math.max(0, Math.min(kelly * 0.5, 0.25));
+  // Use half-Kelly and keep the per-trade fraction bounded even if imported
+  // history contains malformed values.
+  return Number.isFinite(kelly) ? Math.max(0, Math.min(kelly * 0.5, 0.25)) : 0;
 }
 
 function runMonteCarlo(trades, iterations) {
