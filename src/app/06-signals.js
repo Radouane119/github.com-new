@@ -288,7 +288,7 @@ function renderHeatmap() {
     const r = multiScan.results[p];
     if (!r || r.loading) return '<div class="heatmap-cell" style="background:var(--panel-hover);color:var(--muted-3)">' + p.split('/')[0] + '<br>...</div>';
     var conf = r.confidence || 0;
-    var bg = '#1f2a36', fg = '#5c6a7a';
+    var bg, fg;
     if (r.direction === 'BUY') { bg = 'rgba(63,185,80,' + Math.min(conf / 100, 0.6) + ')'; fg = '#3fb950'; }
     else if (r.direction === 'SELL') { bg = 'rgba(248,81,73,' + Math.min(conf / 100, 0.6) + ')'; fg = '#f85149'; }
     else { bg = 'rgba(181,140,255,.1)'; fg = '#b58cff'; }

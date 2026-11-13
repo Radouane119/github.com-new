@@ -1,12 +1,12 @@
 # Trading Signal Dashboard — Improvement Plan
 
-Status: Phases 0–3D, 4A–4E, 5.3 and 5.4 implemented · Baseline: `9fbb8e3` · Tests: 386 pass / 0 fail
+Status: Phases 0–3D, 4A–4E, 5.1, 5.3 and 5.4 implemented · Baseline: `9fbb8e3` · Tests: 390 pass / 0 fail
 
 ## Snapshot
 
 | Metric | Value |
 | --- | --- |
-| `index.html` | 377 KB, 7,160 lines (generated) |
+| `index.html` | 380 KB, 7,174 lines (generated) |
 | Inline JS | 352 KB bundled from 13 files under `src/app/` |
 | Inline CSS | 27 KB in `src/styles.css` |
 | Inline `style=` attributes | 545 |
@@ -15,7 +15,7 @@ Status: Phases 0–3D, 4A–4E, 5.3 and 5.4 implemented · Baseline: `9fbb8e3` �
 | `innerHTML =` writes | 7 |
 | Build step | `node build.mjs` (esbuild dev dependency; bundles `src/`, generates `index.html` + `sw.js`) |
 | Service worker | `sw.js` with a cache name derived from `index.html` |
-| CI | build-parity check + guardrails + tests, gating deploy |
+| CI | build-parity check + guardrails + lint + tests, gating deploy |
 | Distribution | single file, works from `file://`, GitHub Pages |
 
 ## Principles
@@ -162,12 +162,14 @@ Tests migrate from regex/`vm` extraction to direct module imports, keeping the c
 
 ## Phase 5 — Quality depth & polish (M · ongoing)
 
-1. ESLint flat config (`no-undef`, `no-unused-vars`, `no-redeclare`) on `src/`; warnings first, then errors.
+1. ESLint flat config (`no-undef`, `no-unused-vars`, `no-redeclare`) on `src/`; warnings first, then errors. **Done in 5.1.**
 2. Playwright smoke test: load → wait for ready → switch timeframe → toggle theme/overlay → run backtest → export/import. Catches render crashes the `vm` harness cannot.
 3. Surface storage failures: the ~20 `catch {}` blocks around `localStorage` silently discard data on quota errors. Toast on `QuotaExceededError`.
 4. PWA polish: 192/512 PNG + maskable icons, `apple-touch-icon`, `id`/`scope`, and a "new version available" update prompt. (Screenshots are optional and still need real captures.)
 5. README: architecture, dev commands, and an explicit privacy note (webhook URL and API key are readable by anything on the same origin).
 6. Optional domain track: confidence calibration (predicted vs realized win rate), per-pair performance table, slippage realism, and a persistent "demo data" watermark on every panel while fallback data is active.
+
+**5.1 (done):** ESLint now runs through a flat config (`eslint.config.mjs`) with `@eslint/js` and browser globals. Linting the split files individually would report every cross-file reference as undefined, so `scripts/lint-sources.mjs` concatenates `src/app` in manifest order and lints the result as one classic script through a virtual path; it maps each reported line back to its real source file. The generated `sw.js` is linted too. `no-undef` and `no-redeclare` are errors, and `no-unused-vars` starts as a warning (20 existing warnings are surfaced, not hidden). The pass found and fixed three real issues: a dead duplicate `scheduleRender` in `07-render.js` (the live copy is in `09-scans.js`), a duplicate `var pair` in the events handler, and two dead initial assignments. The script runs in `npm run check` and both workflows; `package.json` now requires Node 20.19+ for ESLint 10.
 
 **5.3 (done):** every user-data write — settings, theme, positions, notes, alerts, watchlist, signal history, ML state — now goes through `storageSet` in `src/app/03-state.js`. It catches quota and blocked-storage failures, shows one error toast per session, and returns `false` so callers can react; previously the surrounding `catch {}` blocks discarded the change silently. Market-cache writes stay best-effort because that cache is disposable. Test M43 covers the failed write, the single warning, and the success path.
 

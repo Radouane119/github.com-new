@@ -22,11 +22,8 @@ function saveTradeNotesDebounced() {
   tradeNotesSaveTimer = setTimeout(flushTradeNotes, 400);
 }
 
-let scheduledRenderTimer = null;
-function scheduleRender(delay) {
-  if (scheduledRenderTimer) clearTimeout(scheduledRenderTimer);
-  scheduledRenderTimer = setTimeout(() => { scheduledRenderTimer = null; render(); }, delay == null ? 250 : delay);
-}
+// scheduleRender lives in 09-scans.js; it coalesces renders and survives hidden
+// tabs with a timer fallback.
 
 function captureUiState() {
   const ui = { scrollY: 0, scrolls: [], openIds: [], settingsOpen: false, active: null };
@@ -131,8 +128,8 @@ function rememberRegionHtml(mainEl) {
 
 function renderIntoRoot(html) {
   if (!root) return;
-  let template = null;
-  try { template = document.createElement("template"); } catch { template = null; }
+  let template;
+  try { template = document.createElement("template"); } catch {}
   // Test harnesses and very old browsers lack <template>.content: fall back to a full write.
   if (!template || typeof template.innerHTML !== "string" || !("content" in template)) {
     root.innerHTML = html;

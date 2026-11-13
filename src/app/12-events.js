@@ -405,9 +405,9 @@ function setupEvents() {
       return;
     }
     if (target.dataset.heatmap) {
-      var pair = target.dataset.heatmap.split('/');
-      state.base = pair[0];
-      state.quote = pair[1];
+      var heatmapPair = target.dataset.heatmap.split('/');
+      state.base = heatmapPair[0];
+      state.quote = heatmapPair[1];
       state.timeframe = "1d";
       load();
       return;

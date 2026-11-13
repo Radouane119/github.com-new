@@ -8,10 +8,10 @@ Open `index.html` in a modern browser. For the service worker and offline mode, 
 
 ## Development checks
 
-The dashboard itself needs no install or build step: the generated `index.html` is committed and opens directly. Editing works from the sources in `src/`; the build bundles them with esbuild and regenerates the single file with Node.js 20+.
+The dashboard itself needs no install or build step: the generated `index.html` is committed and opens directly. Editing works from the sources in `src/`; the build bundles them with esbuild and regenerates the single file with Node.js 20.19+.
 
 ```sh
-npm ci                           # install the pinned build dependency (esbuild)
+npm ci                           # install the pinned build and lint dependencies
 node build.mjs                   # regenerate index.html from src/
 node build.mjs --check           # fail if index.html or sw.js is out of date
 node scripts/verify-html.mjs     # inline script parses, CSP hash is current, no inline handlers
@@ -20,11 +20,12 @@ node scripts/verify-sw.mjs       # sw.js cache tracks index.html and precaches r
 node scripts/verify-pwa.mjs      # manifest identity, icon files and their real PNG dimensions
 node scripts/make-icons.mjs      # regenerate icons/ from the deterministic drawing script
 node scripts/make-icons.mjs --check  # fail if the committed icons differ from the generator
-node test/dashboard.test.js      # 386 regression tests against src/app
+node scripts/lint-sources.mjs    # ESLint the manifest-ordered bundle and the generated worker
+node test/dashboard.test.js      # 390 regression tests against src/app
 npm run check                    # run every check above in order
 ```
 
-Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, bundles them into a single IIFE with esbuild, inlines the result, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. The same run regenerates `sw.js` from `src/sw.template.js`, naming its cache after the generated `index.html` and verifying every precached asset exists, so the cache can no longer go stale by hand. The bundle keeps the output a plain script, so `file://` and GitHub Pages still work with no runtime build. The test suite loads those same sources directly, so it stays independent of the generated HTML. `node scripts/sync-csp.mjs` remains as an alias for the build. All checks are wired into `npm run check`, and CI gates deployment on them.
+Edit the files under `src/app/`, `src/styles.css`, or `src/index.template.html`, then run `node build.mjs`. The build concatenates the scripts in `src/app/manifest.json` order, bundles them into a single IIFE with esbuild, inlines the result, and derives the Content-Security-Policy SHA-256 hash from the exact script text, so a stale hash can no longer block the app. The same run regenerates `sw.js` from `src/sw.template.js`, naming its cache after the generated `index.html` and verifying every precached asset exists, so the cache can no longer go stale by hand. The bundle keeps the output a plain script, so `file://` and GitHub Pages still work with no runtime build. The test suite loads those same sources directly, so it stays independent of the generated HTML. `node scripts/sync-csp.mjs` remains as an alias for the build. `node scripts/lint-sources.mjs` lints the concatenated bundle as one program, so cross-file references resolve while duplicate declarations and undefined globals are still caught; it also lints the generated `sw.js`. All checks are wired into `npm run check`, and CI gates deployment on them.
 
 ## Install as an app
 
@@ -67,7 +68,9 @@ The included workflow runs the checks and tests, then deploys the dashboard afte
 - `src/sw.template.js` — service-worker source with the cache-name and precache-list placeholders.
 - `scripts/make-icons.mjs` — deterministic PNG icon generator (`--check` compares against `icons/`).
 - `scripts/verify-pwa.mjs` — manifest, icon dimension and document-link guardrails.
-- `package.json` / `package-lock.json` — pin the esbuild dev dependency used only by the build and CI.
+- `scripts/lint-sources.mjs` — ESLint runner for the manifest-ordered bundle; maps bundle lines back to their source file.
+- `eslint.config.mjs` — flat config for the app bundle and service worker.
+- `package.json` / `package-lock.json` — pin the esbuild and ESLint dev dependencies used only by the build, lint and CI.
 - `manifest.json` — progressive-web-app metadata.
 - `sw.js` — generated service worker with a content-derived cache name.
 - `icon.svg` — scalable application icon.

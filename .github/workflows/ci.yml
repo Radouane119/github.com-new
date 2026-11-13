@@ -32,5 +32,7 @@ jobs:
         run: node scripts/verify-sw.mjs
       - name: Verify PWA icons and manifest
         run: node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs
+      - name: Lint sources
+        run: node scripts/lint-sources.mjs
       - name: Run tests
         run: node test/dashboard.test.js

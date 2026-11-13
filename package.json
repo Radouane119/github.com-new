@@ -3,15 +3,22 @@
   "version": "1.0.0",
   "private": true,
   "description": "Forex, Crypto & Gold trading ideas dashboard",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "build": "node build.mjs",
     "test": "node test/dashboard.test.js",
+    "lint": "node scripts/lint-sources.mjs",
     "verify": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs && node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs",
     "sync-csp": "node scripts/sync-csp.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "check": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs && node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs && node test/dashboard.test.js"
+    "check": "node build.mjs --check && node scripts/verify-html.mjs && node scripts/verify-sources.mjs && node scripts/verify-sw.mjs && node scripts/make-icons.mjs --check && node scripts/verify-pwa.mjs && node scripts/lint-sources.mjs && node test/dashboard.test.js"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0"
   }
 }
