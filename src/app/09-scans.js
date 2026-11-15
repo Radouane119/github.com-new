@@ -62,7 +62,7 @@ async function scanPairForOverview(pair, token) {
     }
     const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
     const mtf4hDir = a4h ? a4h.direction : null;
-    const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
+    const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, ml: analysis.ml, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
     if (staleScan()) return;
     const isNew = addSignalToHistory(pair, task);
     if (prevDir && task && task.direction !== prevDir && task.direction !== "WAIT" && prevDir !== "WAIT") { try { const actx = new (window.AudioContext || window.webkitAudioContext)(); const osc = actx.createOscillator(); const gain = actx.createGain(); osc.connect(gain); gain.connect(actx.destination); osc.type = "sine"; osc.frequency.setValueAtTime(task.direction === "BUY" ? 880 : 440, actx.currentTime); osc.frequency.setValueAtTime(task.direction === "BUY" ? 1100 : 330, actx.currentTime + 0.1); gain.gain.setValueAtTime(0.15, actx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, actx.currentTime + 0.3); osc.start(); osc.stop(actx.currentTime + 0.3); } catch {} }
@@ -147,9 +147,9 @@ async function verifySignals() {
     }
     if (entry.result !== "pending") {
       changed = true;
-      if (mlModel.trained) {
-        const pred = mlPredictEntry(entry);
-        if (pred) {
+      if (entry.mlPrediction) {
+        const pred = entry.mlPrediction;
+        if (Number.isFinite(pred.win)) {
           mlStats.filtered++;
           if ((pred.label === "win" && entry.result === "win") || (pred.label === "loss" && entry.result === "loss")) mlStats.filteredCorrect++;
           mlSave();

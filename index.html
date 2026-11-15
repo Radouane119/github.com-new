@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-9k7dTQ02NvjKBMoSe3mBJk4NOzTs1z9q3/riTkrGrDg='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-dVInn3+Jw8GBBFfm1cdnnupU0Pm9R9mxfHSQLG47rz0='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -977,6 +977,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       volatilityPct: Math.max(0, numOrNull(raw.volatilityPct) ?? 0),
       buyScore: numOrNull(raw.buyScore) ?? 0,
       sellScore: numOrNull(raw.sellScore) ?? 0,
+      mlPrediction: isPlainObject(raw.mlPrediction) && Number.isFinite(raw.mlPrediction.win) ? { win: clampNum(raw.mlPrediction.win, 0, 1, 0.5), label: raw.mlPrediction.label === "win" ? "win" : "loss", n: Math.max(0, Math.floor(numOrNull(raw.mlPrediction.n) ?? 0)) } : null,
       reasons,
       result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending"
     };
@@ -1101,6 +1102,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
   }
   var ML_FEATURES = ["confidence", "maxScore", "margin", "volatility", "isBuy"];
   var mlModel = {
+    version: 2,
     n: 0,
     trained: false,
     minSamples: 8,
@@ -1112,22 +1114,43 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     nLoss: 0
   };
   function mlLoad() {
+    let loaded = false;
     try {
       const s = localStorage.getItem("mlModel");
-      if (s) Object.assign(mlModel, JSON.parse(s));
+      if (s) {
+        const saved = JSON.parse(s);
+        const arraysValid = [saved.muWin, saved.varWin, saved.muLoss, saved.varLoss].every((a) => Array.isArray(a) && a.length === ML_FEATURES.length && a.every(Number.isFinite));
+        const countsValid = [saved.n, saved.nWin, saved.nLoss].every((n) => Number.isFinite(n) && n >= 0);
+        if (saved.version === mlModel.version && arraysValid && countsValid) {
+          Object.assign(mlModel, saved);
+          loaded = true;
+        }
+      }
     } catch {
+    }
+    if (!loaded) {
+      mlModel.n = 0;
+      mlModel.trained = false;
+      mlModel.muWin = [0, 0, 0, 0, 0];
+      mlModel.varWin = [0, 0, 0, 0, 0];
+      mlModel.muLoss = [0, 0, 0, 0, 0];
+      mlModel.varLoss = [0, 0, 0, 0, 0];
+      mlModel.nWin = 0;
+      mlModel.nLoss = 0;
     }
     try {
       const s = localStorage.getItem("mlStats");
       if (s) Object.assign(mlStats, JSON.parse(s));
     } catch {
     }
+    return !loaded;
   }
   function mlSave() {
     storageSet("mlModel", JSON.stringify(mlModel));
     storageSet("mlStats", JSON.stringify(mlStats));
   }
   function mlReset() {
+    mlModel.version = 2;
     mlModel.n = 0;
     mlModel.trained = false;
     mlModel.muWin = [0, 0, 0, 0, 0];
@@ -1149,30 +1172,32 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     const isBuy = e.direction === "BUY" ? 1 : 0;
     return [confidence / 100, maxScore / 100, Math.max(-1, Math.min(1, margin / 100)), vol / 10, isBuy];
   }
-  function _updateClass(mu, varr, cnt, f) {
-    if (cnt === 0) {
-      for (let i = 0; i < f.length; i++) {
-        mu[i] = f[i];
-        varr[i] = 0;
-      }
-      return 1;
-    }
+  function _updateClass(mu, varr, cnt, f, weight = 1) {
+    if (!Array.isArray(f) || f.length !== ML_FEATURES.length || !f.every(Number.isFinite) || !Number.isFinite(weight) || weight <= 0) return cnt;
+    const total = cnt + weight;
     for (let i = 0; i < f.length; i++) {
-      const d = f[i] - mu[i];
-      mu[i] += d / cnt;
-      varr[i] = (varr[i] * (cnt - 1) + d * (f[i] - mu[i])) / cnt;
+      const delta = f[i] - mu[i];
+      const nextMean = mu[i] + delta * weight / total;
+      varr[i] = (cnt * varr[i] + weight * delta * (f[i] - nextMean)) / total;
+      mu[i] = nextMean;
     }
-    return cnt + 1;
+    return total;
   }
-  function mlTrain(features, label, weight) {
-    const w = weight || 1;
-    if (label === "win") {
-      mlModel.nWin = _updateClass(mlModel.muWin, mlModel.varWin, mlModel.nWin, features);
-    } else {
-      mlModel.nLoss = _updateClass(mlModel.muLoss, mlModel.varLoss, mlModel.nLoss, features);
-    }
-    mlModel.n++;
+  function mlUpdate(features, label, weight = 1) {
+    if (label !== "win" && label !== "loss") return false;
+    const countKey = label === "win" ? "nWin" : "nLoss";
+    const oldCount = mlModel[countKey];
+    const mu = label === "win" ? mlModel.muWin : mlModel.muLoss;
+    const variance = label === "win" ? mlModel.varWin : mlModel.varLoss;
+    const nextCount = _updateClass(mu, variance, oldCount, features, weight);
+    if (nextCount === oldCount) return false;
+    mlModel[countKey] = nextCount;
+    mlModel.n += weight;
     mlModel.trained = mlModel.n >= mlModel.minSamples;
+    return true;
+  }
+  function mlTrain(features, label, weight = 1) {
+    mlUpdate(features, label, weight);
     mlSave();
     return label;
   }
@@ -1184,10 +1209,17 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
   function mlBatchTrain(history) {
     let trained = 0;
     if (!history) return trained;
+    mlModel.n = 0;
+    mlModel.trained = false;
+    mlModel.muWin = [0, 0, 0, 0, 0];
+    mlModel.varWin = [0, 0, 0, 0, 0];
+    mlModel.muLoss = [0, 0, 0, 0, 0];
+    mlModel.varLoss = [0, 0, 0, 0, 0];
+    mlModel.nWin = 0;
+    mlModel.nLoss = 0;
     for (const e of history) {
       if (e.result === "win" || e.result === "loss") {
-        mlTrainEntry(e);
-        trained++;
+        if (mlUpdate(mlFeaturize(e), e.result)) trained++;
       }
     }
     mlSave();
@@ -1202,7 +1234,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     if (!mlModel.trained) return null;
     const nWin = mlModel.nWin, nLoss = mlModel.nLoss;
     const total = nWin + nLoss;
-    if (total < mlModel.minSamples) return null;
+    if (total < mlModel.minSamples || nWin < 2 || nLoss < 2 || !Array.isArray(features) || features.length !== ML_FEATURES.length || !features.every(Number.isFinite)) return null;
     const pClass = (nWin + 1) / (total + 2);
     let lWin = Math.log(nWin + 1) - Math.log(total + 2);
     let lLoss = Math.log(nLoss + 1) - Math.log(total + 2);
@@ -1212,7 +1244,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     }
     const maxLog = Math.max(lWin, lLoss);
     const eW = Math.exp(lWin - maxLog), eL = Math.exp(lLoss - maxLog);
-    const pWin = eW / (eW + eL);
+    const rawPWin = eW / (eW + eL);
+    const reliability = total / (total + 20);
+    const pWin = pClass + (rawPWin - pClass) * reliability;
     return { win: pWin, loss: 1 - pWin, label: pWin >= 0.5 ? "win" : "loss", n: total, pClass };
   }
   function mlPredictEntry(entry) {
@@ -1243,7 +1277,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     } else {
       const ml = analysis.ml;
       const hit = mlStats.filtered + mlStats.filteredCorrect > 0 ? Math.round(mlStats.filteredCorrect / Math.max(1, mlStats.filtered) * 100) : null;
-      value = `<div style="text-align:center"><strong style="color:${ml.label === "win" ? "var(--buy)" : mlFilterEnabled ? "var(--warn-2)" : "var(--text)"}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === "loss" ? "var(--warn-2)" : "var(--buy)"}">${ml.label === "loss" ? "filtered 🚫" : "pass ✓"}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% filt hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
+      value = `<div style="text-align:center"><strong style="color:${ml.label === "win" ? "var(--buy)" : mlFilterEnabled ? "var(--warn-2)" : "var(--text)"}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === "loss" ? "var(--warn-2)" : "var(--buy)"}">${ml.label === "loss" ? "filtered 🚫" : "pass ✓"}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% entry hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
     }
     return { label: "ML win prob", value };
   }
@@ -4486,6 +4520,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
         volatilityPct: task?.volatilityPct ?? 0,
         buyScore: task?.buyScore ?? 0,
         sellScore: task?.sellScore ?? 0,
+        mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
         reasons: task?.reasons ?? []
       });
       saveHistory();
@@ -4504,6 +4539,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
       volatilityPct: task?.volatilityPct ?? 0,
       buyScore: task?.buyScore ?? 0,
       sellScore: task?.sellScore ?? 0,
+      mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
       reasons: task?.reasons ?? [],
       result: "pending"
     });
@@ -4553,8 +4589,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
     } catch {
     }
     if (autoScan.totalGenerated < autoScan.history.length) autoScan.totalGenerated = autoScan.history.length;
-    mlLoad();
-    mlBatchTrain(autoScan.history);
+    if (mlLoad()) mlBatchTrain(autoScan.history);
   }
   function playBeep() {
     if (!soundEnabled) return;
@@ -5521,7 +5556,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
       }
       const conf = Math.min(100, Math.max(0, (analysis?.confidence ?? 0) + mtfConf));
       const mtf4hDir = a4h ? a4h.direction : null;
-      const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
+      const task = analysis ? { direction: analysis.direction, confidence: conf, risk: analysis.risk, entry: analysis.entry, stop: analysis.stop, target: analysis.target, volatilityPct: analysis.volatilityPct, buyScore: analysis.buyScore, sellScore: analysis.sellScore, ml: analysis.ml, reasons: analysis.reasons, mtf4h: mtf4hDir } : null;
       if (staleScan()) return;
       const isNew = addSignalToHistory(pair, task);
       if (prevDir && task && task.direction !== prevDir && task.direction !== "WAIT" && prevDir !== "WAIT") {
@@ -5630,9 +5665,9 @@ This will overwrite your current strategy config and scan pairs.`)) return;
       }
       if (entry.result !== "pending") {
         changed = true;
-        if (mlModel.trained) {
-          const pred = mlPredictEntry(entry);
-          if (pred) {
+        if (entry.mlPrediction) {
+          const pred = entry.mlPrediction;
+          if (Number.isFinite(pred.win)) {
             mlStats.filtered++;
             if (pred.label === "win" && entry.result === "win" || pred.label === "loss" && entry.result === "loss") mlStats.filteredCorrect++;
             mlSave();

@@ -495,6 +495,7 @@ function addSignalToHistory(pair, task) {
       volatilityPct: task?.volatilityPct ?? 0,
       buyScore: task?.buyScore ?? 0,
       sellScore: task?.sellScore ?? 0,
+      mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
       reasons: task?.reasons ?? [],
     });
     saveHistory();
@@ -513,6 +514,7 @@ function addSignalToHistory(pair, task) {
     volatilityPct: task?.volatilityPct ?? 0,
     buyScore: task?.buyScore ?? 0,
     sellScore: task?.sellScore ?? 0,
+    mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
     reasons: task?.reasons ?? [],
     result: "pending",
   });
@@ -568,8 +570,9 @@ function loadHistory() {
   // Older installs have no lifetime counter; seed it from what was retained so
   // the badge never shows fewer signals than the visible log.
   if (autoScan.totalGenerated < autoScan.history.length) autoScan.totalGenerated = autoScan.history.length;
-  mlLoad();
-  mlBatchTrain(autoScan.history);
+  // Rebuild only when no compatible saved model exists. Replaying the same
+  // history on every reload would otherwise count every resolved trade again.
+  if (mlLoad()) mlBatchTrain(autoScan.history);
 }
 
 function playBeep() {

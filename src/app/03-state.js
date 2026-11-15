@@ -53,6 +53,9 @@ function sanitizeHistoryEntry(raw) {
     volatilityPct: Math.max(0, numOrNull(raw.volatilityPct) ?? 0),
     buyScore: numOrNull(raw.buyScore) ?? 0,
     sellScore: numOrNull(raw.sellScore) ?? 0,
+    mlPrediction: isPlainObject(raw.mlPrediction) && Number.isFinite(raw.mlPrediction.win)
+      ? { win: clampNum(raw.mlPrediction.win, 0, 1, 0.5), label: raw.mlPrediction.label === "win" ? "win" : "loss", n: Math.max(0, Math.floor(numOrNull(raw.mlPrediction.n) ?? 0)) }
+      : null,
     reasons,
     result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending",
   };
@@ -186,21 +189,40 @@ function normalizeRiskConfig(raw) {
 const ML_FEATURES = ["confidence", "maxScore", "margin", "volatility", "isBuy"];
 
 const mlModel = {
-  n: 0, trained: false, minSamples: 8,
+  version: 2, n: 0, trained: false, minSamples: 8,
   muWin: [0, 0, 0, 0, 0], varWin: [0, 0, 0, 0, 0],
   muLoss: [0, 0, 0, 0, 0], varLoss: [0, 0, 0, 0, 0],
   nWin: 0, nLoss: 0,
 };
 function mlLoad() {
-  try { const s = localStorage.getItem("mlModel"); if (s) Object.assign(mlModel, JSON.parse(s)); } catch {}
+  let loaded = false;
+  try {
+    const s = localStorage.getItem("mlModel");
+    if (s) {
+      const saved = JSON.parse(s);
+      const arraysValid = [saved.muWin, saved.varWin, saved.muLoss, saved.varLoss].every((a) => Array.isArray(a) && a.length === ML_FEATURES.length && a.every(Number.isFinite));
+      const countsValid = [saved.n, saved.nWin, saved.nLoss].every((n) => Number.isFinite(n) && n >= 0);
+      if (saved.version === mlModel.version && arraysValid && countsValid) {
+        Object.assign(mlModel, saved);
+        loaded = true;
+      }
+    }
+  } catch {}
+  if (!loaded) {
+    mlModel.n = 0; mlModel.trained = false;
+    mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
+    mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0];
+    mlModel.nWin = 0; mlModel.nLoss = 0;
+  }
   try { const s = localStorage.getItem("mlStats"); if (s) Object.assign(mlStats, JSON.parse(s)); } catch {}
+  return !loaded;
 }
 function mlSave() {
   storageSet("mlModel", JSON.stringify(mlModel));
   storageSet("mlStats", JSON.stringify(mlStats));
 }
 function mlReset() {
-  mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
+  mlModel.version = 2; mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
   mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0]; mlModel.nWin = 0; mlModel.nLoss = 0;
   mlStats = { filtered: 0, filteredCorrect: 0 };
   mlSave();
@@ -215,21 +237,32 @@ function mlFeaturize(e) {
   const isBuy = e.direction === "BUY" ? 1 : 0;
   return [confidence / 100, maxScore / 100, Math.max(-1, Math.min(1, margin / 100)), vol / 10, isBuy];
 }
-function _updateClass(mu, varr, cnt, f) {
-  if (cnt === 0) { for (let i = 0; i < f.length; i++) { mu[i] = f[i]; varr[i] = 0; } return 1; }
+function _updateClass(mu, varr, cnt, f, weight = 1) {
+  if (!Array.isArray(f) || f.length !== ML_FEATURES.length || !f.every(Number.isFinite) || !Number.isFinite(weight) || weight <= 0) return cnt;
+  const total = cnt + weight;
   for (let i = 0; i < f.length; i++) {
-    const d = f[i] - mu[i];
-    mu[i] += d / cnt;
-    varr[i] = (varr[i] * (cnt - 1) + d * (f[i] - mu[i])) / cnt;
+    const delta = f[i] - mu[i];
+    const nextMean = mu[i] + (delta * weight) / total;
+    varr[i] = (cnt * varr[i] + weight * delta * (f[i] - nextMean)) / total;
+    mu[i] = nextMean;
   }
-  return cnt + 1;
+  return total;
 }
-function mlTrain(features, label, weight) {
-  const w = weight || 1;
-  if (label === "win") { mlModel.nWin = _updateClass(mlModel.muWin, mlModel.varWin, mlModel.nWin, features); }
-  else { mlModel.nLoss = _updateClass(mlModel.muLoss, mlModel.varLoss, mlModel.nLoss, features); }
-  mlModel.n++;
+function mlUpdate(features, label, weight = 1) {
+  if (label !== "win" && label !== "loss") return false;
+  const countKey = label === "win" ? "nWin" : "nLoss";
+  const oldCount = mlModel[countKey];
+  const mu = label === "win" ? mlModel.muWin : mlModel.muLoss;
+  const variance = label === "win" ? mlModel.varWin : mlModel.varLoss;
+  const nextCount = _updateClass(mu, variance, oldCount, features, weight);
+  if (nextCount === oldCount) return false;
+  mlModel[countKey] = nextCount;
+  mlModel.n += weight;
   mlModel.trained = mlModel.n >= mlModel.minSamples;
+  return true;
+}
+function mlTrain(features, label, weight = 1) {
+  mlUpdate(features, label, weight);
   mlSave();
   return label;
 }
@@ -241,8 +274,14 @@ function mlTrainEntry(entry) {
 function mlBatchTrain(history) {
   let trained = 0;
   if (!history) return trained;
+  mlModel.n = 0; mlModel.trained = false;
+  mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
+  mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0];
+  mlModel.nWin = 0; mlModel.nLoss = 0;
   for (const e of history) {
-    if (e.result === "win" || e.result === "loss") { mlTrainEntry(e); trained++; }
+    if (e.result === "win" || e.result === "loss") {
+      if (mlUpdate(mlFeaturize(e), e.result)) trained++;
+    }
   }
   mlSave();
   return trained;
@@ -256,7 +295,7 @@ function mlPredict(features) {
   if (!mlModel.trained) return null;
   const nWin = mlModel.nWin, nLoss = mlModel.nLoss;
   const total = nWin + nLoss;
-  if (total < mlModel.minSamples) return null;
+  if (total < mlModel.minSamples || nWin < 2 || nLoss < 2 || !Array.isArray(features) || features.length !== ML_FEATURES.length || !features.every(Number.isFinite)) return null;
   const pClass = (nWin + 1) / (total + 2);
   let lWin = Math.log(nWin + 1) - Math.log(total + 2);
   let lLoss = Math.log(nLoss + 1) - Math.log(total + 2);
@@ -266,7 +305,11 @@ function mlPredict(features) {
   }
   const maxLog = Math.max(lWin, lLoss);
   const eW = Math.exp(lWin - maxLog), eL = Math.exp(lLoss - maxLog);
-  const pWin = eW / (eW + eL);
+  const rawPWin = eW / (eW + eL);
+  // Shrink small-sample likelihoods toward the observed base rate so narrow
+  // Gaussian variances cannot masquerade as a calibrated near-certain result.
+  const reliability = total / (total + 20);
+  const pWin = pClass + (rawPWin - pClass) * reliability;
   return { win: pWin, loss: 1 - pWin, label: pWin >= 0.5 ? "win" : "loss", n: total, pClass };
 }
 function mlPredictEntry(entry) {
@@ -308,7 +351,7 @@ function renderMlBadge(analysis) {
   } else {
     const ml = analysis.ml;
     const hit = mlStats.filtered + mlStats.filteredCorrect > 0 ? Math.round((mlStats.filteredCorrect / Math.max(1, mlStats.filtered)) * 100) : null;
-    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? 'var(--buy)' : mlFilterEnabled ? 'var(--warn-2)' : 'var(--text)'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? 'var(--warn-2)' : 'var(--buy)'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% filt hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
+    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? 'var(--buy)' : mlFilterEnabled ? 'var(--warn-2)' : 'var(--text)'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? 'var(--warn-2)' : 'var(--buy)'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% entry hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
   }
   return { label: "ML win prob", value };
 }
