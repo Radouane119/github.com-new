@@ -248,7 +248,27 @@ function binanceSymbol(base, quote) {
 let lastCryptoSource = "Binance";
 
 const bybitInterval = { "1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "D" };
-const coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+const coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400 };
+
+function aggregateCandles(rows, interval) {
+  const bucketMs = interval === "4h" ? 4 * 60 * 60 * 1000 : interval === "30m" ? 30 * 60 * 1000 : 0;
+  if (!bucketMs) return rows;
+  const grouped = new Map();
+  for (const row of rows) {
+    const time = Date.parse(row.time);
+    if (!Number.isFinite(time)) continue;
+    const bucket = Math.floor(time / bucketMs) * bucketMs;
+    const current = grouped.get(bucket);
+    if (!current) grouped.set(bucket, { ...row, time: new Date(bucket).toISOString(), date: new Date(bucket).toISOString().slice(0, 10), _lastTime: time });
+    else {
+      current.high = Math.max(current.high, row.high);
+      current.low = Math.min(current.low, row.low);
+      if (time >= current._lastTime) { current.close = row.close; current._lastTime = time; }
+      current.volume += row.volume || 0;
+    }
+  }
+  return [...grouped.values()].map(({ _lastTime, ...row }) => row);
+}
 
 async function fetchBybitRows(base, quote, interval, limit) {
   const symbol = binanceSymbol(base, quote);
@@ -281,16 +301,34 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
   // deliberately turns a USD quote into USDT (e.g. MATICUSDT-USD is invalid).
   // Polygon migrated its Coinbase market from MATIC to POL.
   const symbol = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
-  const granularity = coinbaseGranularity[interval] || 86400;
-  const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`;
-  const result = await cachedJson(url, {
-    ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
-    key: `coinbase:${symbol}:${interval}:${limit}`,
-    provider: "coinbase",
-  });
-  const data = result.data;
+  // Coinbase has no 30-minute or 4-hour buckets. Fetch supported source bars
+  // and combine them locally. Its public endpoint caps each response at 300.
+  const sourceInterval = interval === "4h" ? "1h" : interval === "30m" ? "15m" : interval;
+  const granularity = coinbaseGranularity[sourceInterval] || 86400;
+  const product = `${symbol}-USD`;
+  let data;
+  if (interval === "4h") {
+    const end = Math.floor(Date.now() / 1000 / granularity) * granularity;
+    const start = end - 600 * granularity;
+    const chunks = [0, 1].map(async (index) => {
+      const chunkStart = start + index * 300 * granularity;
+      const chunkEnd = Math.min(end - granularity, chunkStart + 299 * granularity);
+      const url = `https://api.exchange.coinbase.com/products/${product}/candles?granularity=${granularity}&start=${new Date(chunkStart * 1000).toISOString()}&end=${new Date(chunkEnd * 1000).toISOString()}`;
+      const result = await cachedJson(url, { ttl: MARKET_TTL.intraday, key: `coinbase:${symbol}:${interval}:${chunkStart}`, provider: "coinbase" });
+      return result.data;
+    });
+    data = (await Promise.all(chunks)).flat();
+  } else {
+    const url = `https://api.exchange.coinbase.com/products/${product}/candles?granularity=${granularity}`;
+    const result = await cachedJson(url, {
+      ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
+      key: `coinbase:${symbol}:${interval}:${limit}`,
+      provider: "coinbase",
+    });
+    data = result.data;
+  }
   if (!Array.isArray(data) || data.length === 0) throw new Error(`Coinbase returned no data for ${base}/${quote}.`);
-  return data
+  const rows = data
     .map((k) => ({
       date: new Date(k[0] * 1000).toISOString().slice(0, 10),
       time: new Date(k[0] * 1000).toISOString(),
@@ -301,7 +339,9 @@ async function fetchCoinbaseRows(base, quote, interval, limit) {
       volume: Number(k[5]),
     }))
     .filter((row) => Number.isFinite(row.close))
-    .sort((a, b) => new Date(a.time) - new Date(b.time))
+    .sort((a, b) => new Date(a.time) - new Date(b.time));
+  const uniqueRows = [...new Map(rows.map((row) => [row.time, row])).values()];
+  return aggregateCandles(uniqueRows, interval)
     .slice(-limit);
 }
 

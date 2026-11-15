@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-hU+R5BACbSX+K3qyT0GuMGCEbqiPWrOPeKC6Z12wHgA='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-9k7dTQ02NvjKBMoSe3mBJk4NOzTs1z9q3/riTkrGrDg='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -2212,7 +2212,29 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
   }
   var lastCryptoSource = "Binance";
   var bybitInterval = { "1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "4h": "240", "1d": "D" };
-  var coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400 };
+  var coinbaseGranularity = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400 };
+  function aggregateCandles(rows, interval) {
+    const bucketMs = interval === "4h" ? 4 * 60 * 60 * 1e3 : interval === "30m" ? 30 * 60 * 1e3 : 0;
+    if (!bucketMs) return rows;
+    const grouped = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const time = Date.parse(row.time);
+      if (!Number.isFinite(time)) continue;
+      const bucket = Math.floor(time / bucketMs) * bucketMs;
+      const current = grouped.get(bucket);
+      if (!current) grouped.set(bucket, { ...row, time: new Date(bucket).toISOString(), date: new Date(bucket).toISOString().slice(0, 10), _lastTime: time });
+      else {
+        current.high = Math.max(current.high, row.high);
+        current.low = Math.min(current.low, row.low);
+        if (time >= current._lastTime) {
+          current.close = row.close;
+          current._lastTime = time;
+        }
+        current.volume += row.volume || 0;
+      }
+    }
+    return [...grouped.values()].map(({ _lastTime, ...row }) => row);
+  }
   async function fetchBybitRows(base, quote, interval, limit) {
     const symbol = binanceSymbol(base, quote);
     const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval[interval] || "D"}&limit=${limit}`;
@@ -2237,16 +2259,32 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
   async function fetchCoinbaseRows(base, quote, interval, limit) {
     if (quote !== "USD") throw new Error("Coinbase fallback only supports USD quotes.");
     const symbol = base === "MATIC" ? "POL" : base === "XAU" ? "PAXG" : base;
-    const granularity = coinbaseGranularity[interval] || 86400;
-    const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=${granularity}`;
-    const result = await cachedJson(url, {
-      ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
-      key: `coinbase:${symbol}:${interval}:${limit}`,
-      provider: "coinbase"
-    });
-    const data = result.data;
+    const sourceInterval = interval === "4h" ? "1h" : interval === "30m" ? "15m" : interval;
+    const granularity = coinbaseGranularity[sourceInterval] || 86400;
+    const product = `${symbol}-USD`;
+    let data;
+    if (interval === "4h") {
+      const end = Math.floor(Date.now() / 1e3 / granularity) * granularity;
+      const start = end - 600 * granularity;
+      const chunks = [0, 1].map(async (index) => {
+        const chunkStart = start + index * 300 * granularity;
+        const chunkEnd = Math.min(end - granularity, chunkStart + 299 * granularity);
+        const url = `https://api.exchange.coinbase.com/products/${product}/candles?granularity=${granularity}&start=${new Date(chunkStart * 1e3).toISOString()}&end=${new Date(chunkEnd * 1e3).toISOString()}`;
+        const result = await cachedJson(url, { ttl: MARKET_TTL.intraday, key: `coinbase:${symbol}:${interval}:${chunkStart}`, provider: "coinbase" });
+        return result.data;
+      });
+      data = (await Promise.all(chunks)).flat();
+    } else {
+      const url = `https://api.exchange.coinbase.com/products/${product}/candles?granularity=${granularity}`;
+      const result = await cachedJson(url, {
+        ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
+        key: `coinbase:${symbol}:${interval}:${limit}`,
+        provider: "coinbase"
+      });
+      data = result.data;
+    }
     if (!Array.isArray(data) || data.length === 0) throw new Error(`Coinbase returned no data for ${base}/${quote}.`);
-    return data.map((k) => ({
+    const rows = data.map((k) => ({
       date: new Date(k[0] * 1e3).toISOString().slice(0, 10),
       time: new Date(k[0] * 1e3).toISOString(),
       open: Number(k[3]),
@@ -2254,7 +2292,9 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
       low: Number(k[1]),
       close: Number(k[4]),
       volume: Number(k[5])
-    })).filter((row) => Number.isFinite(row.close)).sort((a, b) => new Date(a.time) - new Date(b.time)).slice(-limit);
+    })).filter((row) => Number.isFinite(row.close)).sort((a, b) => new Date(a.time) - new Date(b.time));
+    const uniqueRows = [...new Map(rows.map((row) => [row.time, row])).values()];
+    return aggregateCandles(uniqueRows, interval).slice(-limit);
   }
   var fxMajors = /* @__PURE__ */ new Set(["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "NZD", "CAD", "SGD", "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RON", "ISK", "BGN", "TRY", "ZAR", "MXN", "BRL", "CNY", "HKD", "THB", "INR", "KRW", "ILS"]);
   var fxLegStale = /* @__PURE__ */ new Set(["GBP", "AUD"]);
