@@ -1,19 +1,24 @@
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
-  // requestAnimationFrame does not fire in a hidden tab, which would latch renderPending
-  // on forever and silently drop every later scheduled render. Fall back to a timer.
+  // Keep the full dashboard render out of the animation-frame callback: parsing
+  // and patching the whole dashboard can exceed a frame budget on slower devices.
+  // Idle callbacks yield to painting; the timer guarantees progress in hidden
+  // tabs and browsers without requestIdleCallback.
   let settled = false;
   let fallbackId = null;
+  let idleId = null;
   const flush = () => {
     if (settled) return;
     settled = true;
     if (fallbackId !== null) { clearTimeout(fallbackId); fallbackId = null; }
+    if (idleId !== null && typeof cancelIdleCallback === "function") cancelIdleCallback(idleId);
     renderPending = false;
     render();
   };
   fallbackId = setTimeout(flush, 250);
-  requestAnimationFrame(flush);
+  if (typeof requestIdleCallback === "function") idleId = requestIdleCallback(flush, { timeout: 200 });
+  else requestAnimationFrame(flush);
 }
 
 async function fetchOverviewRows(pair, tf) {
