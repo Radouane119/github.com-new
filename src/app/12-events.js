@@ -65,6 +65,13 @@ function ssAnalyze() {
 
 function setupEvents() {
   root.addEventListener("input", (event) => {
+    if (["historySearch", "historyFrom", "historyTo"].includes(event.target.id)) {
+      const key = { historySearch: "query", historyFrom: "from", historyTo: "to" }[event.target.id];
+      autoScan.historyFilters[key] = event.target.value;
+      autoScan.historyVisibleCount = 50;
+      scheduleRender();
+      return;
+    }
     if (event.target.id === "webhookInput") {
       webhookUrl = event.target.value;
       saveWebhook();
@@ -154,6 +161,13 @@ function setupEvents() {
     if (event.target && event.target.dataset && event.target.dataset.notePos) flushTradeNotes();
   }, true);
   root.addEventListener("change", (event) => {
+    if (["historyPair", "historyDirection", "historyResult"].includes(event.target.id)) {
+      const key = { historyPair: "pair", historyDirection: "direction", historyResult: "result" }[event.target.id];
+      autoScan.historyFilters[key] = event.target.value;
+      autoScan.historyVisibleCount = 50;
+      render();
+      return;
+    }
     if (event.target.id === "ovSort") {
       multiScan.sortMode = event.target.value;
       saveOverviewPrefs();
@@ -460,6 +474,12 @@ function setupEvents() {
     }
     if (target.id === "showMoreHistory") {
       autoScan.historyVisibleCount = Math.min(autoScan.maxEntries, autoScan.historyVisibleCount + 50);
+      render();
+      return;
+    }
+    if (target.id === "clearHistoryFilters") {
+      autoScan.historyFilters = { query: "", pair: "", direction: "", result: "", from: "", to: "" };
+      autoScan.historyVisibleCount = 50;
       render();
       return;
     }

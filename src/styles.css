@@ -114,6 +114,13 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .history-toggle.open .arrow{transform:rotate(180deg)}
 .history-body{border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;overflow:hidden;display:none}
 .history-body.open{display:block}
+.history-filters{display:grid;grid-template-columns:minmax(180px,2fr) repeat(3,minmax(105px,1fr)) repeat(2,minmax(130px,1fr)) auto;gap:6px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--border);align-items:center}
+.history-filters input,.history-filters select{min-width:0;width:100%;box-sizing:border-box;background:var(--panel-hover);border:1px solid var(--border);border-radius:5px;padding:6px 7px;color:var(--text);font:inherit;font-size:.68rem}
+.history-filters label{display:flex;align-items:center;gap:4px;color:var(--muted-3);font-size:.62rem}
+.history-filters button{background:var(--border);border:1px solid var(--border-strong);color:var(--muted);border-radius:5px;padding:6px 8px;font:inherit;font-size:.65rem;cursor:pointer;white-space:nowrap}
+.history-filters button:disabled{opacity:.45;cursor:default}
+@media(max-width:900px){.history-filters{grid-template-columns:repeat(3,minmax(0,1fr))}.history-filters input[type=search]{grid-column:span 2}}
+@media(max-width:540px){.history-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.history-filters input[type=search]{grid-column:span 2}}
 .history-header{display:grid;grid-template-columns:100px 80px 70px 60px 70px 50px 55px 1fr;gap:4px;padding:10px 16px;background:var(--panel-inset);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-3);border-bottom:1px solid var(--border)}
 .history-scroll{max-height:500px;overflow-y:auto}
 .history-scroll::-webkit-scrollbar{width:5px}

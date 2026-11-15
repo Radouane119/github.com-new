@@ -177,8 +177,21 @@ function renderIntoRoot(html) {
   }
 }
 
+function signalMatchesHistoryFilters(entry) {
+  const filters = autoScan.historyFilters || {};
+  const pair = String(entry.pair || "");
+  const date = entry.timestamp instanceof Date ? entry.timestamp.toISOString().slice(0, 10) : "";
+  const search = [pair, entry.direction, entry.risk, entry.result, ...(entry.reasons || []).map(r => r.text)].join(" ").toLowerCase();
+  return (!filters.query || search.includes(filters.query.toLowerCase())) &&
+    (!filters.pair || pair === filters.pair) &&
+    (!filters.direction || entry.direction === filters.direction) &&
+    (!filters.result || (filters.result === "pending" ? !["win", "loss"].includes(entry.result) : entry.result === filters.result)) &&
+    (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
+}
+
 function render() {
   const uiState = captureUiState();
+  const historyMatches = autoScan.history.map((entry, index) => ({ entry, index })).filter(({ entry }) => signalMatchesHistoryFilters(entry));
   const pair = `${state.base}/${state.quote}`;
   const analysis = analyze(state.rows, loadStrategyConfig());
   const mlBlocked = mlFilterWarn(analysis);
@@ -385,14 +398,23 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
           <span class="arrow">▾</span>
         </button>
         <div class="history-body" id="historyBody">
+          <div class="history-filters">
+            <input id="historySearch" type="search" placeholder="Search pair, direction, risk, reason…" value="${escapeAttr(autoScan.historyFilters.query)}" aria-label="Search signal history">
+            <select id="historyPair" aria-label="Filter by pair"><option value="">All pairs</option>${[...new Set(autoScan.history.map(e => e.pair))].sort().map(p => `<option value="${escapeAttr(p)}" ${autoScan.historyFilters.pair === p ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select>
+            <select id="historyDirection" aria-label="Filter by direction"><option value="">All directions</option>${["BUY", "SELL", "WAIT"].map(d => `<option value="${d}" ${autoScan.historyFilters.direction === d ? "selected" : ""}>${d}</option>`).join("")}</select>
+            <select id="historyResult" aria-label="Filter by result"><option value="">All results</option>${["win", "loss", "pending"].map(d => `<option value="${d}" ${autoScan.historyFilters.result === d ? "selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("")}</select>
+            <label>From <input id="historyFrom" type="date" value="${escapeAttr(autoScan.historyFilters.from)}"></label>
+            <label>To <input id="historyTo" type="date" value="${escapeAttr(autoScan.historyFilters.to)}"></label>
+            <button id="clearHistoryFilters" ${Object.values(autoScan.historyFilters).some(Boolean) ? "" : "disabled"}>Clear filters</button>
+          </div>
           <div class="history-header">
             <span>Time</span><span>Pair</span><span>Signal</span><span>Conf.</span><span>Risk</span><span>Vol.</span><span>Result</span><span></span>
           </div>
           <div class="history-scroll" id="historyScroll">
-            ${autoScan.history.length === 0 ? '<div class="history-empty">No signals yet. Enable auto-scan or refresh to generate signals.</div>' : ""}
-            ${autoScan.history.slice(0, autoScan.historyVisibleCount).map((entry, idx) => renderHistoryEntry(entry, idx)).join("")}
+            ${autoScan.history.length === 0 ? '<div class="history-empty">No signals yet. Enable auto-scan or refresh to generate signals.</div>' : historyMatches.length === 0 ? '<div class="history-empty">No signals match these filters.</div>' : ""}
+            ${historyMatches.slice(0, autoScan.historyVisibleCount).map(({ entry, index }) => renderHistoryEntry(entry, index)).join("")}
           </div>
-          ${autoScan.history.length > 0 ? `<div class="history-actions"><span style="font-size:.68rem;color:var(--muted-3)">Showing ${Math.min(autoScan.history.length, autoScan.historyVisibleCount)} of ${autoScan.history.length} saved signals</span>${autoScan.history.length > autoScan.historyVisibleCount ? `<button id="showMoreHistory">Show older signals (${autoScan.history.length - autoScan.historyVisibleCount} remaining)</button>` : ""}<button id="exportCSV">Export CSV</button><button id="exportJSON">Export JSON</button><button id="clearHistory">Clear history</button></div>` : ""}
+          ${autoScan.history.length > 0 ? `<div class="history-actions"><span style="font-size:.68rem;color:var(--muted-3)">Showing ${Math.min(historyMatches.length, autoScan.historyVisibleCount)} of ${historyMatches.length} matching (${autoScan.history.length} saved)</span>${historyMatches.length > autoScan.historyVisibleCount ? `<button id="showMoreHistory">Show older signals (${historyMatches.length - autoScan.historyVisibleCount} remaining)</button>` : ""}<button id="exportCSV">Export CSV</button><button id="exportJSON">Export JSON</button><button id="clearHistory">Clear history</button></div>` : ""}
         </div>
       </section>
     </main>
@@ -640,7 +662,7 @@ function importAllData(json) {
 
 function exportCSV() {
   const rows = [["Time","Pair","Direction","Confidence","Risk","Entry","Stop","Target","Volatility","BuyScore","SellScore","Result"]];
-  for (const e of autoScan.history) {
+  for (const e of autoScan.history.filter(signalMatchesHistoryFilters)) {
     rows.push([e.timestamp.toISOString(), e.pair, e.direction, e.confidence, e.risk, e.entry ?? "", e.stop ?? "", e.target ?? "", e.volatilityPct.toFixed(2), e.buyScore, e.sellScore, e.result]);
   }
   const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
@@ -662,7 +684,7 @@ function exportJSON() {
     exportedAt: new Date().toISOString(),
     model: mlModel,
     stats: mlStats,
-    signals: autoScan.history.map(e => ({ ...e, timestamp: e.timestamp.toISOString() })),
+    signals: autoScan.history.filter(signalMatchesHistoryFilters).map(e => ({ ...e, timestamp: e.timestamp.toISOString() })),
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "trading_journal.json";

@@ -134,6 +134,7 @@ const autoScan = {
   history: [],
   maxEntries: 1000,
   historyVisibleCount: 50,
+  historyFilters: { query: "", pair: "", direction: "", result: "", from: "", to: "" },
   // Lifetime total of signals ever recorded, so the badge keeps counting after
   // the retained history is capped (the log itself only keeps maxEntries rows).
   totalGenerated: 0,

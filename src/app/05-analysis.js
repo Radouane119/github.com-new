@@ -261,6 +261,12 @@ async function runWalkForward() {
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
     if (rows.length < 300) { wfState.running = false; render(); return; }
+    const feeInput = document.getElementById("btFee");
+    const riskInput = document.getElementById("btRisk");
+    const costs = loadStrategyConfig();
+    if (feeInput) costs.feePct = Math.max(0, Number(feeInput.value) || 0);
+    if (riskInput) costs.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
+    const pair = `${state.base}/${state.quote}`;
     const paramGrid = [
       { threshold: 4 }, { threshold: 5 }, { threshold: 6 },
       { riskRewardRatio: 1.5 }, { riskRewardRatio: 2.0 }, { riskRewardRatio: 2.5 },
@@ -285,44 +291,31 @@ async function runWalkForward() {
       for (const overrides of paramGrid) {
         const cfg = { ...loadStrategyConfig(), ...overrides };
         const trades = [];
-        for (let i = 80; i < trainData.length; i++) {
-          const a = analyze(trainData.slice(0, i + 1), cfg);
+        for (let i = trainStart + 80; i < trainEnd; i++) {
+          const a = analyze(rows.slice(trainStart, i + 1), cfg);
           if (!a || a.direction === "WAIT") continue;
-          const entry = a.entry;
-          const isBuy = a.direction === "BUY";
-          const riskPct = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
-          const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
-          let result = "pending", pnlPct = 0;
-          const ex1 = resolveTradeExit(trainData, i, isBuy, a.stop, a.target);
-          if (ex1.result !== "pending") { result = ex1.result; pnlPct = result === "win" ? rewardPct : -riskPct; }
-          if (result !== "pending") trades.push({ result, pnlPct });
+          const t = evaluateBacktestTrade(rows, i, a, pair, costs.feePct || 0, costs.riskPerTradePct || 1, trainEnd);
+          if (t && t.result !== "pending") trades.push(t);
         }
         const w = trades.filter(t => t.result === "win").length;
-        const l = trades.filter(t => t.result === "loss").length;
-        const score = trades.length > 0 ? (w / trades.length) * 100 + (trades.reduce((s,t) => s + t.pnlPct, 0) * 0.5) : 0;
+        const score = trades.length > 0 ? trades.reduce((s,t) => s + t.equityPct, 0) : -Infinity;
         if (score > bestScore) { bestScore = score; bestCfg = cfg; bestTrainWR = trades.length > 0 ? (w / trades.length) * 100 : 0; }
       }
       const testTrades = [];
-      for (let i = 80; i < testData.length; i++) {
-        const a = analyze(testData.slice(0, i + 1), bestCfg);
+      for (let i = trainEnd; i < testEnd; i++) {
+        const a = analyze(rows.slice(trainStart, i + 1), bestCfg);
         if (!a || a.direction === "WAIT") continue;
-        const entry = a.entry;
-        const isBuy = a.direction === "BUY";
-        const riskPct = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
-        const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
-        let result = "pending", pnlPct = 0;
-        const ex2 = resolveTradeExit(testData, i, isBuy, a.stop, a.target);
-        if (ex2.result !== "pending") { result = ex2.result; pnlPct = result === "win" ? rewardPct : -riskPct; }
-        if (result !== "pending") testTrades.push({ result, pnlPct });
+        const t = evaluateBacktestTrade(rows, i, a, pair, costs.feePct || 0, costs.riskPerTradePct || 1, testEnd);
+        if (t && t.result !== "pending") testTrades.push(t);
       }
       const tw = testTrades.filter(t => t.result === "win").length;
-      const tl = testTrades.filter(t => t.result === "loss").length;
-      wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round((tw / testTrades.length) * 100) : 0, testTrades: testTrades.length, testPnL: testTrades.reduce((s, t) => s + t.pnlPct, 0) });
+      wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round((tw / testTrades.length) * 100) : 0, testTrades: testTrades.length, testWins: tw, testPnL: testTrades.reduce((s, t) => s + t.equityPct, 0) });
     }
     const totalTestTrades = wfResults.reduce((s, r) => s + r.testTrades, 0);
-    const avgTestWR = totalTestTrades > 0 ? Math.round(wfResults.reduce((s, r) => s + r.testWR, 0) / Math.max(wfResults.length, 1)) : 0;
+    const totalWins = wfResults.reduce((s, r) => s + r.testWins, 0);
+    const avgTestWR = totalTestTrades > 0 ? Math.round(totalWins / totalTestTrades * 100) : 0;
     const totalTestPnL = wfResults.reduce((s, r) => s + r.testPnL, 0);
-    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL };
+    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0 };
   } catch {}
   wfState.running = false;
   render();

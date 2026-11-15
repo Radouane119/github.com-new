@@ -140,8 +140,8 @@ function renderBacktest() {
   return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="backtestToggle"><div class="history-toggle-left"><h3>Backtest Strategy</h3></div><span class="arrow">▾</span></button><div class="history-body open" id="backtestBody">${singleResult}${multiResult}<div style="padding:0 12px 8px"><div class="cond-row"><div class="cond-info"><span class="cond-title">Multi-Pair Mode</span><span class="cond-desc">Backtest across multiple pairs</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="mpModeToggle" ${backtest.multiPairMode ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div></div>${mpCheckboxes}${backtest.multiPairMode ? `<div style="padding:0 12px 12px"><button id="runMultiBacktest" style="width:100%;padding:10px;background:var(--wait);color:var(--on-accent);border:none;border-radius:8px;font-weight:600;font-size:.8rem;cursor:pointer">Run Multi-Pair Backtest</button></div>` : ""}<div style="padding:8px 12px;display:flex;gap:8px"><button id="runBacktest" style="flex:1;padding:8px;background:var(--border);color:var(--muted);border:1px solid var(--border-strong);border-radius:8px;font-size:.75rem;cursor:pointer">Re-run Backtest</button></div></div></section>`;
 }
 
-function resolveTradeExit(rows, fromIndex, isBuy, stop, target) {
-  for (let j = fromIndex + 1; j < rows.length; j++) {
+function resolveTradeExit(rows, fromIndex, isBuy, stop, target, untilIndex = rows.length) {
+  for (let j = fromIndex + 1; j < Math.min(rows.length, untilIndex); j++) {
     const bar = rows[j];
     // OHLC carries no intrabar ordering. When one bar spans both the stop and the
     // target the outcome is unknowable, so assume the stop filled first. This keeps
@@ -155,6 +155,39 @@ function resolveTradeExit(rows, fromIndex, isBuy, stop, target) {
     }
   }
   return { result: "pending", exitPrice: null, hitIndex: -1 };
+}
+
+function backtestPipSize(pair, price) {
+  const [base = "", quote = ""] = pair.split("/");
+  if (quote === "JPY") return 0.01;
+  if (base === "XAU" || quote === "XAU") return 0.1;
+  return nonFiat.has(base) || nonFiat.has(quote) ? Math.max(Math.abs(price) * 0.0001, 1e-8) : 0.0001;
+}
+
+function evaluateBacktestTrade(rows, index, analysis, pair, feePct, riskSizePct, untilIndex = rows.length) {
+  const rawEntry = Number(analysis.entry || rows[index]?.close);
+  const stop = Number(analysis.stop), target = Number(analysis.target);
+  if (!Number.isFinite(rawEntry) || rawEntry <= 0 || !Number.isFinite(stop) || !Number.isFinite(target)) return null;
+  const isBuy = analysis.direction === "BUY";
+  const pip = backtestPipSize(pair, rawEntry);
+  const entryCost = ((Math.max(0, slippageConfig.spreadPips || 0) / 2) + Math.max(0, slippageConfig.slippagePips || 0)) * pip;
+  const exitCost = ((Math.max(0, slippageConfig.spreadPips || 0) / 2) + Math.max(0, slippageConfig.slippagePips || 0)) * pip;
+  const entry = rawEntry + (isBuy ? entryCost : -entryCost);
+  const exit = resolveTradeExit(rows, index, isBuy, stop, target, untilIndex);
+  const exitPrice = exit.exitPrice == null ? null : exit.exitPrice + (isBuy ? -exitCost : exitCost);
+  const grossPnlPct = exitPrice == null ? 0 : (isBuy ? (exitPrice - entry) : (entry - exitPrice)) / entry * 100;
+  const costsPct = Math.max(0, Number(feePct) || 0);
+  const pnlPct = exit.result === "pending" ? 0 : grossPnlPct - costsPct;
+  const stopFill = stop + (isBuy ? -exitCost : exitCost);
+  const riskPct = Math.max(0, (isBuy ? entry - stopFill : stopFill - entry) / entry * 100) + costsPct;
+  const targetFill = target + (isBuy ? -exitCost : exitCost);
+  const rewardPct = Math.max(0, (isBuy ? targetFill - entry : entry - targetFill) / entry * 100) - costsPct;
+  const result = exit.result === "pending" ? "pending" : pnlPct > 0 ? "win" : "loss";
+  return {
+    result, hitResult: exit.result, entry, stop, target, exitPrice,
+    grossPnlPct, pnlPct, costsPct, rr: riskPct > 0 ? Math.max(0, rewardPct) / riskPct : 0,
+    equityPct: exit.result === "pending" || riskPct <= 0 ? 0 : pnlPct / riskPct * (Number(riskSizePct) || 1),
+  };
 }
 
 async function runBacktestImpl() {
@@ -180,29 +213,12 @@ async function runBacktestImpl() {
       const slice = rows.slice(0, i + 1);
       const analysis = analyze(slice, cfg);
       if (!analysis || analysis.direction === "WAIT") continue;
-      const rawEntry = analysis.entry || slice[i].close;
-      const spreadSlip = ((slippageConfig.spreadPips || 0) + (slippageConfig.slippagePips || 0)) * 0.0001;
-      const entry = analysis.direction === "BUY" ? rawEntry + spreadSlip : rawEntry - spreadSlip;
-      const stop = analysis.stop;
-      const target = analysis.target;
-      if (stop == null || target == null) continue;
-      const isBuy = analysis.direction === "BUY";
-      const riskPct = isBuy ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
-      const rewardPct = isBuy ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
-      const exit = resolveTradeExit(rows, i, isBuy, stop, target);
-      const result = exit.result;
-      const exitPrice = exit.exitPrice;
-      const pnlPct = result === "win" ? rewardPct : result === "loss" ? -riskPct : 0;
-      const fee = cfg.feePct || 0;
-      const riskSize = cfg.riskPerTradePct || 1;
-      const rr = riskPct > 0 ? rewardPct / riskPct : 0;
-      const rPnl = result === "win" ? rr : result === "loss" ? -1 : 0;
-      const feeCost = fee; // round-trip commission % of notional (~ risk%) -> convert: fee applied to risk amount
-      const equityPct = (rPnl * riskSize) - (result === "pending" ? 0 : feeCost);
+      const trade = evaluateBacktestTrade(rows, i, analysis, `${state.base}/${state.quote}`, cfg.feePct || 0, cfg.riskPerTradePct || 1);
+      if (!trade) continue;
       trades.push({
-        date: slice[i].date, direction: analysis.direction, entry, stop, target,
-        confidence: analysis.confidence, risk: analysis.risk, result, pnlPct, exitPrice,
-        rr: Number(rr.toFixed(2)), equityPct: Number(equityPct.toFixed(3)),
+        date: slice[i].date, direction: analysis.direction, ...trade,
+        confidence: analysis.confidence, risk: analysis.risk,
+        rr: Number(trade.rr.toFixed(2)), equityPct: Number(trade.equityPct.toFixed(3)),
       });
     }
     let equity = 10000;
@@ -228,6 +244,11 @@ async function runCompareBacktestImpl() {
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
     if (rows.length < 120) { backtest.comparing = false; render(); return; }
+    const costCfg = loadStrategyConfig();
+    const feeInput = document.getElementById("btFee");
+    const riskInput = document.getElementById("btRisk");
+    if (feeInput) costCfg.feePct = Math.max(0, Number(feeInput.value) || 0);
+    if (riskInput) costCfg.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
     const defaultCfg = { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 };
     const customCfg = loadStrategyConfig();
     function runCfg(cfg, useMl) {
@@ -259,33 +280,16 @@ async function runCompareBacktestImpl() {
         const slice = rows.slice(0, i + 1);
         const a = analyze(slice, cfg);
         if (!a || a.direction === "WAIT") continue;
-        const entryBar = a.entry || slice[i].close;
-        const stop = a.stop;
-        const target = a.target;
-        if (stop == null || target == null) continue;
         if (useMl && local.trained) {
           const pred = lpredict({ confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction });
           if (pred && pred.label === "loss") continue;
         }
-        const isBuy = a.direction === "BUY";
-        const riskPct = isBuy ? ((entryBar - stop) / entryBar) * 100 : ((stop - entryBar) / entryBar) * 100;
-        const rewardPct = isBuy ? ((target - entryBar) / entryBar) * 100 : ((entryBar - target) / entryBar) * 100;
-        let result = "pending";
-        let pnlPct = 0;
-        for (let j = i + 1; j < rows.length; j++) {
-          const bar = rows[j];
-          if (isBuy) {
-            if (bar.high >= target) { result = "win"; pnlPct = rewardPct; break; }
-            if (bar.low <= stop) { result = "loss"; pnlPct = -riskPct; break; }
-          } else {
-            if (bar.low <= target) { result = "win"; pnlPct = rewardPct; break; }
-            if (bar.high >= stop) { result = "loss"; pnlPct = -riskPct; break; }
-          }
-        }
-        if (result === "pending") pnlPct = 0;
+        const trade = evaluateBacktestTrade(rows, i, a, `${state.base}/${state.quote}`, costCfg.feePct || 0, costCfg.riskPerTradePct || 1);
+        if (!trade) continue;
+        const { result, pnlPct } = trade;
         const resolved = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
         if (useMl && (result === "win" || result === "loss")) ltrain(resolved);
-        trades.push({ result, pnlPct });
+        trades.push({ result, pnlPct, equityPct: trade.equityPct });
       }
       return trades;
     }
@@ -316,7 +320,7 @@ async function runCompareBacktestImpl() {
       trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
       return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
     }
-    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades), ml: metrics(mlTrades) };
+    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades), ml: metrics(mlTrades), feePct: costCfg.feePct || 0 };
   } catch {}
   backtest.comparing = false;
   render();
@@ -331,7 +335,7 @@ function renderComparison() {
   const dg = (a, b) => (parseFloat(a) <= parseFloat(b) ? "#3fb950" : "#e6edf3");
   const head = (t) => `<div style="color:var(--muted-3);font-weight:600;text-align:center;padding:4px 0">${t}</div>`;
   const row = (label, v1, c1, v2, c2, v3, c3) => `<div style="color:var(--muted);padding:4px 0">${label}</div><div style="text-align:center;padding:4px 0;color:${c1}">${v1}</div><div style="text-align:center;padding:4px 0;color:${c2}">${v2}</div><div style="text-align:center;padding:4px 0;color:${c3}">${v3}</div>`;
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3><span class="history-count">🤖 ML</span></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="padding:4px 12px;font-size:.58rem;color:var(--muted-3)">Green = better of Custom vs Custom + ML. ML column filters trades the self-trained model predicts as losses (walk-forward).</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem">${head("Metric")}${head("Default")}${head("Custom")}${head("Custom+ML")}${row("Signals", d.signals, "#e6edf3", c.signals, "#e6edf3", m.signals, "#e6edf3")}${row("Win Rate", d.winRate, g(d.winRate, c.winRate), c.winRate, g(c.winRate, m.winRate), m.winRate, g(m.winRate, c.winRate))}${row("Avg R:R", d.avgRR, g(d.avgRR, c.avgRR), c.avgRR, g(c.avgRR, m.avgRR), m.avgRR, g(m.avgRR, c.avgRR))}${row("Profit Factor", d.profitFactor, g(d.profitFactor, c.profitFactor), c.profitFactor, g(c.profitFactor, m.profitFactor), m.profitFactor, g(m.profitFactor, c.profitFactor))}${row("Max DD", d.maxDD, dg(d.maxDD, c.maxDD), c.maxDD, dg(c.maxDD, m.maxDD), m.maxDD, dg(m.maxDD, c.maxDD))}</div></div></section>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3><span class="history-count">🤖 ML</span></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="padding:4px 12px;font-size:.58rem;color:var(--muted-3)">Net of ${backtest.comparison.feePct}% round-trip fee, spread and slippage. Green = better of Custom vs Custom + ML. ML uses only earlier resolved outcomes.</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem">${head("Metric")}${head("Default")}${head("Custom")}${head("Custom+ML")}${row("Signals", d.signals, "#e6edf3", c.signals, "#e6edf3", m.signals, "#e6edf3")}${row("Win Rate", d.winRate, g(d.winRate, c.winRate), c.winRate, g(c.winRate, m.winRate), m.winRate, g(m.winRate, c.winRate))}${row("Avg R:R", d.avgRR, g(d.avgRR, c.avgRR), c.avgRR, g(c.avgRR, m.avgRR), m.avgRR, g(m.avgRR, c.avgRR))}${row("Profit Factor", d.profitFactor, g(d.profitFactor, c.profitFactor), c.profitFactor, g(c.profitFactor, m.profitFactor), m.profitFactor, g(m.profitFactor, c.profitFactor))}${row("Max DD", d.maxDD, dg(d.maxDD, c.maxDD), c.maxDD, dg(c.maxDD, m.maxDD), m.maxDD, dg(m.maxDD, c.maxDD))}</div></div></section>`;
 }
 
 function renderCorrelationMatrix() {
@@ -392,7 +396,7 @@ function renderMonteCarlo() {
 
 function renderWalkForward() {
   const r = wfState.results;
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="wfToggle"><div class="history-toggle-left"><h3>Walk-Forward Analysis</h3></div><span class="arrow">▾</span></button><div class="history-body" id="wfBody"><div style="padding:12px">${wfState.running ? `<div style="text-align:center;color:var(--muted);font-size:.72rem">Running walk-forward analysis... ${wfState.progress}</div>` : r ? (() => { const segRows = r.segments.map(s => `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:3px 0;border-bottom:1px solid var(--panel-inset)"><span style="width:24px;color:var(--muted-3)">#${s.segment}</span><span style="flex:1;color:var(--muted)">${s.testRange}</span><span style="width:28px;text-align:right;color:var(--text-strong)">${s.testTrades}</span><span style="width:36px;text-align:right;color:${s.testWR>=50?'var(--buy)':'var(--sell)'}">${s.testWR}%</span><span style="width:44px;text-align:right;color:${s.testPnL>=0?'var(--buy)':'var(--sell)'}">${s.testPnL>=0?'+':''}${s.testPnL.toFixed(1)}%</span></div>`).join(""); return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;margin-bottom:8px"><div><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${r.segments.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Segments</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.avgTestWR>=50?'var(--buy)':'var(--sell)'}">${r.avgTestWR}%</div><div style="font-size:.6rem;color:var(--muted-3)">Avg Test WR</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.totalTestPnL>=0?'var(--buy)':'var(--sell)'}">${r.totalTestPnL>=0?'+':''}${r.totalTestPnL.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Total Test P/L</div></div></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px">${segRows}</div>` })() : '<div style="text-align:center;color:var(--muted-3);font-size:.72rem">Splits data into rolling windows. Optimizes on training data, validates on unseen test data.</div>'}</div>${!wfState.running ? `<div style="padding:0 12px 12px"><button id="runWF" style="width:100%;padding:8px;background:var(--border);color:var(--muted);border:1px solid var(--border-strong);border-radius:8px;font-size:.75rem;cursor:pointer">Run Walk-Forward Analysis</button></div>` : ''}</div></section>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="wfToggle"><div class="history-toggle-left"><h3>Walk-Forward Analysis</h3></div><span class="arrow">▾</span></button><div class="history-body" id="wfBody"><div style="padding:12px">${wfState.running ? `<div style="text-align:center;color:var(--muted);font-size:.72rem">Running walk-forward analysis... ${wfState.progress}</div>` : r ? (() => { const segRows = r.segments.map(s => `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:3px 0;border-bottom:1px solid var(--panel-inset)"><span style="width:24px;color:var(--muted-3)">#${s.segment}</span><span style="flex:1;color:var(--muted)">${s.testRange}</span><span style="width:28px;text-align:right;color:var(--text-strong)">${s.testTrades}</span><span style="width:36px;text-align:right;color:${s.testWR>=50?'var(--buy)':'var(--sell)'}">${s.testWR}%</span><span style="width:44px;text-align:right;color:${s.testPnL>=0?'var(--buy)':'var(--sell)'}">${s.testPnL>=0?'+':''}${s.testPnL.toFixed(1)}%</span></div>`).join(""); return `<div style="font-size:.6rem;color:var(--muted-3);margin-bottom:6px">Unseen test windows · net of ${r.feePct}% round-trip fee, spread and slippage</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;text-align:center;margin-bottom:8px"><div><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${r.segments.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Segments</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.avgTestWR>=50?'var(--buy)':'var(--sell)'}">${r.avgTestWR}%</div><div style="font-size:.6rem;color:var(--muted-3)">OOS Win Rate (${r.totalTestTrades} trades)</div></div><div><div style="font-size:1rem;font-weight:700;color:${r.totalTestPnL>=0?'var(--buy)':'var(--sell)'}">${r.totalTestPnL>=0?'+':''}${r.totalTestPnL.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Net OOS P/L</div></div></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px">${segRows}</div>` })() : '<div style="text-align:center;color:var(--muted-3);font-size:.72rem">Optimizes on each training window, then measures net results on the following unseen window. Trade costs are included.</div>'}</div>${!wfState.running ? `<div style="padding:0 12px 12px"><button id="runWF" style="width:100%;padding:8px;background:var(--border);color:var(--muted);border:1px solid var(--border-strong);border-radius:8px;font-size:.75rem;cursor:pointer">Run Walk-Forward Analysis</button></div>` : ''}</div></section>`;
 }
 
 function renderStrategyOptimizer() {
@@ -414,6 +418,10 @@ async function runMultiPairBacktest() {
   render();
   const results = {};
   const cfg = loadStrategyConfig();
+  const feeInput = document.getElementById("btFee");
+  const riskInput = document.getElementById("btRisk");
+  if (feeInput) cfg.feePct = Math.max(0, Number(feeInput.value) || 0);
+  if (riskInput) cfg.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
   for (let i = 0; i < selected.length; i++) {
     const pair = selected[i];
     backtest.multiProgress = `${i + 1}/${selected.length} (${pair})`;
@@ -427,27 +435,8 @@ async function runMultiPairBacktest() {
         const slice = rows.slice(0, j + 1);
         const analysis = analyze(slice, cfg, pair);
         if (!analysis || analysis.direction === "WAIT") continue;
-        const entry = analysis.entry || slice[j].close;
-        const stop = analysis.stop;
-        const target = analysis.target;
-        if (stop == null || target == null) continue;
-        const isBuy = analysis.direction === "BUY";
-        const riskPct = isBuy ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
-        const rewardPct = isBuy ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
-        let result = "pending";
-        let pnlPct = 0;
-        for (let k = j + 1; k < rows.length; k++) {
-          const bar = rows[k];
-          if (isBuy) {
-            if (bar.high >= target) { result = "win"; pnlPct = rewardPct; break; }
-            if (bar.low <= stop) { result = "loss"; pnlPct = -riskPct; break; }
-          } else {
-            if (bar.low <= target) { result = "win"; pnlPct = rewardPct; break; }
-            if (bar.high >= stop) { result = "loss"; pnlPct = -riskPct; break; }
-          }
-        }
-        if (result === "pending") pnlPct = 0;
-        trades.push({ result, pnlPct });
+        const trade = evaluateBacktestTrade(rows, j, analysis, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
+        if (trade) trades.push(trade);
       }
       const wins = trades.filter(t => t.result === "win").length;
       const losses = trades.filter(t => t.result === "loss").length;
