@@ -107,6 +107,29 @@ assert(trained === 2, "mlBatchTrain trains 2 resolved trades, got " + trained);
 // With only 2 samples (< minSamples 8), predictions still return null
 assert(ctx.mlPredict(featurize({ confidence: 80, buyScore: 70, sellScore: 30, volatilityPct: 1.5, direction: "BUY" })) === null, "mlPredict null while below minSamples");
 
+const welford = vm.runInContext(`(() => {
+  const mean = Array(5).fill(0), variance = Array(5).fill(0); let n = 0;
+  for (const x of [1, 3, 5]) n = _updateClass(mean, variance, n, Array(5).fill(x));
+  return { n, mean: mean[0], variance: variance[0] };
+})()`, ctx);
+assert(welford.n === 3 && Math.abs(welford.mean - 3) < 1e-12, "ML running mean uses the correct sample count");
+assert(Math.abs(welford.variance - (8 / 3)) < 1e-12, "ML running variance matches population variance");
+
+const savedMl = JSON.parse(ls.get("mlModel"));
+assert(ctx.mlLoad() === false && vm.runInContext("mlModel.n", ctx) === 2, "loading a compatible saved model does not request retraining");
+ls.set("mlModel", JSON.stringify({ ...savedMl, version: 1, n: 99 }));
+assert(ctx.mlLoad() === true && vm.runInContext("mlModel.n", ctx) === 0, "legacy model statistics are discarded for a one-time rebuild");
+assert(ctx.mlBatchTrain(hist) === 2 && vm.runInContext("mlModel.n", ctx) === 2, "legacy rebuild learns only the resolved history once");
+ctx.mlBatchTrain(hist);
+assert(vm.runInContext("mlModel.n === 2 && mlModel.nWin === 1 && mlModel.nLoss === 1", ctx), "rebuilding from history is deterministic and does not accumulate duplicates");
+
+const savedPrediction = ctx.sanitizeHistoryEntry({
+  id: 11, timestamp: new Date().toISOString(), pair: "EUR/USD", direction: "BUY",
+  confidence: 80, buyScore: 70, sellScore: 30, volatilityPct: 1.5,
+  mlPrediction: { win: 0.63, label: "win", n: 20 }, result: "pending",
+});
+assert(savedPrediction && savedPrediction.mlPrediction.win === 0.63 && savedPrediction.mlPrediction.n === 20, "signal history preserves the prediction made at entry");
+
 // ================= ANALYZE TESTS (synthetic data, no network) =================
 // Generate deterministic synthetic OHLCV rows
 function makeRows(count) {
