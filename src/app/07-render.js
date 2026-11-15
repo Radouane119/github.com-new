@@ -390,9 +390,9 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
           </div>
           <div class="history-scroll" id="historyScroll">
             ${autoScan.history.length === 0 ? '<div class="history-empty">No signals yet. Enable auto-scan or refresh to generate signals.</div>' : ""}
-            ${autoScan.history.map((entry, idx) => renderHistoryEntry(entry, idx)).join("")}
+            ${autoScan.history.slice(0, autoScan.historyVisibleCount).map((entry, idx) => renderHistoryEntry(entry, idx)).join("")}
           </div>
-          ${autoScan.history.length > 0 ? `<div class="history-actions"><button id="exportCSV">Export CSV</button><button id="exportJSON">Export JSON</button><button id="clearHistory">Clear history</button></div>` : ""}
+          ${autoScan.history.length > 0 ? `<div class="history-actions"><span style="font-size:.68rem;color:var(--muted-3)">Showing ${Math.min(autoScan.history.length, autoScan.historyVisibleCount)} of ${autoScan.history.length} saved signals</span>${autoScan.history.length > autoScan.historyVisibleCount ? `<button id="showMoreHistory">Show older signals (${autoScan.history.length - autoScan.historyVisibleCount} remaining)</button>` : ""}<button id="exportCSV">Export CSV</button><button id="exportJSON">Export JSON</button><button id="clearHistory">Clear history</button></div>` : ""}
         </div>
       </section>
     </main>
@@ -617,6 +617,7 @@ function importAllData(json) {
     const nextScanPairs = Array.isArray(data.scanPairs) ? sanitizePairList(data.scanPairs) : null;
 
     autoScan.history = nextHistory;
+    autoScan.historyVisibleCount = 50;
     const importedTotal = Math.floor(Number(data.totalGenerated));
     autoScan.totalGenerated = Math.max(nextHistory.length, Number.isFinite(importedTotal) ? importedTotal : 0);
     positions = nextPositions;
@@ -651,6 +652,7 @@ function exportCSV() {
 function clearSignalHistory() {
   autoScan.history = [];
   autoScan.totalGenerated = 0;
+  autoScan.historyVisibleCount = 50;
   saveHistory();
   render();
 }

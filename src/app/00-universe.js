@@ -132,7 +132,8 @@ const autoScan = {
   enabled: false,
   intervalId: null,
   history: [],
-  maxEntries: 50,
+  maxEntries: 1000,
+  historyVisibleCount: 50,
   // Lifetime total of signals ever recorded, so the badge keeps counting after
   // the retained history is capped (the log itself only keeps maxEntries rows).
   totalGenerated: 0,

@@ -458,6 +458,11 @@ function setupEvents() {
     if (target.id === "exportCSV") {
       exportCSV();
     }
+    if (target.id === "showMoreHistory") {
+      autoScan.historyVisibleCount = Math.min(autoScan.maxEntries, autoScan.historyVisibleCount + 50);
+      render();
+      return;
+    }
     if (target.id === "exportJSON") {
       exportJSON();
     }
