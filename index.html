@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-0r16kxgxhsT8knLFU/xv7H2vFJy6zyhOGREGBP3VXaY='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-I44n0bAXgPwNvpVvSsKoOMnrTJh71Yvl25Wd06efZ5s='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -3080,12 +3080,16 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
           if (t && t.result !== "pending") testTrades.push(t);
         }
         const tw = testTrades.filter((t) => t.result === "win").length;
-        wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round(tw / testTrades.length * 100) : 0, testTrades: testTrades.length, testWins: tw, testPnL: testTrades.reduce((s, t) => s + t.equityPct, 0) });
+        let segmentEquity = 100;
+        for (const t of testTrades) segmentEquity *= 1 + t.equityPct / 100;
+        wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round(tw / testTrades.length * 100) : 0, testTrades: testTrades.length, testWins: tw, testReturn: segmentEquity - 100 });
       }
       const totalTestTrades = wfResults.reduce((s, r) => s + r.testTrades, 0);
       const totalWins = wfResults.reduce((s, r) => s + r.testWins, 0);
       const avgTestWR = totalTestTrades > 0 ? Math.round(totalWins / totalTestTrades * 100) : 0;
-      const totalTestPnL = wfResults.reduce((s, r) => s + r.testPnL, 0);
+      let oosEquity = 100;
+      for (const segment of wfResults) oosEquity *= 1 + segment.testReturn / 100;
+      const totalTestPnL = oosEquity - 100;
       wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0 };
     } catch {
     }
@@ -5065,9 +5069,9 @@ This will overwrite your current strategy config and scan pairs.`)) return;
       });
       const pairRows = pairs.map((p) => {
         const d = mr[p];
-        return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? "var(--buy)" : "var(--sell)"}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span></div>`;
+        return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? "var(--buy)" : "var(--sell)"}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:${String(d.netReturn || "0").startsWith("-") ? "var(--sell)" : "var(--buy)"}">${d.netReturn || "0%"}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span></div>`;
       }).join("");
-      multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Total Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? "var(--buy)" : "var(--sell)"}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Sigs</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div>`;
+      multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? "var(--buy)" : "var(--sell)"}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:390px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div></div>`;
     }
     if (!singleResult && !multiResult) return "";
     const mpPairs = allScanPairs;
@@ -5118,6 +5122,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     return {
       result,
       hitResult: exit.result,
+      hitIndex: exit.hitIndex,
       entry,
       stop,
       target,
@@ -5228,7 +5233,16 @@ This will overwrite your current strategy config and scan pairs.`)) return;
           return { win: eW / (eW + eL), label: eW / (eW + eL) >= 0.5 ? "win" : "loss" };
         }
         const trades = [];
+        const pendingOutcomes = [];
         for (let i = 100; i < rows.length; i++) {
+          if (useMl) {
+            for (let k = pendingOutcomes.length - 1; k >= 0; k--) {
+              if (pendingOutcomes[k].hitIndex < i) {
+                ltrain(pendingOutcomes[k].features);
+                pendingOutcomes.splice(k, 1);
+              }
+            }
+          }
           const slice = rows.slice(0, i + 1);
           const a = analyze(slice, cfg);
           if (!a || a.direction === "WAIT") continue;
@@ -5239,8 +5253,9 @@ This will overwrite your current strategy config and scan pairs.`)) return;
           const trade = evaluateBacktestTrade(rows, i, a, `${state.base}/${state.quote}`, costCfg.feePct || 0, costCfg.riskPerTradePct || 1);
           if (!trade) continue;
           const { result, pnlPct } = trade;
-          const resolved = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
-          if (useMl && (result === "win" || result === "loss")) ltrain(resolved);
+          if (result === "pending") continue;
+          const features = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
+          if (useMl) pendingOutcomes.push({ features, hitIndex: trade.hitIndex });
           trades.push({ result, pnlPct, equityPct: trade.equityPct });
         }
         return trades;
@@ -5253,16 +5268,16 @@ This will overwrite your current strategy config and scan pairs.`)) return;
         const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length) : 0;
         const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
         const pf = losses.length > 0 ? (Math.abs(wins.reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : wins.length > 0 ? "∞" : "0";
-        let eq = 0;
-        let peak = -Infinity;
+        let eq = 100;
+        let peak = 100;
         let maxDD = 0;
         trades.forEach((t) => {
-          eq += t.pnlPct;
+          eq *= 1 + t.equityPct / 100;
           if (eq > peak) peak = eq;
-          const dd = peak - eq;
+          const dd = peak > 0 ? (peak - eq) / peak * 100 : 0;
           if (dd > maxDD) maxDD = dd;
         });
-        return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+        return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
       };
       var runCfg = runCfg2, metrics = metrics2;
       const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1e3);
@@ -5446,7 +5461,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
           const analysis = analyze(slice, cfg, pair);
           if (!analysis || analysis.direction === "WAIT") continue;
           const trade = evaluateBacktestTrade(rows, j, analysis, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
-          if (trade) trades.push(trade);
+          if (trade && trade.result !== "pending") trades.push(trade);
         }
         const wins = trades.filter((t) => t.result === "win").length;
         const losses = trades.filter((t) => t.result === "loss").length;
@@ -5456,14 +5471,14 @@ This will overwrite your current strategy config and scan pairs.`)) return;
         const avgLoss = losses > 0 ? Math.abs(trades.filter((t) => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
         const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
         const pf = losses > 0 ? (Math.abs(trades.filter((t) => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter((t) => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : wins > 0 ? "∞" : "0";
-        let eq = 0, peak = -Infinity, maxDD = 0;
+        let eq = 100, peak = 100, maxDD = 0;
         trades.forEach((t) => {
-          eq += t.pnlPct;
+          eq *= 1 + t.equityPct / 100;
           if (eq > peak) peak = eq;
-          const dd = peak - eq;
+          const dd = peak > 0 ? (peak - eq) / peak * 100 : 0;
           if (dd > maxDD) maxDD = dd;
         });
-        results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+        results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
       } catch {
         results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" };
       }

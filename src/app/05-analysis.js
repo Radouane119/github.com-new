@@ -309,12 +309,16 @@ async function runWalkForward() {
         if (t && t.result !== "pending") testTrades.push(t);
       }
       const tw = testTrades.filter(t => t.result === "win").length;
-      wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round((tw / testTrades.length) * 100) : 0, testTrades: testTrades.length, testWins: tw, testPnL: testTrades.reduce((s, t) => s + t.equityPct, 0) });
+      let segmentEquity = 100;
+      for (const t of testTrades) segmentEquity *= 1 + t.equityPct / 100;
+      wfResults.push({ segment: seg + 1, trainRange: `${trainData[0]?.date}→${trainData.at(-1)?.date}`, testRange: `${testData[0]?.date}→${testData.at(-1)?.date}`, trainWR: Math.round(bestTrainWR), testWR: testTrades.length > 0 ? Math.round((tw / testTrades.length) * 100) : 0, testTrades: testTrades.length, testWins: tw, testReturn: segmentEquity - 100 });
     }
     const totalTestTrades = wfResults.reduce((s, r) => s + r.testTrades, 0);
     const totalWins = wfResults.reduce((s, r) => s + r.testWins, 0);
     const avgTestWR = totalTestTrades > 0 ? Math.round(totalWins / totalTestTrades * 100) : 0;
-    const totalTestPnL = wfResults.reduce((s, r) => s + r.testPnL, 0);
+    let oosEquity = 100;
+    for (const segment of wfResults) oosEquity *= 1 + segment.testReturn / 100;
+    const totalTestPnL = oosEquity - 100;
     wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0 };
   } catch {}
   wfState.running = false;

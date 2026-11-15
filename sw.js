@@ -1,4 +1,4 @@
-const CACHE = "signals-00485fc8179f";
+const CACHE = "signals-3171bb223b4f";
 const ASSETS = ["./","./index.html","./manifest.json","./icon.svg","./icons/icon-192.png","./icons/icon-512.png","./icons/icon-maskable-512.png","./icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {

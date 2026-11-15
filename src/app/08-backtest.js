@@ -131,8 +131,8 @@ function renderBacktest() {
     const overallWr = totalSignals > 0 ? Math.round((allWins / totalSignals) * 100) : 0;
     let bestPair = "", bestWr = -1, worstPair = "", worstWr = 101;
     pairs.forEach(p => { if (mr[p].signals > 0 && mr[p].winRate > bestWr) { bestWr = mr[p].winRate; bestPair = p; } if (mr[p].signals > 0 && mr[p].winRate < worstWr) { worstWr = mr[p].winRate; worstPair = p; } });
-    const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? 'var(--buy)' : 'var(--sell)'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span></div>`; }).join("");
-    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Total Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Sigs</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div>`;
+    const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? 'var(--buy)' : 'var(--sell)'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:${String(d.netReturn || "0").startsWith("-") ? 'var(--sell)' : 'var(--buy)'}">${d.netReturn || "0%"}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span></div>`; }).join("");
+    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:390px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div></div>`;
   }
   if (!singleResult && !multiResult) return "";
   const mpPairs = allScanPairs;
@@ -184,7 +184,7 @@ function evaluateBacktestTrade(rows, index, analysis, pair, feePct, riskSizePct,
   const rewardPct = Math.max(0, (isBuy ? targetFill - entry : entry - targetFill) / entry * 100) - costsPct;
   const result = exit.result === "pending" ? "pending" : pnlPct > 0 ? "win" : "loss";
   return {
-    result, hitResult: exit.result, entry, stop, target, exitPrice,
+    result, hitResult: exit.result, hitIndex: exit.hitIndex, entry, stop, target, exitPrice,
     grossPnlPct, pnlPct, costsPct, rr: riskPct > 0 ? Math.max(0, rewardPct) / riskPct : 0,
     equityPct: exit.result === "pending" || riskPct <= 0 ? 0 : pnlPct / riskPct * (Number(riskSizePct) || 1),
   };
@@ -276,7 +276,16 @@ async function runCompareBacktestImpl() {
         return { win: eW / (eW + eL), label: (eW / (eW + eL)) >= 0.5 ? "win" : "loss" };
       }
       const trades = [];
+      const pendingOutcomes = [];
       for (let i = 100; i < rows.length; i++) {
+        if (useMl) {
+          for (let k = pendingOutcomes.length - 1; k >= 0; k--) {
+            if (pendingOutcomes[k].hitIndex < i) {
+              ltrain(pendingOutcomes[k].features);
+              pendingOutcomes.splice(k, 1);
+            }
+          }
+        }
         const slice = rows.slice(0, i + 1);
         const a = analyze(slice, cfg);
         if (!a || a.direction === "WAIT") continue;
@@ -287,8 +296,9 @@ async function runCompareBacktestImpl() {
         const trade = evaluateBacktestTrade(rows, i, a, `${state.base}/${state.quote}`, costCfg.feePct || 0, costCfg.riskPerTradePct || 1);
         if (!trade) continue;
         const { result, pnlPct } = trade;
-        const resolved = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
-        if (useMl && (result === "win" || result === "loss")) ltrain(resolved);
+        if (result === "pending") continue;
+        const features = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
+        if (useMl) pendingOutcomes.push({ features, hitIndex: trade.hitIndex });
         trades.push({ result, pnlPct, equityPct: trade.equityPct });
       }
       return trades;
@@ -314,11 +324,11 @@ async function runCompareBacktestImpl() {
       const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length) : 0;
       const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
       const pf = losses.length > 0 ? (Math.abs(wins.reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(losses.reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins.length > 0 ? "∞" : "0");
-      let eq = 0;
-      let peak = -Infinity;
+      let eq = 100;
+      let peak = 100;
       let maxDD = 0;
-      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
-      return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+      trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
+      return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
     }
     backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades), ml: metrics(mlTrades), feePct: costCfg.feePct || 0 };
   } catch {}
@@ -436,7 +446,7 @@ async function runMultiPairBacktest() {
         const analysis = analyze(slice, cfg, pair);
         if (!analysis || analysis.direction === "WAIT") continue;
         const trade = evaluateBacktestTrade(rows, j, analysis, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
-        if (trade) trades.push(trade);
+        if (trade && trade.result !== "pending") trades.push(trade);
       }
       const wins = trades.filter(t => t.result === "win").length;
       const losses = trades.filter(t => t.result === "loss").length;
@@ -446,9 +456,9 @@ async function runMultiPairBacktest() {
       const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
       const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
       const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
-      let eq = 0, peak = -Infinity, maxDD = 0;
-      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
-      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%" };
+      let eq = 100, peak = 100, maxDD = 0;
+      trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
+      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
     } catch {
       results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" };
     }
