@@ -56,6 +56,7 @@ function sanitizeHistoryEntry(raw) {
     mlPrediction: isPlainObject(raw.mlPrediction) && Number.isFinite(raw.mlPrediction.win)
       ? { win: clampNum(raw.mlPrediction.win, 0, 1, 0.5), label: raw.mlPrediction.label === "win" ? "win" : "loss", n: Math.max(0, Math.floor(numOrNull(raw.mlPrediction.n) ?? 0)) }
       : null,
+    outcomeType: ["target", "stop", "expiry"].includes(raw.outcomeType) ? raw.outcomeType : null,
     reasons,
     result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending",
   };
@@ -215,6 +216,7 @@ function mlLoad() {
     mlModel.nWin = 0; mlModel.nLoss = 0;
   }
   try { const s = localStorage.getItem("mlStats"); if (s) Object.assign(mlStats, JSON.parse(s)); } catch {}
+  for (const key of ["entryEvaluated", "entryCorrect"]) if (!Number.isFinite(mlStats[key]) || mlStats[key] < 0) mlStats[key] = 0;
   return !loaded;
 }
 function mlSave() {
@@ -224,7 +226,7 @@ function mlSave() {
 function mlReset() {
   mlModel.version = 2; mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
   mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0]; mlModel.nWin = 0; mlModel.nLoss = 0;
-  mlStats = { filtered: 0, filteredCorrect: 0 };
+  mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
   mlSave();
 }
 function mlFeaturize(e) {
@@ -327,7 +329,7 @@ function mlFilterWarn(analysis) {
   return mlFilterEnabled && analysis && analysis.ml && analysis.ml.label === "loss";
 }
 
-let mlStats = { filtered: 0, filteredCorrect: 0 };
+let mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
 
 function mlSizingFactor(analysis, fallbackWR) {
   if (!mlModel.trained || !analysis || !analysis.ml || analysis.ml.win == null) return 1;
@@ -341,17 +343,24 @@ let paperAutotrade = false;
 
 function renderMlBadge(analysis) {
   const trained = mlModel.trained;
-  const samplePct = Math.min(100, Math.round((mlModel.n / mlModel.minSamples) * 100));
-  const bar = `<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:4px"><div style="width:${trained ? 100 : samplePct}%;height:100%;background:${trained ? 'var(--wait)' : 'var(--wait-dim)'};border-radius:3px"></div></div>`;
+  const totalSamples = mlModel.nWin + mlModel.nLoss;
+  const reliableSampleFloor = 30;
+  const classFloor = 10;
+  const reliabilityReady = trained && totalSamples >= reliableSampleFloor && mlModel.nWin >= classFloor && mlModel.nLoss >= classFloor;
+  const balancedSamples = Math.min(mlModel.nWin, mlModel.nLoss) * 2;
+  const samplePct = Math.min(100, Math.round((balancedSamples / (classFloor * 2)) * 100));
+  const bar = `<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:4px"><div style="width:${samplePct}%;height:100%;background:${reliabilityReady ? 'var(--buy)' : 'var(--wait-dim)'};border-radius:3px"></div></div>`;
+  const hitRate = mlStats.entryEvaluated > 0 ? Math.round(mlStats.entryCorrect / mlStats.entryEvaluated * 100) : null;
+  const sampleStatus = `${totalSamples} resolved · ${mlModel.nWin} wins / ${mlModel.nLoss} losses`;
+  const reliabilityNote = reliabilityReady ? "Sample balance meets the reliability guideline" : `Low sample warning · aim for ${reliableSampleFloor} resolved trades and at least ${classFloor} per outcome`;
   let value;
   if (!trained) {
-    value = `<div style="text-align:center">training ${mlModel.n}/${mlModel.minSamples}${bar}<div style="font-size:.55rem;color:var(--muted);margin-top:2px">collect ${mlModel.minSamples - mlModel.n} more resolved trades</div></div>`;
+    value = `<div style="text-align:center"><strong style="color:var(--warn-orange)">Not reliable yet</strong>${bar}<div style="font-size:.55rem;color:var(--muted);margin-top:2px">${sampleStatus} · ${reliabilityNote}</div><div style="font-size:.55rem;color:var(--muted-3)">Entry-time hit rate (target/stop): ${hitRate == null ? "not measured yet" : `${hitRate}% across ${mlStats.entryEvaluated} resolved entries`}</div></div>`;
   } else if (!analysis || !analysis.ml) {
-    value = `<div style="text-align:center"><strong>${mlModel.n} samples</strong><button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div>`;
+    value = `<div style="text-align:center"><strong>${sampleStatus}</strong>${bar}<div style="font-size:.55rem;color:${reliabilityReady ? 'var(--muted)' : 'var(--warn-orange)'};margin-top:2px">${reliabilityNote}</div><div style="font-size:.55rem;color:var(--muted);margin-top:2px">Entry-time hit rate (target/stop): ${hitRate == null ? "not measured yet" : `${hitRate}% across ${mlStats.entryEvaluated} resolved entries`}</div><button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div>`;
   } else {
     const ml = analysis.ml;
-    const hit = mlStats.filtered + mlStats.filteredCorrect > 0 ? Math.round((mlStats.filteredCorrect / Math.max(1, mlStats.filtered)) * 100) : null;
-    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? 'var(--buy)' : mlFilterEnabled ? 'var(--warn-2)' : 'var(--text)'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? 'var(--warn-2)' : 'var(--buy)'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${ml.n} samples ${hit != null ? `· ${hit}% entry hit` : ""}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
+    value = `<div style="text-align:center"><strong style="color:${ml.label === 'win' ? 'var(--buy)' : mlFilterEnabled ? 'var(--warn-2)' : 'var(--text)'}">${(ml.win * 100).toFixed(0)}% ${ml.label === "win" ? "✅" : "⚠️"}</strong><div style="font-size:.55rem;color:${reliabilityReady ? 'var(--muted)' : 'var(--warn-orange)'};margin-top:2px">${reliabilityNote}</div><div style="font-size:.55rem;color:var(--muted);margin-top:2px">${mlFilterEnabled ? `<span style="color:${ml.label === 'loss' ? 'var(--warn-2)' : 'var(--buy)'}">${ml.label === 'loss' ? 'filtered 🚫' : 'pass ✓'}</span> · ` : ""}${sampleStatus} · target/stop entry hit rate: ${hitRate == null ? "not measured" : `${hitRate}% (${mlStats.entryEvaluated})`}<button data-action="ml-reset" style="margin-left:6px;background:none;border:none;color:var(--sell);cursor:pointer;font-size:.6rem" title="Reset ML model">reset</button></div></div>`;
   }
   return { label: "ML win prob", value };
 }
@@ -360,7 +369,7 @@ const paperState = { balance: 10000, startingBalance: 10000, trades: [], openPos
 const replayState = { active: false, pair: "", rows: [], currentBar: 100, trades: [], speed: 500, intervalId: null, direction: null, confidence: 0 };
 const mcState = { results: null, running: false, progress: "" };
 const wfState = { results: null, running: false, progress: "" };
-const optimizerState = { results: null, running: false, progress: "" };
+const optimizerState = { results: null, running: false, progress: "", selectedCfg: null, validation: null };
 const scheduleState = { enabled: false, intervalId: null, lastSent: null };
 const corrData = { matrix: null, pairs: [], running: false };
 

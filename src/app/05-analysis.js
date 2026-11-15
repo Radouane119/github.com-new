@@ -252,8 +252,9 @@ function runMonteCarlo(trades, iterations) {
   };
 }
 
-async function runWalkForward() {
+async function runWalkForward(candidateCfg = null) {
   if (wfState.running) return;
+  if (candidateCfg) optimizerState.validation = null;
   wfState.running = true;
   wfState.results = null;
   wfState.progress = "";
@@ -285,11 +286,11 @@ async function runWalkForward() {
       if (testEnd > rows.length) break;
       const trainData = rows.slice(trainStart, trainEnd);
       const testData = rows.slice(trainEnd, testEnd);
-      let bestCfg = loadStrategyConfig();
+      let bestCfg = { ...loadStrategyConfig(), ...(candidateCfg || {}) };
       let bestScore = -Infinity;
       let bestTrainWR = 0;
-      for (const overrides of paramGrid) {
-        const cfg = { ...loadStrategyConfig(), ...overrides };
+      for (const overrides of (candidateCfg ? [candidateCfg] : paramGrid)) {
+        const cfg = { ...loadStrategyConfig(), ...(candidateCfg || {}), ...overrides };
         const trades = [];
         for (let i = trainStart + 80; i < trainEnd; i++) {
           const a = analyze(rows.slice(trainStart, i + 1), cfg);
@@ -319,7 +320,23 @@ async function runWalkForward() {
     let oosEquity = 100;
     for (const segment of wfResults) oosEquity *= 1 + segment.testReturn / 100;
     const totalTestPnL = oosEquity - 100;
-    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0 };
+    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0, candidate: candidateCfg ? { ...candidateCfg } : null };
+    if (candidateCfg) {
+      optimizerState.validation = {
+        cfg: { ...candidateCfg },
+        passed: totalTestTrades >= 10 && totalTestPnL > 0,
+        trades: totalTestTrades,
+        returnPct: totalTestPnL,
+        context: {
+          pair,
+          feePct: costs.feePct || 0,
+          riskPerTradePct: costs.riskPerTradePct || 1,
+          spreadPips: slippageConfig.spreadPips || 0,
+          slippagePips: slippageConfig.slippagePips || 0,
+          baseCfg: loadStrategyConfig(),
+        },
+      };
+    }
   } catch {}
   wfState.running = false;
   render();
@@ -330,10 +347,18 @@ async function runStrategyOptimizer() {
   optimizerState.running = true;
   optimizerState.results = null;
   optimizerState.progress = "";
+  optimizerState.validation = null;
+  optimizerState.selectedCfg = null;
   render();
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 800);
     if (rows.length < 200) { optimizerState.running = false; render(); return; }
+    const cfgCosts = loadStrategyConfig();
+    const feeInput = document.getElementById("btFee");
+    const riskInput = document.getElementById("btRisk");
+    if (feeInput) cfgCosts.feePct = Math.max(0, Number(feeInput.value) || 0);
+    if (riskInput) cfgCosts.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
+    const pair = `${state.base}/${state.quote}`;
     const thresholds = [4, 5, 6];
     const rrs = [1.5, 2.0, 2.5, 3.0];
     const volMults = [1.1, 1.3, 1.5];
@@ -344,21 +369,13 @@ async function runStrategyOptimizer() {
     for (let i = 0; i < total; i++) {
       optimizerState.progress = `${i + 1}/${total}`;
       if (i % 5 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
-      const cfg = combinations[i];
+      const cfg = { ...cfgCosts, ...combinations[i] };
       const trades = [];
-      for (let j = 80; j < rows.length; j++) {
+      for (let j = 100; j < rows.length; j++) {
         const a = analyze(rows.slice(0, j + 1), cfg);
         if (!a || a.direction === "WAIT") continue;
-        const entry = a.entry;
-        const isBuy = a.direction === "BUY";
-        const riskPctVal = isBuy ? ((entry - a.stop) / entry) * 100 : ((a.stop - entry) / entry) * 100;
-        const rewardPct = isBuy ? ((a.target - entry) / entry) * 100 : ((entry - a.target) / entry) * 100;
-        let result = "pending", pnlPct = 0;
-        for (let k = j + 1; k < rows.length; k++) {
-          if (isBuy) { if (rows[k].high >= a.target) { result = "win"; pnlPct = rewardPct; break; } if (rows[k].low <= a.stop) { result = "loss"; pnlPct = -riskPctVal; break; } }
-          else { if (rows[k].low <= a.target) { result = "win"; pnlPct = rewardPct; break; } if (rows[k].high >= a.stop) { result = "loss"; pnlPct = -riskPctVal; break; } }
-        }
-        if (result !== "pending") trades.push({ result, pnlPct });
+        const trade = evaluateBacktestTrade(rows, j, a, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
+        if (trade && trade.result !== "pending") trades.push(trade);
       }
       const wins = trades.filter(t => t.result === "win").length;
       const losses = trades.filter(t => t.result === "loss").length;
@@ -367,9 +384,9 @@ async function runStrategyOptimizer() {
       const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
       const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
       const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
-      let eq = 0, peak = -Infinity, maxDD = 0;
-      trades.forEach(t => { eq += t.pnlPct; if (eq > peak) peak = eq; const dd = peak - eq; if (dd > maxDD) maxDD = dd; });
-      results.push({ cfg: { threshold: cfg.threshold, riskRewardRatio: cfg.riskRewardRatio, volumeMultiplier: cfg.volumeMultiplier }, signals: totalT, winRate: wr, pnl: eq, maxDD: maxDD.toFixed(1) + "%", pf });
+      let eq = 100, peak = 100, maxDD = 0;
+      trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
+      results.push({ cfg: { threshold: cfg.threshold, riskRewardRatio: cfg.riskRewardRatio, volumeMultiplier: cfg.volumeMultiplier }, signals: totalT, winRate: wr, pnl: eq - 100, maxDD: maxDD.toFixed(1) + "%", pf });
     }
     results.sort((a, b) => b.pnl - a.pnl);
     optimizerState.results = results;

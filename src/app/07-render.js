@@ -217,7 +217,7 @@ function render() {
           <button class="icon-button" id="screenshotToggle" title="Analyze chart screenshot" aria-label="Analyze chart screenshot">📷</button>
           <button class="icon-button" id="soundToggle" title="Toggle sound (M)" aria-label="${soundEnabled ? "Mute sound" : "Enable sound"}" aria-pressed="${soundEnabled}">${soundEnabled ? "🔊" : "🔇"}</button>
           <button class="icon-button" id="themeToggle" title="Toggle theme (T)" aria-label="${darkTheme ? "Switch to light theme" : "Switch to dark theme"}">${darkTheme ? "🌙" : "☀️"}</button>
-          <button class="scan-button" id="mlToggle" data-action="toggle-overlay" data-overlay="ml" title="AI/ML win-probability filter" aria-pressed="${mlFilterEnabled}" style="${mlFilterEnabled ? 'background:var(--wait);color:var(--on-accent)' : ''}">🤖 ${mlFilterEnabled ? "ML ON" : "ML OFF"}${mlModel.trained ? "" : " ·t=" + mlModel.n + ""}</button>
+          <button class="scan-button" id="mlToggle" data-action="toggle-overlay" data-overlay="ml" title="AI/ML win-probability filter" aria-pressed="${mlFilterEnabled}" style="${mlFilterEnabled ? 'background:var(--wait);color:var(--on-accent)' : ''}">🤖 ${mlFilterEnabled ? "ML ON" : "ML OFF"}${" ·" + mlModel.nWin + "W/" + mlModel.nLoss + "L"}</button>
           <span style="font-size:.55rem;color:var(--muted-3)">R=↻ S=⚡ 1/4/H=⏱ B=Back T=Theme</span>
         </div>
         <div class="tf-row">${["1d", "4h", "1h", "30m", "15m", "1m"].map(tf => `<button class="tf-btn${state.timeframe === tf ? " active" : ""}" data-tf="${tf}">${tf}</button>`).join("")}</div>

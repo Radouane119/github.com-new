@@ -108,12 +108,14 @@ function setupEvents() {
       if (event.target.id === "stratInitRR") cfg.initialRrMult = Math.min(5, Math.max(0.5, Number(event.target.value) || 1.5));
       if (event.target.id === "stratPartialPct") cfg.partialTakePct = Math.min(100, Math.max(0, Number(event.target.value) || 50));
       saveStrategyConfig(cfg);
+      optimizerState.validation = null;
       scheduleRender();
     }
     if (event.target.id === "stratAdxGate") {
       const cfg = loadStrategyConfig();
       cfg.adxGate = event.target.checked;
       saveStrategyConfig(cfg);
+      optimizerState.validation = null;
       render();
     }
     if (event.target.dataset.condToggle) {
@@ -142,13 +144,15 @@ function setupEvents() {
       scheduleRender();
     }
 
-    if (event.target.id === "slipSpread") { slippageConfig.spreadPips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); return; }
-    if (event.target.id === "slipSlip") { slippageConfig.slippagePips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); return; }
+    if (event.target.id === "slipSpread") { slippageConfig.spreadPips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); optimizerState.validation = null; scheduleRender(); return; }
+    if (event.target.id === "slipSlip") { slippageConfig.slippagePips = Math.max(0, Number(event.target.value) || 0); saveSlippageConfig(); optimizerState.validation = null; scheduleRender(); return; }
     if (event.target.id === "btFee" || event.target.id === "btRisk") {
       const cfg = loadStrategyConfig();
       if (event.target.id === "btFee") cfg.feePct = Math.max(0, Number(event.target.value) || 0);
       else cfg.riskPerTradePct = Math.max(0.1, Number(event.target.value) || 1);
       saveStrategyConfig(cfg);
+      optimizerState.validation = null;
+      scheduleRender();
       return;
     }
     if (event.target.id === "kellyToggle") {
@@ -497,8 +501,26 @@ function setupEvents() {
     if (target.id === "runCorr") { computeCorrelationMatrix(); return; }
     if (target.id === "runMC") { if (backtest.results && backtest.results.trades.length >= 5) { mcState.running = true; mcState.progress = ""; render(); setTimeout(() => { mcState.results = runMonteCarlo(backtest.results.trades, 1000); mcState.running = false; render(); }, 50); } return; }
     if (target.id === "runWF") { runWalkForward(); return; }
+    if (target.id === "validateOptimal") {
+      if (!optimizerState.results?.[0] || wfState.running) return;
+      optimizerState.selectedCfg = { ...optimizerState.results[0].cfg };
+      optimizerState.validation = null;
+      runWalkForward(optimizerState.selectedCfg);
+      return;
+    }
     if (target.id === "runOpt") { runStrategyOptimizer(); return; }
-    if (target.id === "applyOptimal") { if (optimizerState.results && optimizerState.results.length > 0) { const best = optimizerState.results[0].cfg; const cfg = loadStrategyConfig(); cfg.threshold = best.threshold; cfg.riskRewardRatio = best.riskRewardRatio; cfg.volumeMultiplier = best.volumeMultiplier; saveStrategyConfig(cfg); render(); } return; }
+    if (target.id === "applyOptimal") {
+      const best = optimizerState.results?.[0]?.cfg;
+      const validation = optimizerState.validation;
+      if (!best || !validation?.passed || JSON.stringify(validation.cfg) !== JSON.stringify(best)) return;
+      const context = validation.context;
+      const liveCfg = loadStrategyConfig();
+      const baseConfigMatches = context && Object.keys(context.baseCfg).every(key => ["threshold", "riskRewardRatio", "volumeMultiplier"].includes(key) || context.baseCfg[key] === liveCfg[key]);
+      if (!context || context.pair !== `${state.base}/${state.quote}` || context.feePct !== liveCfg.feePct || context.riskPerTradePct !== liveCfg.riskPerTradePct || context.spreadPips !== (slippageConfig.spreadPips || 0) || context.slippagePips !== (slippageConfig.slippagePips || 0) || !baseConfigMatches) return;
+      const cfg = loadStrategyConfig();
+      cfg.threshold = best.threshold; cfg.riskRewardRatio = best.riskRewardRatio; cfg.volumeMultiplier = best.volumeMultiplier;
+      saveStrategyConfig(cfg); render(); return;
+    }
     if (target.id === "startReplay") { startReplay(`${state.base}/${state.quote}`); return; }
     if (target.id === "stopReplay") { stopReplay(); render(); return; }
     if (target.id === "replayStep") { stepReplay(); return; }

@@ -142,13 +142,19 @@ async function verifySignals() {
     const stale = age > 7 * 24 * 60 * 60 * 1000;
     if (entry.direction === "BUY") {
       entry.result = current >= entry.target ? "win" : current <= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 > 0.3 ? "win" : "loss" : "pending";
+      entry.outcomeType = current >= entry.target ? "target" : current <= entry.stop ? "stop" : stale ? "expiry" : null;
     } else {
       entry.result = current <= entry.target ? "win" : current >= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 < -0.3 ? "win" : "loss" : "pending";
+      entry.outcomeType = current <= entry.target ? "target" : current >= entry.stop ? "stop" : stale ? "expiry" : null;
     }
     if (entry.result !== "pending") {
       changed = true;
       if (entry.mlPrediction) {
         const pred = entry.mlPrediction;
+        if (Number.isFinite(pred.win) && (entry.outcomeType === "target" || entry.outcomeType === "stop")) {
+          mlStats.entryEvaluated++;
+          if ((pred.label === "win" && entry.result === "win") || (pred.label === "loss" && entry.result === "loss")) mlStats.entryCorrect++;
+        }
         if (Number.isFinite(pred.win)) {
           mlStats.filtered++;
           if ((pred.label === "win" && entry.result === "win") || (pred.label === "loss" && entry.result === "loss")) mlStats.filteredCorrect++;
