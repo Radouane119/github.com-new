@@ -388,8 +388,8 @@ function renderMlBadge(analysis) {
 const paperState = { balance: 10000, startingBalance: 10000, trades: [], openPositions: [], equityCurve: [] };
 const replayState = { active: false, pair: "", rows: [], currentBar: 100, trades: [], speed: 500, intervalId: null, direction: null, confidence: 0 };
 const mcState = { results: null, running: false, progress: "" };
-const wfState = { results: null, running: false, progress: "" };
-const optimizerState = { results: null, running: false, progress: "", selectedCfg: null, validation: null };
+const wfState = { results: null, running: false, progress: "", error: "" };
+const optimizerState = { results: null, running: false, progress: "", selectedCfg: null, validation: null, error: "" };
 const scheduleState = { enabled: false, intervalId: null, lastSent: null };
 const corrData = { matrix: null, pairs: [], running: false };
 

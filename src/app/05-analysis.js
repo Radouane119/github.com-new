@@ -253,10 +253,11 @@ async function runWalkForward(candidateCfg = null) {
   wfState.running = true;
   wfState.results = null;
   wfState.progress = "";
+  wfState.error = "";
   render();
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 1000);
-    if (rows.length < 300) { wfState.running = false; render(); return; }
+    if (rows.length < 300) { wfState.error = `Walk-forward needs at least 300 daily candles; received ${rows.length}.`; wfState.running = false; render(); return; }
     const feeInput = document.getElementById("btFee");
     const riskInput = document.getElementById("btRisk");
     const costs = loadStrategyConfig();
@@ -336,7 +337,9 @@ async function runWalkForward(candidateCfg = null) {
         },
       };
     }
-  } catch {}
+  } catch (error) {
+    wfState.error = error?.message || "Walk-forward analysis failed. Check market data and try again.";
+  }
   wfState.running = false;
   render();
 }
@@ -346,12 +349,13 @@ async function runStrategyOptimizer() {
   optimizerState.running = true;
   optimizerState.results = null;
   optimizerState.progress = "";
+  optimizerState.error = "";
   optimizerState.validation = null;
   optimizerState.selectedCfg = null;
   render();
   try {
     const rows = await fetchBinanceRows(state.base, state.quote, "1d", 800);
-    if (rows.length < 200) { optimizerState.running = false; render(); return; }
+    if (rows.length < 200) { optimizerState.error = `Optimizer needs at least 200 daily candles; received ${rows.length}.`; optimizerState.running = false; render(); return; }
     const cfgCosts = loadStrategyConfig();
     const feeInput = document.getElementById("btFee");
     const riskInput = document.getElementById("btRisk");
@@ -363,7 +367,7 @@ async function runStrategyOptimizer() {
     const rrs = [1.5, 2.0, 2.5, 3.0];
     const volMults = [1.1, 1.3, 1.5];
     const combinations = [];
-    for (const t of thresholds) for (const r of rrs) for (const v of volMults) combinations.push({ threshold: t, riskRewardRatio: r, volumeMultiplier: v, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 });
+    for (const t of thresholds) for (const r of rrs) for (const v of volMults) combinations.push({ threshold: t, riskRewardRatio: r, volumeMultiplier: v });
     const total = combinations.length;
     const results = [];
     for (let i = 0; i < total; i++) {
@@ -387,9 +391,11 @@ async function runStrategyOptimizer() {
       trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
       results.push({ cfg: { threshold: cfg.threshold, riskRewardRatio: cfg.riskRewardRatio, volumeMultiplier: cfg.volumeMultiplier }, signals: totalT, winRate: wr, pnl: eq - 100, maxDD: maxDD.toFixed(1) + "%", pf });
     }
-    results.sort((a, b) => b.pnl - a.pnl);
+    results.sort((a, b) => Number(b.signals >= 10) - Number(a.signals >= 10) || b.pnl - a.pnl);
     optimizerState.results = results;
-  } catch {}
+  } catch (error) {
+    optimizerState.error = error?.message || "Strategy optimization failed. Check market data and try again.";
+  }
   optimizerState.running = false;
   render();
 }

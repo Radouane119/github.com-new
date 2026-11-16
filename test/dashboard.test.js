@@ -1646,6 +1646,41 @@ assert(noTradeAccounting.trainedCount === 1 && noTradeAccounting.modelCounts.win
 assert(noTradeAccounting.mlStats.entryEvaluated === 1 && noTradeAccounting.mlStats.entryCorrect === 1, "ML entry reliability skips No trade outcomes");
 ctx.mlReset();
 
+const optimizerRun = await vm.runInContext(`(async () => {
+  const old = { fetchBinanceRows, analyze, evaluateBacktestTrade, loadStrategyConfig, render, setTimeout, state: { base: state.base, quote: state.quote }, optimizer: { ...optimizerState } };
+  let configMismatch = 0;
+  try {
+    fetchBinanceRows = async () => Array.from({ length: 200 }, (_, i) => ({ date: String(i), close: 100 }));
+    loadStrategyConfig = () => ({ feePct: 0.1, riskPerTradePct: 1, volatilityMedianMultiplier: 3.7, rsiBuyThreshold: 61, rsiSellThreshold: 39 });
+    analyze = (_rows, cfg) => {
+      if (cfg.volatilityMedianMultiplier !== 3.7 || cfg.rsiBuyThreshold !== 61 || cfg.rsiSellThreshold !== 39) configMismatch++;
+      const best = cfg.threshold === 5 && cfg.riskRewardRatio === 3 && cfg.volumeMultiplier === 1.3;
+      return { direction: "BUY", optimizerScore: best ? 0.2 : 0.02 };
+    };
+    evaluateBacktestTrade = (_rows, index, analysis) => ({ result: "win", hitIndex: index, pnlPct: 1, equityPct: analysis.optimizerScore, rr: 2 });
+    render = () => {};
+    setTimeout = (fn) => { fn(); return 0; };
+    await runStrategyOptimizer();
+    return { count: optimizerState.results?.length, best: optimizerState.results?.[0]?.cfg, signals: optimizerState.results?.[0]?.signals, configMismatch, running: optimizerState.running };
+  } finally {
+    fetchBinanceRows = old.fetchBinanceRows; analyze = old.analyze; evaluateBacktestTrade = old.evaluateBacktestTrade;
+    loadStrategyConfig = old.loadStrategyConfig; render = old.render; setTimeout = old.setTimeout;
+    state.base = old.state.base; state.quote = old.state.quote; Object.assign(optimizerState, old.optimizer);
+  }
+})()`, ctx);
+assert(optimizerRun.count === 36 && optimizerRun.signals === 100 && optimizerRun.running === false, "strategy optimizer evaluates the full parameter grid and completes");
+assert(optimizerRun.best?.threshold === 5 && optimizerRun.best?.riskRewardRatio === 3 && optimizerRun.best?.volumeMultiplier === 1.3, "optimizer ranks the best-performing parameter combination first");
+assert(optimizerRun.configMismatch === 0, "optimizer preserves non-optimized live strategy settings while scoring");
+
+const optimizerShortData = await vm.runInContext(`(async () => {
+  const oldFetch = fetchBinanceRows, oldRender = render, oldTimer = setTimeout, oldState = { ...optimizerState };
+  try {
+    fetchBinanceRows = async () => Array.from({ length: 120 }, () => ({})); render = () => {}; setTimeout = (fn) => { fn(); return 0; };
+    await runStrategyOptimizer(); return { error: optimizerState.error, running: optimizerState.running };
+  } finally { fetchBinanceRows = oldFetch; render = oldRender; setTimeout = oldTimer; Object.assign(optimizerState, oldState); }
+})()`, ctx);
+assert(optimizerShortData.error.includes("200 daily candles") && optimizerShortData.running === false, "optimizer clearly reports insufficient candle history");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
