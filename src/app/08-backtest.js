@@ -113,10 +113,13 @@ function renderBacktest() {
     const totalSignals = pairs.reduce((s, p) => s + mr[p].signals, 0);
     const allWins = pairs.reduce((s, p) => s + mr[p].wins, 0);
     const overallWr = totalSignals > 0 ? Math.round((allWins / totalSignals) * 100) : 0;
+    const totalSkipped = pairs.reduce((sum, pair) => sum + (mr[pair].skippedSignals || 0), 0);
+    const portfolioReturn = mr[pairs[0]]?.portfolioReturnPct || 0;
+    const portfolioMaxDD = mr[pairs[0]]?.portfolioMaxDD || 0;
     let bestPair = "", bestWr = -1, worstPair = "", worstWr = 101;
     pairs.forEach(p => { if (mr[p].signals > 0 && mr[p].winRate > bestWr) { bestWr = mr[p].winRate; bestPair = p; } if (mr[p].signals > 0 && mr[p].winRate < worstWr) { worstWr = mr[p].winRate; worstPair = p; } });
     const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? 'var(--buy)' : 'var(--sell)'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:${String(d.netReturn || "0").startsWith("-") ? 'var(--sell)' : 'var(--buy)'}">${d.netReturn || "0%"}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span><span style="width:46px;text-align:right;color:var(--warn-orange)">${d.skippedSignals || 0}</span></div>`; }).join("");
-    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:436px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span><span style="width:46px;text-align:right">Skipped</span></div>${pairRows}</div><div style="font-size:.58rem;color:var(--muted-3);padding:4px 8px">Concurrency limit: ${mr[pairs[0]]?.maxOpenPositions || loadRiskConfig().maxPos} positions per pair</div></div>`;
+    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:436px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span><span style="width:46px;text-align:right">Skipped</span></div>${pairRows}</div><div style="font-size:.58rem;color:var(--muted-3);padding:4px 8px">Portfolio-wide limit: ${mr[pairs[0]]?.maxOpenPositions || loadRiskConfig().maxPos} concurrent positions across ${pairs.length} pairs · ${totalSkipped} signals skipped at capacity · Combined return ${portfolioReturn >= 0 ? "+" : ""}${portfolioReturn.toFixed(1)}% · Portfolio max DD ${portfolioMaxDD.toFixed(1)}%</div></div>`;
   }
   if (!singleResult && !multiResult) return "";
   const mpPairs = allScanPairs;
@@ -429,6 +432,26 @@ function renderScheduledReports() {
   return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="schedToggle"><div class="history-toggle-left"><h3>Scheduled Reports</h3></div><span class="arrow">▾</span></button><div class="history-body" id="schedBody"><div style="padding:12px"><div class="cond-row"><div class="cond-info"><span class="cond-title">Auto-Report to Webhook</span><span class="cond-desc">Send performance summary every 6 hours</span></div><div class="cond-controls"><label class="toggle"><input type="checkbox" id="schedToggleInput" ${scheduleState.enabled ? "checked" : ""}><span class="toggle-track"></span><span class="toggle-knob"></span></label></div></div>${scheduleState.lastSent ? `<div style="font-size:.65rem;color:var(--muted-3);margin-top:6px">Last sent: ${scheduleState.lastSent.toLocaleString()}</div>` : ''}<div style="font-size:.65rem;color:var(--muted-3);margin-top:4px">Requires webhook URL to be configured in Settings.</div></div></div></section>`;
 }
 
+function applyPortfolioPositionLimit(candidates, maxOpenPositions) {
+  const limit = Math.max(1, Math.floor(Number(maxOpenPositions) || 1));
+  const active = [];
+  const accepted = [];
+  const skippedByPair = {};
+  const ordered = [...candidates].sort((a, b) => a.entryTime - b.entryTime || (Number(b.confidence) || 0) - (Number(a.confidence) || 0) || a.pair.localeCompare(b.pair));
+  for (const candidate of ordered) {
+    for (let i = active.length - 1; i >= 0; i--) {
+      if (active[i].exitTime <= candidate.entryTime) active.splice(i, 1);
+    }
+    if (active.length >= limit) {
+      skippedByPair[candidate.pair] = (skippedByPair[candidate.pair] || 0) + 1;
+      continue;
+    }
+    accepted.push(candidate);
+    active.push({ exitTime: candidate.exitTime });
+  }
+  return { trades: accepted, skippedByPair, maxOpenPositions: limit };
+}
+
 async function runMultiPairBacktest() {
   if (backtest.multiRunning) return;
   const selected = [...backtest.multiPairSelected];
@@ -438,46 +461,72 @@ async function runMultiPairBacktest() {
   backtest.multiProgress = "";
   render();
   const results = {};
+  const pairCandidates = {};
   const cfg = loadStrategyConfig();
   const feeInput = document.getElementById("btFee");
   const riskInput = document.getElementById("btRisk");
   if (feeInput) cfg.feePct = Math.max(0, Number(feeInput.value) || 0);
   if (riskInput) cfg.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
+  const maxOpenPositions = loadRiskConfig().maxPos;
+
   for (let i = 0; i < selected.length; i++) {
     const pair = selected[i];
+    pairCandidates[pair] = [];
     backtest.multiProgress = `${i + 1}/${selected.length} (${pair})`;
     if (i % 3 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
     try {
       const [base, quote] = pair.split("/");
       const rows = await fetchBinanceRows(base, quote, "1d", 1000);
-      if (rows.length < 120) { results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%", skippedSignals: 0, maxOpenPositions: loadRiskConfig().maxPos }; continue; }
-      const candidates = [];
+      if (rows.length < 120) continue;
       for (let j = 100; j < rows.length; j++) {
-        const slice = rows.slice(0, j + 1);
-        const analysis = analyze(slice, cfg, pair);
+        const entryTime = Date.parse(rows[j].time || rows[j].date);
+        if (!Number.isFinite(entryTime)) continue;
+        const analysis = analyze(rows.slice(0, j + 1), cfg, pair);
         if (!analysis || analysis.direction === "WAIT") continue;
         const trade = evaluateBacktestTrade(rows, j, analysis, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
-        if (trade) candidates.push({ ...trade, entryIndex: j });
+        if (!trade) continue;
+        const exitTime = trade.hitIndex >= 0 ? Date.parse(rows[trade.hitIndex]?.time || rows[trade.hitIndex]?.date) : Infinity;
+        pairCandidates[pair].push({ ...trade, pair, confidence: analysis.confidence, entryTime, exitTime: Number.isFinite(exitTime) ? exitTime : Infinity });
       }
-      const capacity = applyPositionLimit(candidates, loadRiskConfig().maxPos);
-      const trades = capacity.trades.filter(t => t.result !== "pending");
-      const wins = trades.filter(t => t.result === "win").length;
-      const losses = trades.filter(t => t.result === "loss").length;
-      const total = trades.length;
-      const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
-      const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
-      const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
-      const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
-      const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
-      let eq = 100, peak = 100, maxDD = 0;
-      trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
-      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%", skippedSignals: capacity.skippedSignals, maxOpenPositions: capacity.maxOpenPositions };
-    } catch {
-      results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%", skippedSignals: 0, maxOpenPositions: loadRiskConfig().maxPos };
-    }
+    } catch {}
+  }
+
+  const allCandidates = Object.values(pairCandidates).flat();
+  const capacity = applyPortfolioPositionLimit(allCandidates, maxOpenPositions);
+  const acceptedByPair = Object.fromEntries(selected.map(pair => [pair, []]));
+  for (const trade of capacity.trades) acceptedByPair[trade.pair].push(trade);
+  let portfolioEquity = 100, portfolioPeak = 100, portfolioMaxDD = 0;
+  for (const trade of capacity.trades) {
+    if (trade.result === "pending") continue;
+    portfolioEquity *= 1 + trade.equityPct / 100;
+    if (portfolioEquity > portfolioPeak) portfolioPeak = portfolioEquity;
+    const drawdown = portfolioPeak > 0 ? (portfolioPeak - portfolioEquity) / portfolioPeak * 100 : 0;
+    if (drawdown > portfolioMaxDD) portfolioMaxDD = drawdown;
+  }
+  const portfolioReturnPct = portfolioEquity - 100;
+  for (const pair of selected) {
+    const trades = acceptedByPair[pair].filter(t => t.result !== "pending");
+    const wins = trades.filter(t => t.result === "win").length;
+    const losses = trades.filter(t => t.result === "loss").length;
+    const total = trades.length;
+    const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
+    const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((sum, t) => sum + t.pnlPct, 0) / wins : 0;
+    const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((sum, t) => sum + t.pnlPct, 0) / losses) : 0;
+    const avgRR = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : "0";
+    const grossWins = Math.abs(trades.filter(t => t.result === "win").reduce((sum, t) => sum + t.pnlPct, 0));
+    const grossLosses = Math.abs(trades.filter(t => t.result === "loss").reduce((sum, t) => sum + t.pnlPct, 0));
+    const pf = grossLosses > 0 ? (grossWins / grossLosses).toFixed(2) : (wins > 0 ? "∞" : "0");
+    let equity = 100, peak = 100, maxDD = 0;
+    trades.forEach(t => { equity *= 1 + t.equityPct / 100; if (equity > peak) peak = equity; const dd = peak > 0 ? (peak - equity) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
+    results[pair] = {
+      signals: total, wins, losses, winRate, avgRR, profitFactor: pf,
+      maxDD: maxDD.toFixed(1) + "%", netReturn: (equity - 100).toFixed(1) + "%",
+      skippedSignals: capacity.skippedByPair[pair] || 0,
+      maxOpenPositions: capacity.maxOpenPositions,
+      portfolioReturnPct, portfolioMaxDD,
+    };
   }
   backtest.multiResults = results;
   backtest.multiRunning = false;
   render();
 }
-

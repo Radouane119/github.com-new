@@ -1582,6 +1582,16 @@ assert(reloads === 1, "controllerchange reloads the page once");
 ctx.document.createElement = realPwaCreateElement;
 ctx.document.body.appendChild = realBodyAppend;
 
+const portfolioCapacity = ctx.applyPortfolioPositionLimit([
+  { pair: "AAA/USD", entryTime: 10, exitTime: 30, confidence: 70 },
+  { pair: "BBB/USD", entryTime: 10, exitTime: 20, confidence: 80 },
+  { pair: "CCC/USD", entryTime: 15, exitTime: 18, confidence: 99 },
+  { pair: "DDD/USD", entryTime: 20, exitTime: 40, confidence: 60 },
+], 1);
+assert(portfolioCapacity.trades.map(t => t.pair).join(",") === "BBB/USD,DDD/USD", "multi-pair capacity is shared by date and strongest same-time signal wins");
+assert(portfolioCapacity.skippedByPair["AAA/USD"] === 1 && portfolioCapacity.skippedByPair["CCC/USD"] === 1, "portfolio capacity reports skips against the correct pair");
+assert(portfolioCapacity.maxOpenPositions === 1, "multi-pair portfolio keeps the configured global position cap");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
