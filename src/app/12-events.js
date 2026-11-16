@@ -516,7 +516,7 @@ function setupEvents() {
       const context = validation.context;
       const liveCfg = loadStrategyConfig();
       const baseConfigMatches = context && Object.keys(context.baseCfg).every(key => ["threshold", "riskRewardRatio", "volumeMultiplier"].includes(key) || context.baseCfg[key] === liveCfg[key]);
-      if (!context || context.pair !== `${state.base}/${state.quote}` || context.feePct !== liveCfg.feePct || context.riskPerTradePct !== liveCfg.riskPerTradePct || context.spreadPips !== (slippageConfig.spreadPips || 0) || context.slippagePips !== (slippageConfig.slippagePips || 0) || !baseConfigMatches) return;
+      if (!context || context.pair !== `${state.base}/${state.quote}` || context.feePct !== liveCfg.feePct || context.riskPerTradePct !== liveCfg.riskPerTradePct || context.spreadPips !== (slippageConfig.spreadPips || 0) || context.slippagePips !== (slippageConfig.slippagePips || 0) || context.maxOpenPositions !== loadRiskConfig().maxPos || !baseConfigMatches) return;
       const cfg = loadStrategyConfig();
       cfg.threshold = best.threshold; cfg.riskRewardRatio = best.riskRewardRatio; cfg.volumeMultiplier = best.volumeMultiplier;
       saveStrategyConfig(cfg); render(); return;

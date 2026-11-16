@@ -263,6 +263,7 @@ async function runWalkForward(candidateCfg = null) {
     if (feeInput) costs.feePct = Math.max(0, Number(feeInput.value) || 0);
     if (riskInput) costs.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
     const pair = `${state.base}/${state.quote}`;
+    const maxOpenPositions = loadRiskConfig().maxPos;
     const paramGrid = [
       { threshold: 4 }, { threshold: 5 }, { threshold: 6 },
       { riskRewardRatio: 1.5 }, { riskRewardRatio: 2.0 }, { riskRewardRatio: 2.5 },
@@ -286,24 +287,26 @@ async function runWalkForward(candidateCfg = null) {
       let bestTrainWR = 0;
       for (const overrides of (candidateCfg ? [candidateCfg] : paramGrid)) {
         const cfg = { ...loadStrategyConfig(), ...(candidateCfg || {}), ...overrides };
-        const trades = [];
+        const candidates = [];
         for (let i = trainStart + 80; i < trainEnd; i++) {
           const a = analyze(rows.slice(trainStart, i + 1), cfg);
           if (!a || a.direction === "WAIT") continue;
           const t = evaluateBacktestTrade(rows, i, a, pair, costs.feePct || 0, costs.riskPerTradePct || 1, trainEnd);
-          if (t && t.result !== "pending") trades.push(t);
+          if (t) candidates.push({ ...t, entryIndex: i });
         }
+        const trades = applyPositionLimit(candidates, maxOpenPositions).trades.filter(t => t.result !== "pending");
         const w = trades.filter(t => t.result === "win").length;
         const score = trades.length > 0 ? trades.reduce((s,t) => s + t.equityPct, 0) : -Infinity;
         if (score > bestScore) { bestScore = score; bestCfg = cfg; bestTrainWR = trades.length > 0 ? (w / trades.length) * 100 : 0; }
       }
-      const testTrades = [];
+      const testCandidates = [];
       for (let i = trainEnd; i < testEnd; i++) {
         const a = analyze(rows.slice(trainStart, i + 1), bestCfg);
         if (!a || a.direction === "WAIT") continue;
         const t = evaluateBacktestTrade(rows, i, a, pair, costs.feePct || 0, costs.riskPerTradePct || 1, testEnd);
-        if (t && t.result !== "pending") testTrades.push(t);
+        if (t) testCandidates.push({ ...t, entryIndex: i });
       }
+      const testTrades = applyPositionLimit(testCandidates, maxOpenPositions).trades.filter(t => t.result !== "pending");
       const tw = testTrades.filter(t => t.result === "win").length;
       let segmentEquity = 100;
       for (const t of testTrades) segmentEquity *= 1 + t.equityPct / 100;
@@ -315,7 +318,7 @@ async function runWalkForward(candidateCfg = null) {
     let oosEquity = 100;
     for (const segment of wfResults) oosEquity *= 1 + segment.testReturn / 100;
     const totalTestPnL = oosEquity - 100;
-    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0, candidate: candidateCfg ? { ...candidateCfg } : null };
+    wfState.results = { segments: wfResults, totalTestTrades, avgTestWR, totalTestPnL, feePct: costs.feePct || 0, candidate: candidateCfg ? { ...candidateCfg } : null, maxOpenPositions };
     if (candidateCfg) {
       optimizerState.validation = {
         cfg: { ...candidateCfg },
@@ -328,6 +331,7 @@ async function runWalkForward(candidateCfg = null) {
           riskPerTradePct: costs.riskPerTradePct || 1,
           spreadPips: slippageConfig.spreadPips || 0,
           slippagePips: slippageConfig.slippagePips || 0,
+          maxOpenPositions,
           baseCfg: loadStrategyConfig(),
         },
       };
@@ -354,6 +358,7 @@ async function runStrategyOptimizer() {
     if (feeInput) cfgCosts.feePct = Math.max(0, Number(feeInput.value) || 0);
     if (riskInput) cfgCosts.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
     const pair = `${state.base}/${state.quote}`;
+    const maxOpenPositions = loadRiskConfig().maxPos;
     const thresholds = [4, 5, 6];
     const rrs = [1.5, 2.0, 2.5, 3.0];
     const volMults = [1.1, 1.3, 1.5];
@@ -365,13 +370,14 @@ async function runStrategyOptimizer() {
       optimizerState.progress = `${i + 1}/${total}`;
       if (i % 5 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
       const cfg = { ...cfgCosts, ...combinations[i] };
-      const trades = [];
+      const candidates = [];
       for (let j = 100; j < rows.length; j++) {
         const a = analyze(rows.slice(0, j + 1), cfg);
         if (!a || a.direction === "WAIT") continue;
         const trade = evaluateBacktestTrade(rows, j, a, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
-        if (trade && trade.result !== "pending") trades.push(trade);
+        if (trade) candidates.push({ ...trade, entryIndex: j });
       }
+      const trades = applyPositionLimit(candidates, maxOpenPositions).trades.filter(t => t.result !== "pending");
       const wins = trades.filter(t => t.result === "win").length;
       const losses = trades.filter(t => t.result === "loss").length;
       const totalT = trades.length;

@@ -104,7 +104,7 @@ function renderBacktest() {
   const tradeRows = r.trades.slice(-50).reverse().map((t, i) => {
     return `<div style="display:flex;align-items:center;gap:4px;font-size:.65rem;padding:2px 0;border-bottom:1px solid var(--panel-inset)"><span style="width:14px;font-size:.55rem">${r.trades.length - i}</span><span style="width:56px;text-transform:uppercase">${t.date}</span><span style="width:32px;font-weight:600;color:${t.direction === 'BUY' ? 'var(--buy)' : 'var(--sell)'}">${t.direction}</span><span style="width:44px;text-align:right;font-variant-numeric:tabular-nums">${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(1)}%</span><span style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden"><div style="width:${Math.min(Math.abs(t.pnlPct) * 5, 100)}%;height:100%;background:${t.pnlPct >= 0 ? 'var(--buy)' : 'var(--sell)'};border-radius:2px"></div></span><span style="width:30px;text-align:right;font-size:.58rem;color:${t.result === 'win' ? 'var(--buy)' : t.result === 'loss' ? 'var(--sell)' : 'var(--muted-2)'}">${t.result === 'win' ? 'W' : t.result === 'loss' ? 'L' : '?'}</span></div>`;
   }).join("");
-  singleResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${total}</div><div style="font-size:.6rem;color:var(--muted-3)">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${wr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:var(--muted-3)">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Max DD (${maxDdDur}t)</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${sharpeRaw !== '-' && sharpeRaw > 1 ? 'var(--buy)' : sharpeRaw !== '-' && sharpeRaw > 0 ? 'var(--warn)' : 'var(--sell)'}">${sharpe}</div><div style="font-size:.55rem;color:var(--muted-3)">Sharpe Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${calmarRaw !== '-' && calmarRaw > 1 ? 'var(--buy)' : 'var(--sell)'}">${calmar}</div><div style="font-size:.55rem;color:var(--muted-3)">Calmar Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${expectancy}%</div><div style="font-size:.55rem;color:var(--muted-3)">Expectancy</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:var(--muted-3)"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid var(--border);padding:4px 12px">${tradeRows}</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${r.finalEquity >= 10000 ? 'var(--buy)' : 'var(--sell)'}">$${r.finalEquity != null ? r.finalEquity.toFixed(0) : '-'}</div><div style="font-size:.55rem;color:var(--muted-3)">Final Equity</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${r.totalReturnPct >= 0 ? 'var(--buy)' : 'var(--sell)'}">${r.totalReturnPct != null ? (r.totalReturnPct >= 0 ? '+' : '') + r.totalReturnPct.toFixed(1) + '%' : '-'}</div><div style="font-size:.55rem;color:var(--muted-3)">Net Return</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${r.feePerTrade ?? 0}%</div><div style="font-size:.55rem;color:var(--muted-3)">Fee/trade</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${r.riskPerTrade ?? 1}%</div><div style="font-size:.55rem;color:var(--muted-3)">Risk/trade</div></div></div><div style="padding:4px 12px"><div style="font-size:.6rem;color:var(--muted-3);margin-bottom:2px">Equity Curve</div><svg width="100%" height="${eqH + ddChartH}" viewBox="0 0 ${eqW} ${eqH + ddChartH}" preserveAspectRatio="none" style="display:block;background:var(--bg);border-radius:4px"><polyline points="${eqPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="1.5"/><line x1="0" y1="${eqY(0)}" x2="${eqW}" y2="${eqY(0)}" stroke="#2a3848" stroke-width="0.5" stroke-dasharray="3,3"/><polyline points="${peakPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.3"/><rect x="0" y="${eqH}" width="${eqW}" height="${ddChartH}" fill="none"/><polyline points="${ddPts.join(' ')}" fill="rgba(248,81,73,0.2)" stroke="#f85149" stroke-width="1"/></svg><div style="display:flex;justify-content:space-between;font-size:.55rem;color:var(--muted-3);margin-top:2px"><span>Max DD: ${maxDdPct.toFixed(1)}%</span><span>DD Duration: ${maxDdDur} trades</span></div></div></div>`;
+  singleResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${total}</div><div style="font-size:.6rem;color:var(--muted-3)">Signals</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${wr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${wr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">+${avgWin.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Avg Win</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${avgLoss.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Avg Loss</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${typeof profitFactor === 'number' ? profitFactor.toFixed(2) : profitFactor}</div><div style="font-size:.6rem;color:var(--muted-3)">Profit Factor</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${maxDdPct.toFixed(1)}%</div><div style="font-size:.6rem;color:var(--muted-3)">Max DD (${maxDdDur}t)</div></div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${sharpeRaw !== '-' && sharpeRaw > 1 ? 'var(--buy)' : sharpeRaw !== '-' && sharpeRaw > 0 ? 'var(--warn)' : 'var(--sell)'}">${sharpe}</div><div style="font-size:.55rem;color:var(--muted-3)">Sharpe Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${calmarRaw !== '-' && calmarRaw > 1 ? 'var(--buy)' : 'var(--sell)'}">${calmar}</div><div style="font-size:.55rem;color:var(--muted-3)">Calmar Ratio</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${expectancy}%</div><div style="font-size:.55rem;color:var(--muted-3)">Expectancy</div></div></div><div style="display:flex;gap:6px;padding:0 12px 8px;flex-wrap:wrap;font-size:.65rem;color:var(--muted-3)"><span>${wins}W / ${losses}L / ${pending}P</span><span>· Max open: ${r.maxOpenPositions}</span><span>· Skipped at capacity: ${r.skippedSignals}</span><span>· Balance: ${cum >= 0 ? '+' : ''}${cum.toFixed(1)}%</span><span>· Period: ${r.startDate} → ${r.endDate}</span></div><div style="max-height:200px;overflow-y:auto;border-top:1px solid var(--border);padding:4px 12px">${tradeRows}</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;padding:4px 12px"><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${r.finalEquity >= 10000 ? 'var(--buy)' : 'var(--sell)'}">$${r.finalEquity != null ? r.finalEquity.toFixed(0) : '-'}</div><div style="font-size:.55rem;color:var(--muted-3)">Final Equity</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:${r.totalReturnPct >= 0 ? 'var(--buy)' : 'var(--sell)'}">${r.totalReturnPct != null ? (r.totalReturnPct >= 0 ? '+' : '') + r.totalReturnPct.toFixed(1) + '%' : '-'}</div><div style="font-size:.55rem;color:var(--muted-3)">Net Return</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${r.feePerTrade ?? 0}%</div><div style="font-size:.55rem;color:var(--muted-3)">Fee/trade</div></div><div style="text-align:center"><div style="font-size:.9rem;font-weight:700;color:var(--text-strong)">${r.riskPerTrade ?? 1}%</div><div style="font-size:.55rem;color:var(--muted-3)">Risk/trade</div></div></div><div style="padding:4px 12px"><div style="font-size:.6rem;color:var(--muted-3);margin-bottom:2px">Equity Curve</div><svg width="100%" height="${eqH + ddChartH}" viewBox="0 0 ${eqW} ${eqH + ddChartH}" preserveAspectRatio="none" style="display:block;background:var(--bg);border-radius:4px"><polyline points="${eqPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="1.5"/><line x1="0" y1="${eqY(0)}" x2="${eqW}" y2="${eqY(0)}" stroke="#2a3848" stroke-width="0.5" stroke-dasharray="3,3"/><polyline points="${peakPts.join(' ')}" fill="none" stroke="#3fb950" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.3"/><rect x="0" y="${eqH}" width="${eqW}" height="${ddChartH}" fill="none"/><polyline points="${ddPts.join(' ')}" fill="rgba(248,81,73,0.2)" stroke="#f85149" stroke-width="1"/></svg><div style="display:flex;justify-content:space-between;font-size:.55rem;color:var(--muted-3);margin-top:2px"><span>Max DD: ${maxDdPct.toFixed(1)}%</span><span>DD Duration: ${maxDdDur} trades</span></div></div></div>`;
   }
   let multiResult = "";
   if (backtest.multiResults) {
@@ -115,8 +115,8 @@ function renderBacktest() {
     const overallWr = totalSignals > 0 ? Math.round((allWins / totalSignals) * 100) : 0;
     let bestPair = "", bestWr = -1, worstPair = "", worstWr = 101;
     pairs.forEach(p => { if (mr[p].signals > 0 && mr[p].winRate > bestWr) { bestWr = mr[p].winRate; bestPair = p; } if (mr[p].signals > 0 && mr[p].winRate < worstWr) { worstWr = mr[p].winRate; worstPair = p; } });
-    const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? 'var(--buy)' : 'var(--sell)'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:${String(d.netReturn || "0").startsWith("-") ? 'var(--sell)' : 'var(--buy)'}">${d.netReturn || "0%"}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span></div>`; }).join("");
-    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:390px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span></div>${pairRows}</div></div>`;
+    const pairRows = pairs.map(p => { const d = mr[p]; return `<div style="display:flex;align-items:center;gap:6px;font-size:.72rem;padding:6px 8px;border-bottom:1px solid var(--panel-inset)"><span style="width:64px;font-weight:600;color:var(--text)">${p}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.signals}</span><span style="width:44px;text-align:right;color:${d.winRate >= 50 ? 'var(--buy)' : 'var(--sell)'}">${d.winRate}%</span><span style="width:40px;text-align:right;color:var(--muted)">${d.avgRR}</span><span style="width:40px;text-align:right;color:var(--muted)">${d.profitFactor}</span><span style="width:48px;text-align:right;color:${String(d.netReturn || "0").startsWith("-") ? 'var(--sell)' : 'var(--buy)'}">${d.netReturn || "0%"}</span><span style="width:48px;text-align:right;color:var(--sell)">${d.maxDD}</span><span style="width:46px;text-align:right;color:var(--warn-orange)">${d.skippedSignals || 0}</span></div>`; }).join("");
+    multiResult = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;padding:12px"><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${totalSignals}</div><div style="font-size:.6rem;color:var(--muted-3)">Closed Trades</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:${overallWr >= 50 ? 'var(--buy)' : 'var(--sell)'}">${overallWr}%</div><div style="font-size:.6rem;color:var(--muted-3)">Overall Win Rate</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--buy)">${bestPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Best (${bestWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--sell)">${worstPair}</div><div style="font-size:.6rem;color:var(--muted-3)">Worst (${worstWr}%)</div></div><div style="text-align:center"><div style="font-size:1rem;font-weight:700;color:var(--text-strong)">${pairs.length}</div><div style="font-size:.6rem;color:var(--muted-3)">Pairs Tested</div></div></div><div style="padding:0 12px 4px;overflow-x:auto"><div style="min-width:436px"><div style="display:flex;align-items:center;gap:6px;font-size:.65rem;padding:4px 8px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:64px">Pair</span><span style="width:40px;text-align:right">Closed</span><span style="width:44px;text-align:right">Win%</span><span style="width:40px;text-align:right">Avg R:R</span><span style="width:40px;text-align:right">PF</span><span style="width:48px;text-align:right">Return</span><span style="width:48px;text-align:right">Max DD</span><span style="width:46px;text-align:right">Skipped</span></div>${pairRows}</div><div style="font-size:.58rem;color:var(--muted-3);padding:4px 8px">Concurrency limit: ${mr[pairs[0]]?.maxOpenPositions || loadRiskConfig().maxPos} positions per pair</div></div>`;
   }
   if (!singleResult && !multiResult) return "";
   const mpPairs = allScanPairs;
@@ -174,6 +174,22 @@ function evaluateBacktestTrade(rows, index, analysis, pair, feePct, riskSizePct,
   };
 }
 
+function applyPositionLimit(candidates, maxOpenPositions) {
+  const limit = Math.max(1, Math.floor(Number(maxOpenPositions) || 1));
+  const active = [];
+  const accepted = [];
+  let skippedSignals = 0;
+  for (const candidate of [...candidates].sort((a, b) => a.entryIndex - b.entryIndex)) {
+    for (let i = active.length - 1; i >= 0; i--) {
+      if (active[i].hitIndex >= 0 && active[i].hitIndex <= candidate.entryIndex) active.splice(i, 1);
+    }
+    if (active.length >= limit) { skippedSignals++; continue; }
+    active.push({ hitIndex: candidate.hitIndex >= 0 ? candidate.hitIndex : -1 });
+    accepted.push(candidate);
+  }
+  return { trades: accepted, skippedSignals, maxOpenPositions: limit };
+}
+
 async function runBacktestImpl() {
   if (backtest.running) return;
   backtest.running = true;
@@ -190,7 +206,7 @@ async function runBacktestImpl() {
       if (fe) cfg.feePct = Math.max(0, Number(fe.value) || 0);
       if (rt) cfg.riskPerTradePct = Math.max(0.1, Number(rt.value) || 1);
     }
-    const trades = [];
+    const candidates = [];
     for (let i = 100; i < rows.length; i++) {
       backtest.progress = `${i - 99}/${rows.length - 100}`;
       if (i % 50 === 0) { await new Promise(r => setTimeout(r, 0)); render(); }
@@ -199,12 +215,15 @@ async function runBacktestImpl() {
       if (!analysis || analysis.direction === "WAIT") continue;
       const trade = evaluateBacktestTrade(rows, i, analysis, `${state.base}/${state.quote}`, cfg.feePct || 0, cfg.riskPerTradePct || 1);
       if (!trade) continue;
-      trades.push({
+      candidates.push({
+        entryIndex: i,
         date: slice[i].date, direction: analysis.direction, ...trade,
         confidence: analysis.confidence, risk: analysis.risk,
         rr: Number(trade.rr.toFixed(2)), equityPct: Number(trade.equityPct.toFixed(3)),
       });
     }
+    const capacity = applyPositionLimit(candidates, loadRiskConfig().maxPos);
+    const trades = capacity.trades;
     let equity = 10000;
     const equityCurve = [];
     trades.forEach(t => { equity *= (1 + t.equityPct / 100); t.equity = equity; equityCurve.push(equity); });
@@ -213,6 +232,7 @@ async function runBacktestImpl() {
       startDate: rows[100].date, endDate: rows[rows.length - 1].date,
       finalEquity: equity, totalReturnPct: ((equity - 10000) / 10000) * 100,
       feePerTrade: cfg.feePct || 0, riskPerTrade: cfg.riskPerTradePct || 1, equityCurve,
+      maxOpenPositions: capacity.maxOpenPositions, skippedSignals: capacity.skippedSignals,
     };
   } catch { }
   backtest.running = false;
@@ -235,6 +255,7 @@ async function runCompareBacktestImpl() {
     if (riskInput) costCfg.riskPerTradePct = Math.max(0.1, Number(riskInput.value) || 1);
     const defaultCfg = { threshold: 5, riskRewardRatio: 2.0, volumeMultiplier: 1.3, volatilityMedianMultiplier: 2.5, rsiBuyThreshold: 55, rsiSellThreshold: 45 };
     const customCfg = loadStrategyConfig();
+    const maxOpenPositions = loadRiskConfig().maxPos;
     function runCfg(cfg, useMl) {
       const local = useMl ? { n: 0, trained: false, minSamples: 8, muWin: [0,0,0,0,0], varWin: [0,0,0,0,0], muLoss: [0,0,0,0,0], varLoss: [0,0,0,0,0], nWin: 0, nLoss: 0 } : null;
       function ltrain(entry) {
@@ -260,19 +281,19 @@ async function runCompareBacktestImpl() {
         return { win: eW / (eW + eL), label: (eW / (eW + eL)) >= 0.5 ? "win" : "loss" };
       }
       const trades = [];
-      const pendingOutcomes = [];
+      const activeTrades = [];
+      let skippedSignals = 0;
       for (let i = 100; i < rows.length; i++) {
-        if (useMl) {
-          for (let k = pendingOutcomes.length - 1; k >= 0; k--) {
-            if (pendingOutcomes[k].hitIndex < i) {
-              ltrain(pendingOutcomes[k].features);
-              pendingOutcomes.splice(k, 1);
-            }
+        for (let k = activeTrades.length - 1; k >= 0; k--) {
+          if (activeTrades[k].exitIndex <= i) {
+            if (useMl && activeTrades[k].features) ltrain(activeTrades[k].features);
+            activeTrades.splice(k, 1);
           }
         }
         const slice = rows.slice(0, i + 1);
         const a = analyze(slice, cfg);
         if (!a || a.direction === "WAIT") continue;
+        if (activeTrades.length >= maxOpenPositions) { skippedSignals++; continue; }
         if (useMl && local.trained) {
           const pred = lpredict({ confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction });
           if (pred && pred.label === "loss") continue;
@@ -280,26 +301,26 @@ async function runCompareBacktestImpl() {
         const trade = evaluateBacktestTrade(rows, i, a, `${state.base}/${state.quote}`, costCfg.feePct || 0, costCfg.riskPerTradePct || 1);
         if (!trade) continue;
         const { result, pnlPct } = trade;
-        if (result === "pending") continue;
         const features = { confidence: a.confidence, buyScore: a.buyScore, sellScore: a.sellScore, volatilityPct: a.volatilityPct, direction: a.direction, result, pnlPct };
-        if (useMl) pendingOutcomes.push({ features, hitIndex: trade.hitIndex });
-        trades.push({ result, pnlPct, equityPct: trade.equityPct });
+        const resolved = result === "win" || result === "loss";
+        if (resolved) trades.push({ result, pnlPct, equityPct: trade.equityPct, hitIndex: trade.hitIndex });
+        activeTrades.push({ features: resolved ? features : null, exitIndex: trade.hitIndex >= 0 ? trade.hitIndex : rows.length - 1 });
       }
-      return trades;
+      return { trades, skippedSignals };
     }
     backtest.progress = "Default config...";
     render();
     await new Promise(r => setTimeout(r, 0));
-    const defTrades = runCfg(defaultCfg, false);
+    const defRun = runCfg(defaultCfg, false);
     backtest.progress = "Custom config...";
     render();
     await new Promise(r => setTimeout(r, 0));
-    const cstTrades = runCfg(customCfg, false);
+    const cstRun = runCfg(customCfg, false);
     backtest.progress = "Custom + ML filter...";
     render();
     await new Promise(r => setTimeout(r, 0));
-    const mlTrades = runCfg(customCfg, true);
-    function metrics(trades) {
+    const mlRun = runCfg(customCfg, true);
+    function metrics(trades, skippedSignals) {
       const total = trades.length;
       const wins = trades.filter(t => t.result === "win");
       const losses = trades.filter(t => t.result === "loss");
@@ -312,9 +333,9 @@ async function runCompareBacktestImpl() {
       let peak = 100;
       let maxDD = 0;
       trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
-      return { signals: total, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
+      return { signals: total, skippedSignals, winRate: wr + "%", avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
     }
-    backtest.comparison = { default: metrics(defTrades), custom: metrics(cstTrades), ml: metrics(mlTrades), feePct: costCfg.feePct || 0 };
+    backtest.comparison = { default: metrics(defRun.trades, defRun.skippedSignals), custom: metrics(cstRun.trades, cstRun.skippedSignals), ml: metrics(mlRun.trades, mlRun.skippedSignals), feePct: costCfg.feePct || 0, maxOpenPositions };
   } catch {}
   backtest.comparing = false;
   render();
@@ -329,7 +350,7 @@ function renderComparison() {
   const dg = (a, b) => (parseFloat(a) <= parseFloat(b) ? "#3fb950" : "#e6edf3");
   const head = (t) => `<div style="color:var(--muted-3);font-weight:600;text-align:center;padding:4px 0">${t}</div>`;
   const row = (label, v1, c1, v2, c2, v3, c3) => `<div style="color:var(--muted);padding:4px 0">${label}</div><div style="text-align:center;padding:4px 0;color:${c1}">${v1}</div><div style="text-align:center;padding:4px 0;color:${c2}">${v2}</div><div style="text-align:center;padding:4px 0;color:${c3}">${v3}</div>`;
-  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3><span class="history-count">🤖 ML</span></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="padding:4px 12px;font-size:.58rem;color:var(--muted-3)">Net of ${backtest.comparison.feePct}% round-trip fee, spread and slippage. Green = better of Custom vs Custom + ML. ML uses only earlier resolved outcomes.</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem">${head("Metric")}${head("Default")}${head("Custom")}${head("Custom+ML")}${row("Signals", d.signals, "#e6edf3", c.signals, "#e6edf3", m.signals, "#e6edf3")}${row("Win Rate", d.winRate, g(d.winRate, c.winRate), c.winRate, g(c.winRate, m.winRate), m.winRate, g(m.winRate, c.winRate))}${row("Avg R:R", d.avgRR, g(d.avgRR, c.avgRR), c.avgRR, g(c.avgRR, m.avgRR), m.avgRR, g(m.avgRR, c.avgRR))}${row("Profit Factor", d.profitFactor, g(d.profitFactor, c.profitFactor), c.profitFactor, g(c.profitFactor, m.profitFactor), m.profitFactor, g(m.profitFactor, c.profitFactor))}${row("Max DD", d.maxDD, dg(d.maxDD, c.maxDD), c.maxDD, dg(c.maxDD, m.maxDD), m.maxDD, dg(m.maxDD, c.maxDD))}</div></div></section>`;
+  return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="compToggle"><div class="history-toggle-left"><h3>Strategy Comparison</h3><span class="history-count">🤖 ML</span></div><span class="arrow">▾</span></button><div class="history-body open" id="compBody"><div style="padding:4px 12px;font-size:.58rem;color:var(--muted-3)">Net of ${backtest.comparison.feePct}% round-trip fee, spread and slippage. Green = better of Custom vs Custom + ML. ML uses only earlier resolved outcomes. Maximum ${backtest.comparison.maxOpenPositions} concurrent positions per pair.</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0;padding:8px 12px;font-size:.72rem">${head("Metric")}${head("Default")}${head("Custom")}${head("Custom+ML")}${row("Signals", d.signals, "#e6edf3", c.signals, "#e6edf3", m.signals, "#e6edf3")}${row("Win Rate", d.winRate, g(d.winRate, c.winRate), c.winRate, g(c.winRate, m.winRate), m.winRate, g(m.winRate, c.winRate))}${row("Avg R:R", d.avgRR, g(d.avgRR, c.avgRR), c.avgRR, g(c.avgRR, m.avgRR), m.avgRR, g(m.avgRR, c.avgRR))}${row("Profit Factor", d.profitFactor, g(d.profitFactor, c.profitFactor), c.profitFactor, g(c.profitFactor, m.profitFactor), m.profitFactor, g(m.profitFactor, c.profitFactor))}${row("Max DD", d.maxDD, dg(d.maxDD, c.maxDD), c.maxDD, dg(c.maxDD, m.maxDD), m.maxDD, dg(m.maxDD, c.maxDD))}${row("Skipped (capacity)", d.skippedSignals, "#e6edf3", c.skippedSignals, "#e6edf3", m.skippedSignals, "#e6edf3")}</div></div></section>`;
 }
 
 function renderCorrelationMatrix() {
@@ -398,7 +419,7 @@ function renderStrategyOptimizer() {
   const liveCfg = loadStrategyConfig();
   const context = validation?.context;
   const baseConfigMatches = context && Object.keys(context.baseCfg).every(key => ["threshold", "riskRewardRatio", "volumeMultiplier"].includes(key) || context.baseCfg[key] === liveCfg[key]);
-  const contextMatches = context && context.pair === `${state.base}/${state.quote}` && context.feePct === liveCfg.feePct && context.riskPerTradePct === liveCfg.riskPerTradePct && context.spreadPips === (slippageConfig.spreadPips || 0) && context.slippagePips === (slippageConfig.slippagePips || 0) && baseConfigMatches;
+  const contextMatches = context && context.pair === `${state.base}/${state.quote}` && context.feePct === liveCfg.feePct && context.riskPerTradePct === liveCfg.riskPerTradePct && context.spreadPips === (slippageConfig.spreadPips || 0) && context.slippagePips === (slippageConfig.slippagePips || 0) && context.maxOpenPositions === loadRiskConfig().maxPos && baseConfigMatches;
   const validForTop = !!(r?.[0] && validation?.passed && contextMatches && JSON.stringify(validation.cfg) === JSON.stringify(r[0].cfg));
   const validationCopy = validation ? (!contextMatches ? "Settings changed since validation. Run walk-forward again." : validForTop ? `Walk-forward passed: ${validation.trades} resolved test trades, ${validation.returnPct >= 0 ? "+" : ""}${validation.returnPct.toFixed(1)}% net return.` : `Walk-forward did not pass: ${validation.trades} resolved test trades, ${validation.returnPct >= 0 ? "+" : ""}${validation.returnPct.toFixed(1)}% net return. Require at least 10 trades and positive return.`) : "Run walk-forward on the leading candidate before applying it.";
   return `<section class="dashboard-section"><button class="backtest-toggle no-select" id="optToggle"><div class="history-toggle-left"><h3>Strategy Optimizer</h3></div><span class="arrow">▾</span></button><div class="history-body" id="optBody"><div style="padding:12px">${optimizerState.running ? `<div style="text-align:center;color:var(--muted);font-size:.72rem">Optimizing parameters... ${optimizerState.progress}</div>` : r ? (() => { const top5 = r.slice(0, 5); return `<div style="text-align:center;color:var(--muted);font-size:.68rem;margin-bottom:8px">In-sample ranking · fees, spread and slippage included · ${r.length} combinations</div><div style="max-height:250px;overflow-y:auto"><div style="display:flex;align-items:center;gap:4px;font-size:.62rem;padding:3px 4px;color:var(--muted-3);font-weight:600;border-bottom:1px solid var(--border)"><span style="width:20px">#</span><span style="width:32px">Thr</span><span style="width:32px">RR</span><span style="width:32px">Vol</span><span style="width:32px;text-align:right">N</span><span style="width:36px;text-align:right">WR%</span><span style="width:44px;text-align:right">Return</span><span style="width:44px;text-align:right">MaxDD</span></div>${r.map((o, i) => `<div class="opt-row${i === 0 ? ' opt-best' : ''}"><span style="width:20px;color:${i===0?'var(--buy)':'var(--muted-3)'};font-weight:700">${i + 1}</span><span style="width:32px">${o.cfg.threshold}</span><span style="width:32px">${o.cfg.riskRewardRatio}</span><span style="width:32px">${o.cfg.volumeMultiplier}</span><span style="width:32px;text-align:right">${o.signals}</span><span style="width:36px;text-align:right;color:${o.winRate>=50?'var(--buy)':'var(--sell)'}">${o.winRate}%</span><span style="width:44px;text-align:right;color:${o.pnl>=0?'var(--buy)':'var(--sell)'}">${o.pnl>=0?'+':''}${o.pnl.toFixed(1)}%</span><span style="width:44px;text-align:right;color:var(--sell)">${o.maxDD}</span></div>`).join("")}</div>${top5.length > 0 ? `<div style="margin-top:8px;padding:8px;background:var(--panel-inset);border-radius:6px"><div style="font-size:.65rem;color:var(--muted-3);margin-bottom:4px">Leading candidate: Threshold=${top5[0].cfg.threshold}, R:R=${top5[0].cfg.riskRewardRatio}, Vol=${top5[0].cfg.volumeMultiplier}</div><div style="font-size:.62rem;color:${validForTop?'var(--buy)':'var(--warn-orange)'};margin:4px 0 8px">${validationCopy}</div><div style="display:flex;gap:6px;flex-wrap:wrap"><button id="validateOptimal" ${wfState.running ? "disabled" : ""} style="padding:6px 12px;background:var(--border);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;font-size:.72rem;cursor:pointer;font-family:inherit">${wfState.running && optimizerState.selectedCfg ? "Validating candidate…" : "Validate with walk-forward"}</button><button id="applyOptimal" ${validForTop ? "" : "disabled"} style="padding:6px 12px;background:var(--buy-strong);color:var(--on-accent);border:none;border-radius:6px;font-size:.72rem;cursor:${validForTop?'pointer':'not-allowed'};opacity:${validForTop?1:.55};font-family:inherit">Apply validated settings</button></div></div>` : ''}` })() : '<div style="text-align:center;color:var(--muted-3);font-size:.72rem">Ranks candidate settings using historical data and realistic costs. Apply is enabled only after out-of-sample validation passes.</div>'}</div>${!optimizerState.running ? `<div style="padding:0 12px 12px"><button id="runOpt" style="width:100%;padding:8px;background:var(--border);color:var(--muted);border:1px solid var(--border-strong);border-radius:8px;font-size:.75rem;cursor:pointer">Run Optimizer</button></div>` : ''}</div></section>`;
@@ -429,15 +450,17 @@ async function runMultiPairBacktest() {
     try {
       const [base, quote] = pair.split("/");
       const rows = await fetchBinanceRows(base, quote, "1d", 1000);
-      if (rows.length < 120) { results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" }; continue; }
-      const trades = [];
+      if (rows.length < 120) { results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%", skippedSignals: 0, maxOpenPositions: loadRiskConfig().maxPos }; continue; }
+      const candidates = [];
       for (let j = 100; j < rows.length; j++) {
         const slice = rows.slice(0, j + 1);
         const analysis = analyze(slice, cfg, pair);
         if (!analysis || analysis.direction === "WAIT") continue;
         const trade = evaluateBacktestTrade(rows, j, analysis, pair, cfg.feePct || 0, cfg.riskPerTradePct || 1);
-        if (trade && trade.result !== "pending") trades.push(trade);
+        if (trade) candidates.push({ ...trade, entryIndex: j });
       }
+      const capacity = applyPositionLimit(candidates, loadRiskConfig().maxPos);
+      const trades = capacity.trades.filter(t => t.result !== "pending");
       const wins = trades.filter(t => t.result === "win").length;
       const losses = trades.filter(t => t.result === "loss").length;
       const total = trades.length;
@@ -448,9 +471,9 @@ async function runMultiPairBacktest() {
       const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
       let eq = 100, peak = 100, maxDD = 0;
       trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
-      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%" };
+      results[pair] = { signals: total, wins, losses, winRate, avgRR, profitFactor: pf, maxDD: maxDD.toFixed(1) + "%", netReturn: (eq - 100).toFixed(1) + "%", skippedSignals: capacity.skippedSignals, maxOpenPositions: capacity.maxOpenPositions };
     } catch {
-      results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%" };
+      results[pair] = { signals: 0, wins: 0, losses: 0, winRate: 0, avgRR: "0", profitFactor: "0", maxDD: "0%", skippedSignals: 0, maxOpenPositions: loadRiskConfig().maxPos };
     }
   }
   backtest.multiResults = results;
