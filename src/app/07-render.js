@@ -548,6 +548,9 @@ function addSignalToHistory(pair, task) {
 
 function recordSignal() {
   const task = state.rows.length > 0 ? analyze(state.rows, loadStrategyConfig(), `${state.base}/${state.quote}`, true) : null;
+  // History and paper trading must follow the effective signal after the ML
+  // gate, so a rejected setup is never recorded as an actionable signal.
+  if (task && !mlFilterPass(task)) return;
   const dir = task?.direction ?? "WAIT";
   const isNew = addSignalToHistory(`${state.base}/${state.quote}`, task);
   if (isNew && dir !== "WAIT") {

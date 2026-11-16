@@ -1592,6 +1592,24 @@ assert(portfolioCapacity.trades.map(t => t.pair).join(",") === "BBB/USD,DDD/USD"
 assert(portfolioCapacity.skippedByPair["AAA/USD"] === 1 && portfolioCapacity.skippedByPair["CCC/USD"] === 1, "portfolio capacity reports skips against the correct pair");
 assert(portfolioCapacity.maxOpenPositions === 1, "multi-pair portfolio keeps the configured global position cap");
 
+const mlRejectedHistoryCount = vm.runInContext(`(() => {
+  const saved = { rows: state.rows, base: state.base, quote: state.quote, analyze, history: autoScan.history, total: autoScan.totalGenerated, filter: mlFilterEnabled, trained: mlModel.trained };
+  try {
+    state.rows = [{ close: 100 }]; state.base = "BTC"; state.quote = "USD";
+    autoScan.history = []; autoScan.totalGenerated = 0;
+    mlFilterEnabled = true; mlModel.trained = true;
+    analyze = () => ({ direction: "BUY", confidence: 80, ml: { label: "loss", win: 0.4 } });
+    recordSignal();
+    return { count: autoScan.history.length, total: autoScan.totalGenerated };
+  } finally {
+    state.rows = saved.rows; state.base = saved.base; state.quote = saved.quote; analyze = saved.analyze;
+    autoScan.history = saved.history; autoScan.totalGenerated = saved.total;
+    mlFilterEnabled = saved.filter; mlModel.trained = saved.trained;
+  }
+})()`, ctx);
+assert(mlRejectedHistoryCount.count === 0, "ML-rejected trades do not appear in signal history");
+assert(mlRejectedHistoryCount.total === 0, "ML-rejected trades do not increment the signal history total");
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
