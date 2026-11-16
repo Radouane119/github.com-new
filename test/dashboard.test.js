@@ -954,6 +954,22 @@ try {
   assert(reloaded.data.value === "persisted", "the rehydrated payload matches");
   assert(vm.runInContext("marketCacheStats().entries", ctx) >= 1, "the cache index reports stored entries");
 
+  // A transient HTTP/2 ping reset from Bybit is retried before provider fallback.
+  let pingCalls = 0;
+  ctx.fetch = () => {
+    pingCalls++;
+    if (pingCalls === 1) return Promise.reject(new TypeError("ERR_HTTP2_PING_FAILED"));
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ result: { list: [] } }) });
+  };
+  await ctx.cachedJson("https://api.bybit.com/v5/market/kline?symbol=BTCUSDT", { ttl: 1000, key: "test:bybit-ping", provider: "bybit", retries: 2 });
+  assert(pingCalls === 2, "Bybit retries a transient connection reset and recovers, got " + pingCalls + " calls");
+  const realCachedJsonForBybit = ctx.cachedJson;
+  let bybitRetryCount = 0;
+  ctx.cachedJson = async (_url, opts) => { bybitRetryCount = opts.retries; return { data: { retCode: 0, result: { list: [["1700000000000", "1", "2", "0.5", "1.5", "3"]] } } }; };
+  const bybitRows = await ctx.fetchBybitRows("BTC", "USD", "1m", 1000);
+  assert(bybitRetryCount === 2 && bybitRows.length === 1, "Bybit candle requests opt into connection retries");
+  ctx.cachedJson = realCachedJsonForBybit;
+
   // Stale-if-error: a failed refresh keeps the last good payload available.
   await new Promise((resolve) => setTimeout(resolve, 8));
   ctx.fetch = () => Promise.resolve({ ok: false, status: 500, json: async () => ({}) });

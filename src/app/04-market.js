@@ -272,6 +272,9 @@ async function fetchBybitRows(base, quote, interval, limit) {
     ttl: interval === "1d" ? MARKET_TTL.daily : MARKET_TTL.intraday,
     key: `bybit:${symbol}:${interval}:${limit}`,
     provider: "bybit",
+    // Browser/network connection resets such as ERR_HTTP2_PING_FAILED are
+    // transient; retry before fetchBinanceRows falls through to Coinbase.
+    retries: 2,
   });
   const data = result.data;
   const list = data?.result?.list;
