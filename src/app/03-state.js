@@ -62,6 +62,14 @@ function sanitizeHistoryEntry(raw) {
   };
 }
 
+function isTradeableHistoryEntry(entry) {
+  return !!entry && (entry.direction === "BUY" || entry.direction === "SELL") && !/^no\s*trade\b/i.test(String(entry.risk || "").trim());
+}
+
+function isResolvedHistoryTrade(entry) {
+  return isTradeableHistoryEntry(entry) && (entry.result === "win" || entry.result === "loss");
+}
+
 function sanitizePosition(raw) {
   if (!isPlainObject(raw)) return null;
   const pair = cleanPair(raw.pair);
@@ -190,7 +198,7 @@ function normalizeRiskConfig(raw) {
 const ML_FEATURES = ["confidence", "maxScore", "margin", "volatility", "isBuy"];
 
 const mlModel = {
-  version: 2, n: 0, trained: false, minSamples: 8,
+  version: 3, n: 0, trained: false, minSamples: 8,
   muWin: [0, 0, 0, 0, 0], varWin: [0, 0, 0, 0, 0],
   muLoss: [0, 0, 0, 0, 0], varLoss: [0, 0, 0, 0, 0],
   nWin: 0, nLoss: 0,
@@ -224,7 +232,7 @@ function mlSave() {
   storageSet("mlStats", JSON.stringify(mlStats));
 }
 function mlReset() {
-  mlModel.version = 2; mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
+  mlModel.version = 3; mlModel.n = 0; mlModel.trained = false; mlModel.muWin = [0,0,0,0,0]; mlModel.varWin = [0,0,0,0,0];
   mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0]; mlModel.nWin = 0; mlModel.nLoss = 0;
   mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
   mlSave();
@@ -269,7 +277,7 @@ function mlTrain(features, label, weight = 1) {
   return label;
 }
 function mlTrainEntry(entry) {
-  if (!entry || (entry.result !== "win" && entry.result !== "loss")) return;
+  if (!isResolvedHistoryTrade(entry)) return;
   const f = mlFeaturize(entry);
   mlTrain(f, entry.result, 1);
 }
@@ -281,7 +289,7 @@ function mlBatchTrain(history) {
   mlModel.muLoss = [0,0,0,0,0]; mlModel.varLoss = [0,0,0,0,0];
   mlModel.nWin = 0; mlModel.nLoss = 0;
   for (const e of history) {
-    if (e.result === "win" || e.result === "loss") {
+    if (isResolvedHistoryTrade(e)) {
       if (mlUpdate(mlFeaturize(e), e.result)) trained++;
     }
   }
@@ -326,6 +334,22 @@ function mlFilterPass(analysis) {
 }
 
 let mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
+
+function rebuildMlStats(history) {
+  mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
+  for (const entry of history || []) {
+    const pred = entry.mlPrediction;
+    if (!isResolvedHistoryTrade(entry) || !pred || !Number.isFinite(pred.win)) continue;
+    const correct = (pred.label === "win" && entry.result === "win") || (pred.label === "loss" && entry.result === "loss");
+    mlStats.filtered++;
+    if (correct) mlStats.filteredCorrect++;
+    if (entry.outcomeType === "target" || entry.outcomeType === "stop") {
+      mlStats.entryEvaluated++;
+      if (correct) mlStats.entryCorrect++;
+    }
+  }
+  mlSave();
+}
 
 function mlSizingFactor(analysis, fallbackWR) {
   if (!mlModel.trained || !analysis || !analysis.ml || analysis.ml.win == null) return 1;

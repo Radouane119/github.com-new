@@ -297,7 +297,7 @@ function renderHeatmap() {
 
 
 function renderDrawdownChart() {
-  var sigs = autoScan.history.filter(function(e) { return e.result === 'win' || e.result === 'loss'; });
+  var sigs = autoScan.history.filter(isResolvedHistoryTrade);
   if (sigs.length < 3) return '';
   var cum = 0, peak = 0;
   var ddSeries = sigs.map(function(s) {

@@ -397,7 +397,7 @@ async function runStrategyOptimizer() {
 function sendScheduledReport() {
   if (!webhookUrl || !isValidWebhookUrl(webhookUrl)) return;
   const hist = autoScan.history.filter(e => e.direction !== "WAIT");
-  const resolved = hist.filter(e => e.result === "win" || e.result === "loss");
+  const resolved = hist.filter(isResolvedHistoryTrade);
   const wins = resolved.filter(e => e.result === "win").length;
   const losses = resolved.filter(e => e.result === "loss").length;
   const wr = resolved.length > 0 ? Math.round((wins / resolved.length) * 100) : 0;

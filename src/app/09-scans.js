@@ -123,7 +123,7 @@ async function scanAllPairs() {
 }
 
 async function verifySignals() {
-  const pending = autoScan.history.filter(e => e.direction !== "WAIT" && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
+  const pending = autoScan.history.filter(e => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
   if (pending.length === 0) return;
   const pairs = [...new Set(pending.map(e => e.pair))];
   const priceCache = {};

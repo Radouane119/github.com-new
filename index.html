@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-g//Bt2nPOJ6am20KnPIrC4v8iI4GmRwzp/LKyTes58A='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-M+keeM3ZLNlcbdk497KBsMfGpHW7Ynejl99tsiXr/wU='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -992,6 +992,12 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending"
     };
   }
+  function isTradeableHistoryEntry(entry) {
+    return !!entry && (entry.direction === "BUY" || entry.direction === "SELL") && !/^no\s*trade\b/i.test(String(entry.risk || "").trim());
+  }
+  function isResolvedHistoryTrade(entry) {
+    return isTradeableHistoryEntry(entry) && (entry.result === "win" || entry.result === "loss");
+  }
   function sanitizePosition(raw) {
     if (!isPlainObject(raw)) return null;
     const pair = cleanPair(raw.pair);
@@ -1112,7 +1118,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
   }
   var ML_FEATURES = ["confidence", "maxScore", "margin", "volatility", "isBuy"];
   var mlModel = {
-    version: 2,
+    version: 3,
     n: 0,
     trained: false,
     minSamples: 8,
@@ -1161,7 +1167,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     storageSet("mlStats", JSON.stringify(mlStats));
   }
   function mlReset() {
-    mlModel.version = 2;
+    mlModel.version = 3;
     mlModel.n = 0;
     mlModel.trained = false;
     mlModel.muWin = [0, 0, 0, 0, 0];
@@ -1213,7 +1219,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     return label;
   }
   function mlTrainEntry(entry) {
-    if (!entry || entry.result !== "win" && entry.result !== "loss") return;
+    if (!isResolvedHistoryTrade(entry)) return;
     const f = mlFeaturize(entry);
     mlTrain(f, entry.result, 1);
   }
@@ -1229,7 +1235,7 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     mlModel.nWin = 0;
     mlModel.nLoss = 0;
     for (const e of history) {
-      if (e.result === "win" || e.result === "loss") {
+      if (isResolvedHistoryTrade(e)) {
         if (mlUpdate(mlFeaturize(e), e.result)) trained++;
       }
     }
@@ -1270,6 +1276,21 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     return analysis.ml.label === "win";
   }
   var mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
+  function rebuildMlStats(history) {
+    mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
+    for (const entry of history || []) {
+      const pred = entry.mlPrediction;
+      if (!isResolvedHistoryTrade(entry) || !pred || !Number.isFinite(pred.win)) continue;
+      const correct = pred.label === "win" && entry.result === "win" || pred.label === "loss" && entry.result === "loss";
+      mlStats.filtered++;
+      if (correct) mlStats.filteredCorrect++;
+      if (entry.outcomeType === "target" || entry.outcomeType === "stop") {
+        mlStats.entryEvaluated++;
+        if (correct) mlStats.entryCorrect++;
+      }
+    }
+    mlSave();
+  }
   function mlSizingFactor(analysis, fallbackWR) {
     if (!mlModel.trained || !analysis || !analysis.ml || analysis.ml.win == null) return 1;
     const p = Math.max(0.05, Math.min(0.95, analysis.ml.win));
@@ -3196,7 +3217,7 @@ Entry: ${entry.entry != null ? formatPrice(entry.entry, entry.pair) : "-"} | Sto
   function sendScheduledReport() {
     if (!webhookUrl || !isValidWebhookUrl(webhookUrl)) return;
     const hist = autoScan.history.filter((e) => e.direction !== "WAIT");
-    const resolved = hist.filter((e) => e.result === "win" || e.result === "loss");
+    const resolved = hist.filter(isResolvedHistoryTrade);
     const wins = resolved.filter((e) => e.result === "win").length;
     const losses = resolved.filter((e) => e.result === "loss").length;
     const wr = resolved.length > 0 ? Math.round(wins / resolved.length * 100) : 0;
@@ -3728,9 +3749,7 @@ Timestamp: ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
     return '<section class="dashboard-section"><button class="backtest-toggle no-select" id="heatmapToggle"><div class="history-toggle-left"><h3>Portfolio Heatmap</h3></div><span class="arrow">▾</span></button><div class="history-body" id="heatmapBody"><div class="heatmap-grid">' + cells + "</div></div></section>";
   }
   function renderDrawdownChart() {
-    var sigs = autoScan.history.filter(function(e) {
-      return e.result === "win" || e.result === "loss";
-    });
+    var sigs = autoScan.history.filter(isResolvedHistoryTrade);
     if (sigs.length < 3) return "";
     var cum = 0, peak = 0;
     var ddSeries = sigs.map(function(s) {
@@ -4282,7 +4301,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
 
       ${(() => {
       const perfData = (() => {
-        const sigs = autoScan.history.filter((e) => e.result === "win" || e.result === "loss").reverse();
+        const sigs = autoScan.history.filter(isResolvedHistoryTrade).reverse();
         if (sigs.length < 2) return null;
         let cum = 0;
         return sigs.map((s) => {
@@ -4312,7 +4331,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
     })() : ""}
 
       ${(() => {
-      const sigs = autoScan.history.filter((e) => e.result === "win" || e.result === "loss");
+      const sigs = autoScan.history.filter(isResolvedHistoryTrade);
       if (sigs.length < 3) return "";
       const byPair = {};
       sigs.forEach((e) => {
@@ -4382,7 +4401,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
         return s + pnlPct / 100 * balance;
       }, 0);
       const equity = startingBalance + realizedPnl + unrealizedPnl;
-      const hist = autoScan.history.filter((e) => e.direction !== "WAIT" && (e.result === "win" || e.result === "loss"));
+      const hist = autoScan.history.filter(isResolvedHistoryTrade);
       const histWins = hist.filter((e) => e.result === "win").length;
       const histWR = hist.length > 0 ? histWins / hist.length : 0.5;
       const histAvgW = hist.filter((e) => e.result === "win").length > 0 ? hist.filter((e) => e.result === "win").reduce((s, e) => {
@@ -4616,6 +4635,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
     }
     if (autoScan.totalGenerated < autoScan.history.length) autoScan.totalGenerated = autoScan.history.length;
     if (mlLoad()) mlBatchTrain(autoScan.history);
+    rebuildMlStats(autoScan.history);
   }
   function playBeep() {
     if (!soundEnabled) return;
@@ -4785,7 +4805,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
   }
   function renderPerformanceSummary() {
     const hist = autoScan.history.filter((e) => e.direction !== "WAIT");
-    const resolved = hist.filter((e) => e.result === "win" || e.result === "loss");
+    const resolved = hist.filter(isResolvedHistoryTrade);
     const closed = positions.filter((p) => p.closedAt);
     const open = positions.filter((p) => !p.closedAt);
     const totalResolved = resolved.length;
@@ -4898,7 +4918,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     }
   }
   function calcStats() {
-    const signals = autoScan.history.filter((e) => e.direction !== "WAIT" && e.result !== "pending");
+    const signals = autoScan.history.filter(isResolvedHistoryTrade);
     const total = signals.length;
     const wins = signals.filter((e) => e.result === "win").length;
     const losses = signals.filter((e) => e.result === "loss").length;
@@ -5708,7 +5728,7 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     render();
   }
   async function verifySignals() {
-    const pending = autoScan.history.filter((e) => e.direction !== "WAIT" && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
+    const pending = autoScan.history.filter((e) => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
     if (pending.length === 0) return;
     const pairs = [...new Set(pending.map((e) => e.pair))];
     const priceCache = {};

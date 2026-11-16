@@ -1610,6 +1610,26 @@ const mlRejectedHistoryCount = vm.runInContext(`(() => {
 assert(mlRejectedHistoryCount.count === 0, "ML-rejected trades do not appear in signal history");
 assert(mlRejectedHistoryCount.total === 0, "ML-rejected trades do not increment the signal history total");
 
+const noTradeAccounting = vm.runInContext(`(() => {
+  autoScan.history = [
+    { direction: "BUY", risk: "No trade", result: "win" },
+    { direction: "SELL", risk: "No trade (ML filter)", result: "loss" },
+    { direction: "SELL", risk: "Low", result: "loss" },
+  ];
+  const visibleStats = calcStats();
+  const trainedCount = mlBatchTrain(autoScan.history);
+  const modelCounts = { wins: mlModel.nWin, losses: mlModel.nLoss };
+  rebuildMlStats([
+    { direction: "BUY", risk: "No trade", result: "win", mlPrediction: { win: 0.8, label: "win" }, outcomeType: "target" },
+    { direction: "SELL", risk: "Low", result: "loss", mlPrediction: { win: 0.4, label: "loss" }, outcomeType: "stop" },
+  ]);
+  return { visibleStats, trainedCount, modelCounts, mlStats: { ...mlStats } };
+})()`, ctx);
+assert(noTradeAccounting.visibleStats.total === 1 && noTradeAccounting.visibleStats.wins === 0 && noTradeAccounting.visibleStats.losses === 1, "No trade history entries are excluded from win/loss statistics");
+assert(noTradeAccounting.trainedCount === 1 && noTradeAccounting.modelCounts.wins === 0 && noTradeAccounting.modelCounts.losses === 1, "ML trains only from outcomes of tradeable signals");
+assert(noTradeAccounting.mlStats.entryEvaluated === 1 && noTradeAccounting.mlStats.entryCorrect === 1, "ML entry reliability skips No trade outcomes");
+ctx.mlReset();
+
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);
 process.exit(fail > 0 ? 1 : 0);
