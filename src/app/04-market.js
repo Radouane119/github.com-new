@@ -84,11 +84,6 @@ function atr(rows, period = 14) {
   return sma(ranges, period);
 }
 
-function stdev(values) {
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
-}
-
 function obv(rows) {
   const out = Array(rows.length).fill(null);
   let val = 0;

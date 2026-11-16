@@ -325,10 +325,6 @@ function mlFilterPass(analysis) {
   return analysis.ml.label === "win";
 }
 
-function mlFilterWarn(analysis) {
-  return mlFilterEnabled && analysis && analysis.ml && analysis.ml.label === "loss";
-}
-
 let mlStats = { filtered: 0, filteredCorrect: 0, entryEvaluated: 0, entryCorrect: 0 };
 
 function mlSizingFactor(analysis, fallbackWR) {

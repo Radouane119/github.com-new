@@ -73,8 +73,6 @@ function analyze(rows, cfg, sigKey, trackSignal = false) {
   const extBuffer = adxStrongNow ? (Number.isFinite(last.atr) ? last.atr : 0) : 0;
   const notExtendedLong = last.bUpper == null || last.close < last.bUpper + extBuffer;
   const notExtendedShort = last.bLower == null || last.close > last.bLower - extBuffer;
-  const priceRising = rows.length >= 5 && last.close > rows[rows.length - 5].close;
-  const priceFalling = rows.length >= 5 && last.close < rows[rows.length - 5].close;
   const hasVolume = rows.some(r => Number.isFinite(r.volume) && r.volume > 0);
   const volSma = hasVolume ? sma(rows.map(r => r.volume), 20) : null;
   const volSurge = hasVolume && volSma && last.volume > volSma.at(-1) * volumeMultiplier;
@@ -174,7 +172,6 @@ function analyze(rows, cfg, sigKey, trackSignal = false) {
   }
 
   const divBonus = direction === "BUY" && bullishDiv ? 8 : direction === "SELL" && bearishDiv ? 8 : 0;
-  const score = Math.max(buyScore, sellScore);
   const volBonus = volSurge ? 8 : 0;
   const adxBonus = adxStrong ? 6 : 0;
   const confidence = Math.min(100, Math.max(0, rawConfidence + volBonus + adxBonus + divBonus - decay));

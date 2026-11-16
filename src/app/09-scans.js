@@ -73,6 +73,7 @@ async function scanPairForOverview(pair, token) {
     multiScan.results[pair] = {
       loading: false, direction: analysis?.direction ?? "WAIT", confidence: conf,
       risk: analysis?.risk ?? "", volatilityPct: analysis?.volatilityPct ?? 0, price, change,
+      atr: atr(rows).at(-1),
       entry: analysis?.entry, stop: analysis?.stop, target: analysis?.target,
       mtf4h: analysis ? (a4h ? a4h.direction : null) : null, mtfTf: ctxTf,
     };

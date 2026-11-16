@@ -167,11 +167,6 @@ function findFibLevels(rows, lookback) {
   return levels.map(pct => ({ pct, price: isFibUp ? lo + range * pct : hi - range * pct, label: (pct * 100).toFixed(1) + "%" }));
 }
 
-function ichimokuCloudColor(senkouA, senkouB) {
-  if (senkouA == null || senkouB == null) return "rgba(100,140,180,0.08)";
-  return senkouA > senkouB ? "rgba(63,185,80,0.12)" : "rgba(248,81,73,0.12)";
-}
-
 function pearsonCorrelation(x, y) {
   const n = Math.min(x.length, y.length);
   if (n < 10) return 0;
@@ -381,8 +376,6 @@ async function runStrategyOptimizer() {
       const losses = trades.filter(t => t.result === "loss").length;
       const totalT = trades.length;
       const wr = totalT > 0 ? Math.round((wins / totalT) * 100) : 0;
-      const avgWin = wins > 0 ? trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0) / wins : 0;
-      const avgLoss = losses > 0 ? Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0) / losses) : 0;
       const pf = losses > 0 ? (Math.abs(trades.filter(t => t.result === "win").reduce((s, t) => s + t.pnlPct, 0)) / Math.abs(trades.filter(t => t.result === "loss").reduce((s, t) => s + t.pnlPct, 0))).toFixed(2) : (wins > 0 ? "\u221E" : "0");
       let eq = 100, peak = 100, maxDD = 0;
       trades.forEach(t => { eq *= 1 + t.equityPct / 100; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak * 100 : 0; if (dd > maxDD) maxDD = dd; });
@@ -450,7 +443,6 @@ function advanceReplay() {
   replayState.direction = analysis?.direction || "WAIT";
   replayState.confidence = analysis?.confidence || 0;
   if (analysis && analysis.direction !== "WAIT") {
-    const lastPrice = rows[currentBar].close;
     const isBuy = analysis.direction === "BUY";
     let result = null;
     for (let j = currentBar + 1; j < Math.min(currentBar + 30, rows.length); j++) {
@@ -555,9 +547,9 @@ function autoCheckPaperPositions() {
         const partialPnl = favorDist / pos.entry * 100 * (partPct / 100);
         paperState.balance += paperState.balance * (partialPnl / 100);
         pos.size = remainPct;
-        const be = isBuy ? pos.entry + Math.max(risk * 0.1, Math.abs(pos.entry - pos.entry) === 0 ? 0 : risk * 0.1) : pos.entry - Math.max(risk * 0.1, risk * 0.1);
-        if (isBuy) pos.stop = Math.max(pos.stop, pos.entry + risk * 0.1);
-        else pos.stop = Math.min(pos.stop, pos.entry - risk * 0.1);
+        const breakEven = isBuy ? pos.entry + risk * 0.1 : pos.entry - risk * 0.1;
+        if (isBuy) pos.stop = Math.max(pos.stop, breakEven);
+        else pos.stop = Math.min(pos.stop, breakEven);
         paperState.equityCurve.push({ time: new Date(), balance: paperState.balance });
         savePaperState();
       } else {
@@ -565,9 +557,10 @@ function autoCheckPaperPositions() {
       }
     }
     if (atHalf) {
+      const trailDistance = Number.isFinite(r.atr) && r.atr > 0 ? r.atr * atrMult : risk * 0.4;
       const newStop = isBuy
-        ? Math.max(pos.stop, pos.entry + risk * 0.4)
-        : Math.min(pos.stop, pos.entry - risk * 0.4);
+        ? Math.max(pos.stop, pos.highWater - trailDistance)
+        : Math.min(pos.stop, pos.lowWater + trailDistance);
       if (isBuy && newStop > pos.stop) { pos.stop = newStop; }
       if (!isBuy && newStop < pos.stop) { pos.stop = newStop; }
     }

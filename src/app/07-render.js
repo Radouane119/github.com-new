@@ -194,7 +194,7 @@ function render() {
   const historyMatches = autoScan.history.map((entry, index) => ({ entry, index })).filter(({ entry }) => signalMatchesHistoryFilters(entry));
   const pair = `${state.base}/${state.quote}`;
   const analysis = analyze(state.rows, loadStrategyConfig());
-  const mlBlocked = mlFilterWarn(analysis);
+  const mlBlocked = !mlFilterPass(analysis);
   const effAnalysis = mlBlocked ? { ...analysis, direction: "WAIT", risk: "No trade (ML filter)", reasons: [...(analysis?.reasons || []), { ok: false, text: "ML model predicts low win probability — filtered" }] } : analysis;
   const displayConfidence = effAnalysis ? Math.min(100, Math.max(0, effAnalysis.confidence + (effAnalysis.direction === "WAIT" ? 0 : mtfAgreementBonus(state.mtf, effAnalysis.direction)))) : null;
   const displayRisk = effAnalysis ? (effAnalysis.direction === "WAIT" ? effAnalysis.risk : (effAnalysis.risk === "Low" && displayConfidence >= 72 ? "Low" : "No trade")) : "";
