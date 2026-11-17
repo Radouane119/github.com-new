@@ -48,7 +48,10 @@ async function scanPairForOverview(pair, token) {
     const rows = await fetchOverviewRows(pair, scanTf);
     if (staleScan()) return;
     const cfg = loadStrategyConfig();
-    const analysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
+    const rawAnalysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
+    const analysis = rawAnalysis && !mlFilterPass(rawAnalysis)
+      ? { ...rawAnalysis, direction: "WAIT", risk: "No trade (ML filter)" }
+      : rawAnalysis;
     let mtfConf = 0;
     let a4h = null;
     if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD"))) {
@@ -122,7 +125,15 @@ async function scanAllPairs() {
   render();
 }
 
+let signalVerificationInFlight = null;
 async function verifySignals() {
+  if (signalVerificationInFlight) return signalVerificationInFlight;
+  signalVerificationInFlight = verifyPendingSignals();
+  try { return await signalVerificationInFlight; }
+  finally { signalVerificationInFlight = null; }
+}
+
+async function verifyPendingSignals() {
   const pending = autoScan.history.filter(e => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
   if (pending.length === 0) return;
   const pairs = [...new Set(pending.map(e => e.pair))];

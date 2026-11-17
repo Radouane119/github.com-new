@@ -500,6 +500,11 @@ assert(histLen() === lenAfterWait, "five WAIT evaluations leave history untouche
 const buyTask = { direction: "BUY", confidence: 80, risk: "Low", entry: 1.1, stop: 1.09, target: 1.13 };
 assert(ctx.addSignalToHistory("EUR/USD", buyTask) === true, "a BUY task is recorded");
 assert(histLen() === lenAfterWait + 1, "history grew by one for the BUY, got " + histLen());
+const fixedBuy = vm.runInContext("autoScan.history.find(e => e.pair === 'EUR/USD' && e.direction === 'BUY' && e.result === 'pending')", ctx);
+const fixedBuySnapshot = { id: fixedBuy.id, timestamp: fixedBuy.timestamp.getTime(), entry: fixedBuy.entry, stop: fixedBuy.stop, target: fixedBuy.target };
+assert(ctx.addSignalToHistory("EUR/USD", { direction: "BUY", confidence: 90, risk: "Low", entry: 1.2, stop: 1.19, target: 1.25 }) === false, "a repeated pending direction does not create a duplicate");
+const fixedBuyAfterScan = vm.runInContext("autoScan.history.find(e => e.pair === 'EUR/USD' && e.direction === 'BUY' && e.result === 'pending')", ctx);
+assert(fixedBuyAfterScan.id === fixedBuySnapshot.id && fixedBuyAfterScan.timestamp.getTime() === fixedBuySnapshot.timestamp && fixedBuyAfterScan.entry === fixedBuySnapshot.entry && fixedBuyAfterScan.stop === fixedBuySnapshot.stop && fixedBuyAfterScan.target === fixedBuySnapshot.target, "repeated scans preserve original signal levels and creation time");
 assert(ctx.addSignalToHistory("GBP/USD", { direction: "SELL", confidence: 74, risk: "Low" }) === true, "a SELL task is recorded");
 assert(histLen() === lenAfterWait + 2, "history grew by two, got " + histLen());
 assert(countDir("BUY") > 0 && countDir("SELL") > 0, "BUY and SELL entries are present");
@@ -1680,6 +1685,17 @@ const optimizerShortData = await vm.runInContext(`(async () => {
   } finally { fetchBinanceRows = oldFetch; render = oldRender; setTimeout = oldTimer; Object.assign(optimizerState, oldState); }
 })()`, ctx);
 assert(optimizerShortData.error.includes("200 daily candles") && optimizerShortData.running === false, "optimizer clearly reports insufficient candle history");
+
+const outcomeCheck = await vm.runInContext(`(async () => {
+  const old = { history: autoScan.history, fetchLivePrice, render, mlTrainEntry };
+  try {
+    autoScan.history = [{ id: Date.now(), timestamp: new Date(), pair: "XRP/USD", direction: "BUY", confidence: 80, risk: "Low", entry: 100, stop: 95, target: 105, volatilityPct: 1, buyScore: 6, sellScore: 1, mlPrediction: null, result: "pending" }];
+    fetchLivePrice = async () => ({ price: 106 }); render = () => {}; mlTrainEntry = () => {};
+    await verifySignals();
+    return { result: autoScan.history[0].result, outcomeType: autoScan.history[0].outcomeType };
+  } finally { autoScan.history = old.history; fetchLivePrice = old.fetchLivePrice; render = old.render; mlTrainEntry = old.mlTrainEntry; }
+})()`, ctx);
+assert(outcomeCheck.result === "win" && outcomeCheck.outcomeType === "target", "the background outcome check resolves a signal when its target is reached");
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);

@@ -621,3 +621,5 @@ setInterval(checkPriceLevelAlerts, 15000);
 setInterval(function() { refreshSessionBar(); }, 60000);
 if (scheduleState.enabled && webhookUrl) { scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1000); }
 setInterval(autoCheckPaperPositions, 30000);
+// Resolve live signal outcomes even when periodic signal generation is off.
+setInterval(() => { if (!autoScan.enabled) verifySignals().catch(() => {}); }, 60000);

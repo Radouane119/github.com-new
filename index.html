@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-1F4R0007CaQZEaIOk/XaeRAKA5b+GLRZV2PKTd+7+38='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-3cbNzWj49IWZVRMYnf0bEZbFqWPkE6pK16xJJZov57w='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -4563,20 +4563,6 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
     if (direction === "WAIT") return false;
     const lastForPair = autoScan.history.find((e) => e.pair === pair);
     if (lastForPair && lastForPair.direction === direction && lastForPair.result === "pending") {
-      Object.assign(lastForPair, {
-        timestamp: /* @__PURE__ */ new Date(),
-        confidence: task?.confidence ?? 0,
-        risk: task?.risk ?? "No trade",
-        entry: task?.entry ?? null,
-        stop: task?.stop ?? null,
-        target: task?.target ?? null,
-        volatilityPct: task?.volatilityPct ?? 0,
-        buyScore: task?.buyScore ?? 0,
-        sellScore: task?.sellScore ?? 0,
-        mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
-        reasons: task?.reasons ?? []
-      });
-      saveHistory();
       return false;
     }
     autoScan.history.unshift({
@@ -5641,7 +5627,8 @@ This will overwrite your current strategy config and scan pairs.`)) return;
       const rows = await fetchOverviewRows(pair, scanTf);
       if (staleScan()) return;
       const cfg = loadStrategyConfig();
-      const analysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
+      const rawAnalysis = rows.length >= 80 ? analyze(rows, cfg, pair, true) : null;
+      const analysis = rawAnalysis && !mlFilterPass(rawAnalysis) ? { ...rawAnalysis, direction: "WAIT", risk: "No trade (ML filter)" } : rawAnalysis;
       let mtfConf = 0;
       let a4h = null;
       if (analysis && analysis.direction !== "WAIT" && (nonFiat.has(base) || binanceFiat.has(base) && quote === "USD")) {
@@ -5736,7 +5723,17 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     multiScan.progress = "";
     render();
   }
+  var signalVerificationInFlight = null;
   async function verifySignals() {
+    if (signalVerificationInFlight) return signalVerificationInFlight;
+    signalVerificationInFlight = verifyPendingSignals();
+    try {
+      return await signalVerificationInFlight;
+    } finally {
+      signalVerificationInFlight = null;
+    }
+  }
+  async function verifyPendingSignals() {
     const pending = autoScan.history.filter((e) => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
     if (pending.length === 0) return;
     const pairs = [...new Set(pending.map((e) => e.pair))];
@@ -7397,6 +7394,10 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     scheduleState.intervalId = setInterval(sendScheduledReport, 6 * 60 * 60 * 1e3);
   }
   setInterval(autoCheckPaperPositions, 3e4);
+  setInterval(() => {
+    if (!autoScan.enabled) verifySignals().catch(() => {
+    });
+  }, 6e4);
 })();
 </script>
 </body>

@@ -507,20 +507,9 @@ function addSignalToHistory(pair, task) {
   if (direction === "WAIT") return false;
   const lastForPair = autoScan.history.find(e => e.pair === pair);
   if (lastForPair && lastForPair.direction === direction && lastForPair.result === "pending") {
-    Object.assign(lastForPair, {
-      timestamp: new Date(),
-      confidence: task?.confidence ?? 0,
-      risk: task?.risk ?? "No trade",
-      entry: task?.entry ?? null,
-      stop: task?.stop ?? null,
-      target: task?.target ?? null,
-      volatilityPct: task?.volatilityPct ?? 0,
-      buyScore: task?.buyScore ?? 0,
-      sellScore: task?.sellScore ?? 0,
-      mlPrediction: task?.ml ? { win: task.ml.win, label: task.ml.label, n: task.ml.n } : null,
-      reasons: task?.reasons ?? [],
-    });
-    saveHistory();
+    // Keep the original entry, stop, target, and creation time fixed while the
+    // trade is pending. Refreshing these levels on each scan moves the goalposts
+    // and can prevent the signal from ever resolving as a win or loss.
     return false;
   }
   autoScan.history.unshift({
