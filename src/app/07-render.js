@@ -281,7 +281,7 @@ function render() {
       <section class="summary-grid">
         <div class="signal-panel ${signalClass}">
           <div class="panel-label">Current idea</div>
-          <div class="signal-row"><span>${headlineSignal}</span><small>${pair}</small></div>
+          <div class="signal-row"><span>${headlineSignal}</span><small>${pair}</small>${analysis ? `<small class="signal-confidence" aria-label="Confidence ${displayConfidence} percent">${displayConfidence}% confidence</small>` : ""}</div>
           <p>${signalCopy(analysis, state.status)}</p>
           <span id="livePrice" style="display:${livePrice.price != null ? "inline" : "none"};font-size:.75rem;margin-top:6px"></span>
         </div>

@@ -371,6 +371,7 @@ const grabUnits = (html) => {
 };
 const fixedUnits = grabUnits(kellyCase.fixed), kellyUnits = grabUnits(kellyCase.kelly);
 assert(kellyCase.fixed !== null && kellyCase.kelly !== null, "risk panel renders a position size in both modes");
+assert(kellyCase.fixed.includes('class="signal-confidence" aria-label="Confidence ') && /<small class="signal-confidence" aria-label="Confidence \d+ percent">\d+% confidence<\/small>/.test(kellyCase.fixed), "current signal displays confidence beside its direction");
 assert(kellyCase.fixed.includes("Position Size (Fixed)") && kellyCase.kelly.includes("Position Size (Kelly)"), "Kelly toggle swaps the card label");
 assert(fixedUnits !== kellyUnits, "Kelly toggle changes the recommended size (" + fixedUnits + " vs " + kellyUnits + ")");
 assert(Number.isFinite(kellyUnits) && kellyUnits >= 0, "Kelly size is a finite number");
