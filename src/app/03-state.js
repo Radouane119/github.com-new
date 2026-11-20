@@ -34,6 +34,12 @@ function sanitizeHistoryEntry(raw) {
   const timestamp = new Date(raw.timestamp);
   const direction = raw.direction === "BUY" || raw.direction === "SELL" ? raw.direction : null;
   if (!pair || !direction || Number.isNaN(timestamp.getTime())) return null;
+  const outcomeType = ["target", "stop", "expiry"].includes(raw.outcomeType) ? raw.outcomeType : null;
+  let result = ["win", "loss", "pending", "expired"].includes(raw.result) ? raw.result : "pending";
+  // Older builds forced time-expired signals into W/L from the current quote.
+  // Those outcomes did not prove a stop or target hit, so remove them from the
+  // historical win-rate and ML training samples during migration.
+  if (outcomeType === "expiry" && (result === "win" || result === "loss")) result = "expired";
   const reasons = Array.isArray(raw.reasons)
     ? raw.reasons.slice(0, 20).map((reason) => ({
         ok: !!(isPlainObject(reason) && reason.ok),
@@ -56,9 +62,11 @@ function sanitizeHistoryEntry(raw) {
     mlPrediction: isPlainObject(raw.mlPrediction) && Number.isFinite(raw.mlPrediction.win)
       ? { win: clampNum(raw.mlPrediction.win, 0, 1, 0.5), label: raw.mlPrediction.label === "win" ? "win" : "loss", n: Math.max(0, Math.floor(numOrNull(raw.mlPrediction.n) ?? 0)) }
       : null,
-    outcomeType: ["target", "stop", "expiry"].includes(raw.outcomeType) ? raw.outcomeType : null,
+    outcomeType,
+    paperId: numOrNull(raw.paperId),
+    autoPaper: raw.autoPaper === true,
     reasons,
-    result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending",
+    result,
   };
 }
 

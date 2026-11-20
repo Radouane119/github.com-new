@@ -137,31 +137,47 @@ async function verifyPendingSignals() {
   const pending = autoScan.history.filter(e => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
   if (pending.length === 0) return;
   const pairs = [...new Set(pending.map(e => e.pair))];
-  const priceCache = {};
+  const candleCache = {};
   for (const pair of pairs) {
     const [base, quote] = pair.split("/");
     try {
-      const data = await fetchLivePrice(base, quote);
-      if (data) priceCache[pair] = data.price;
+      const cryptoPair = nonFiat.has(base) || (binanceFiat.has(base) && quote === "USD");
+      const rows = cryptoPair
+        ? await fetchBinanceRows(base, quote, "1h", 1000)
+        : await fetchForexRows(base, quote, "1h", true);
+      const times = rows.map(row => Date.parse(row.time || row.date)).filter(Number.isFinite).sort((a, b) => a - b);
+      const gaps = times.slice(1).map((time, index) => time - times[index]).filter(gap => gap > 0).sort((a, b) => a - b);
+      const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : Infinity;
+      candleCache[pair] = medianGap <= 4 * 60 * 60 * 1000 ? rows.filter(row => {
+        const time = Date.parse(row.time || row.date);
+        return Number.isFinite(time) && time >= Date.now() - 8 * 24 * 60 * 60 * 1000;
+      }) : [];
     } catch {}
   }
   const now = Date.now();
   let changed = false;
   for (const entry of pending) {
-    const current = priceCache[entry.pair];
-    if (current == null) continue;
     const age = now - (entry.id || now);
     const stale = age > 7 * 24 * 60 * 60 * 1000;
-    if (entry.direction === "BUY") {
-      entry.result = current >= entry.target ? "win" : current <= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 > 0.3 ? "win" : "loss" : "pending";
-      entry.outcomeType = current >= entry.target ? "target" : current <= entry.stop ? "stop" : stale ? "expiry" : null;
-    } else {
-      entry.result = current <= entry.target ? "win" : current >= entry.stop ? "loss" : stale ? ((current - entry.entry) / entry.entry) * 100 < -0.3 ? "win" : "loss" : "pending";
-      entry.outcomeType = current <= entry.target ? "target" : current >= entry.stop ? "stop" : stale ? "expiry" : null;
+    const candles = (candleCache[entry.pair] || []).filter(row => {
+      const time = Date.parse(row.time || row.date);
+      return Number.isFinite(time) && time >= (entry.id || 0);
+    });
+    let hit = null;
+    for (const candle of candles) {
+      const high = Number(candle.high), low = Number(candle.low);
+      if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+      const targetHit = entry.direction === "BUY" ? high >= entry.target : low <= entry.target;
+      const stopHit = entry.direction === "BUY" ? low <= entry.stop : high >= entry.stop;
+      if (targetHit && stopHit) { hit = "stop"; break; } // Intrabar order is unknown; score conservatively.
+      if (stopHit) { hit = "stop"; break; }
+      if (targetHit) { hit = "target"; break; }
     }
+    entry.result = hit ? (hit === "target" ? "win" : "loss") : stale ? "expired" : "pending";
+    entry.outcomeType = hit || (stale ? "expiry" : null);
     if (entry.result !== "pending") {
       changed = true;
-      if (entry.mlPrediction) {
+      if ((entry.outcomeType === "target" || entry.outcomeType === "stop") && entry.mlPrediction) {
         const pred = entry.mlPrediction;
         if (Number.isFinite(pred.win) && (entry.outcomeType === "target" || entry.outcomeType === "stop")) {
           mlStats.entryEvaluated++;

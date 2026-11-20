@@ -861,6 +861,10 @@ assert(JSON.stringify(ctx.sanitizePairList(["BTC/USD", "btc/usd", "<x>", 5])) ==
 const nowIso = new Date().toISOString();
 const goodEntry = ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "BUY", timestamp: nowIso, confidence: 140, risk: "<b>Low</b>", reasons: [{ ok: true, text: "<script>x</script>" }] });
 assert(goodEntry && goodEntry.confidence === 100, "history confidence is clamped, got " + (goodEntry && goodEntry.confidence));
+const migratedExpiry = ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "BUY", timestamp: nowIso, result: "loss", outcomeType: "expiry", risk: "Low" });
+assert(migratedExpiry && migratedExpiry.result === "expired" && !ctx.isResolvedHistoryTrade(migratedExpiry), "legacy expiry losses are removed from win/loss accounting");
+const restoredPaperMarker = ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "BUY", timestamp: nowIso, result: "pending", risk: "Low", paperId: 123, autoPaper: true });
+assert(restoredPaperMarker?.autoPaper === true && restoredPaperMarker.paperId === 123, "history reload preserves auto-paper signal markers");
 assert(goodEntry.risk === "<b>Low</b>", "history risk stays raw for the renderer to escape");
 assert(goodEntry.reasons[0].text === "<script>x</script>", "reason text is bounded but kept raw");
 assert(ctx.sanitizeHistoryEntry({ pair: "EUR/USD", direction: "WAIT", timestamp: nowIso }) === null, "WAIT entries are rejected");
@@ -1688,15 +1692,46 @@ const optimizerShortData = await vm.runInContext(`(async () => {
 assert(optimizerShortData.error.includes("200 daily candles") && optimizerShortData.running === false, "optimizer clearly reports insufficient candle history");
 
 const outcomeCheck = await vm.runInContext(`(async () => {
-  const old = { history: autoScan.history, fetchLivePrice, render, mlTrainEntry };
+  const old = { history: autoScan.history, fetchLivePrice, fetchBinanceRows, render, mlTrainEntry };
   try {
-    autoScan.history = [{ id: Date.now(), timestamp: new Date(), pair: "XRP/USD", direction: "BUY", confidence: 80, risk: "Low", entry: 100, stop: 95, target: 105, volatilityPct: 1, buyScore: 6, sellScore: 1, mlPrediction: null, result: "pending" }];
-    fetchLivePrice = async () => ({ price: 106 }); render = () => {}; mlTrainEntry = () => {};
+    const id = Date.now() - 60000;
+    autoScan.history = [{ id, timestamp: new Date(id), pair: "XRP/USD", direction: "BUY", confidence: 80, risk: "Low", entry: 100, stop: 95, target: 105, volatilityPct: 1, buyScore: 6, sellScore: 1, mlPrediction: null, result: "pending" }];
+    fetchLivePrice = async () => ({ price: 106 }); fetchBinanceRows = async () => [
+      { time: new Date(Date.now() - 90 * 60000).toISOString(), high: 102, low: 99 },
+      { time: new Date(Date.now() - 30000).toISOString(), high: 106, low: 100 },
+    ]; render = () => {}; mlTrainEntry = () => {};
     await verifySignals();
     return { result: autoScan.history[0].result, outcomeType: autoScan.history[0].outcomeType };
-  } finally { autoScan.history = old.history; fetchLivePrice = old.fetchLivePrice; render = old.render; mlTrainEntry = old.mlTrainEntry; }
+  } finally { autoScan.history = old.history; fetchLivePrice = old.fetchLivePrice; fetchBinanceRows = old.fetchBinanceRows; render = old.render; mlTrainEntry = old.mlTrainEntry; }
 })()`, ctx);
 assert(outcomeCheck.result === "win" && outcomeCheck.outcomeType === "target", "the background outcome check resolves a signal when its target is reached");
+
+const ambiguousCandleCheck = await vm.runInContext(`(async () => {
+  const old = { history: autoScan.history, fetchBinanceRows, render, mlTrainEntry };
+  try {
+    const id = Date.now() - 60000;
+    autoScan.history = [{ id, timestamp: new Date(id), pair: "XRP/USD", direction: "BUY", confidence: 80, risk: "Low", entry: 100, stop: 95, target: 105, volatilityPct: 1, buyScore: 6, sellScore: 1, mlPrediction: null, result: "pending" }];
+    fetchBinanceRows = async () => [
+      { time: new Date(Date.now() - 90 * 60000).toISOString(), high: 102, low: 99 },
+      { time: new Date(Date.now() - 30000).toISOString(), high: 106, low: 94 },
+    ]; render = () => {}; mlTrainEntry = () => {};
+    await verifySignals();
+    return { result: autoScan.history[0].result, outcomeType: autoScan.history[0].outcomeType };
+  } finally { autoScan.history = old.history; fetchBinanceRows = old.fetchBinanceRows; render = old.render; mlTrainEntry = old.mlTrainEntry; }
+})()`, ctx);
+assert(ambiguousCandleCheck.result === "loss" && ambiguousCandleCheck.outcomeType === "stop", "a candle crossing both levels is conservatively scored at the stop");
+
+const expiredSignalCheck = await vm.runInContext(`(async () => {
+  const old = { history: autoScan.history, fetchBinanceRows, render, mlTrainEntry };
+  try {
+    const id = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    autoScan.history = [{ id, timestamp: new Date(id), pair: "XRP/USD", direction: "BUY", confidence: 80, risk: "Low", entry: 100, stop: 95, target: 105, volatilityPct: 1, buyScore: 6, sellScore: 1, mlPrediction: null, result: "pending" }];
+    fetchBinanceRows = async () => []; render = () => {}; mlTrainEntry = () => {};
+    await verifySignals();
+    return { result: autoScan.history[0].result, resolved: isResolvedHistoryTrade(autoScan.history[0]), sanitized: sanitizeHistoryEntry(autoScan.history[0]).result };
+  } finally { autoScan.history = old.history; fetchBinanceRows = old.fetchBinanceRows; render = old.render; mlTrainEntry = old.mlTrainEntry; }
+})()`, ctx);
+assert(expiredSignalCheck.result === "expired" && !expiredSignalCheck.resolved && expiredSignalCheck.sanitized === "expired", "time expiry is preserved but excluded from wins and losses");
 
 console.log("");
 console.log("dashboard.test.js  PASS:", pass, " FAIL:", fail);

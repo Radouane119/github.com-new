@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-4K5Sdl0yLhKjDlfdW6FA+5mCY8Wp0I4Dd0DY/KbwnIA='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-Pz++LKX+T+Dlzda7LX9RsliCTrq1iIiisXx632hj2hg='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.binance.com https://api.bybit.com https://api.exchange.coinbase.com https://api.frankfurter.dev https://api.twelvedata.com https://cdn.jsdelivr.net https://biquote.io https://discord.com https://*.discord.com https://discordapp.com https://*.discordapp.com https://api.telegram.org wss://stream.binance.com:9443; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; upgrade-insecure-requests">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
@@ -969,6 +969,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
     const timestamp = new Date(raw.timestamp);
     const direction = raw.direction === "BUY" || raw.direction === "SELL" ? raw.direction : null;
     if (!pair || !direction || Number.isNaN(timestamp.getTime())) return null;
+    const outcomeType = ["target", "stop", "expiry"].includes(raw.outcomeType) ? raw.outcomeType : null;
+    let result = ["win", "loss", "pending", "expired"].includes(raw.result) ? raw.result : "pending";
+    if (outcomeType === "expiry" && (result === "win" || result === "loss")) result = "expired";
     const reasons = Array.isArray(raw.reasons) ? raw.reasons.slice(0, 20).map((reason) => ({
       ok: !!(isPlainObject(reason) && reason.ok),
       text: cleanText(isPlainObject(reason) ? reason.text : reason, 240)
@@ -987,9 +990,11 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
       buyScore: numOrNull(raw.buyScore) ?? 0,
       sellScore: numOrNull(raw.sellScore) ?? 0,
       mlPrediction: isPlainObject(raw.mlPrediction) && Number.isFinite(raw.mlPrediction.win) ? { win: clampNum(raw.mlPrediction.win, 0, 1, 0.5), label: raw.mlPrediction.label === "win" ? "win" : "loss", n: Math.max(0, Math.floor(numOrNull(raw.mlPrediction.n) ?? 0)) } : null,
-      outcomeType: ["target", "stop", "expiry"].includes(raw.outcomeType) ? raw.outcomeType : null,
+      outcomeType,
+      paperId: numOrNull(raw.paperId),
+      autoPaper: raw.autoPaper === true,
       reasons,
-      result: ["win", "loss", "pending"].includes(raw.result) ? raw.result : "pending"
+      result
     };
   }
   function isTradeableHistoryEntry(entry) {
@@ -4081,7 +4086,7 @@ Timestamp: ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
     const pair = String(entry.pair || "");
     const date = entry.timestamp instanceof Date ? entry.timestamp.toISOString().slice(0, 10) : "";
     const search = [pair, entry.direction, entry.risk, entry.result, ...(entry.reasons || []).map((r) => r.text)].join(" ").toLowerCase();
-    return (!filters.query || search.includes(filters.query.toLowerCase())) && (!filters.pair || pair === filters.pair) && (!filters.direction || entry.direction === filters.direction) && (!filters.result || (filters.result === "pending" ? !["win", "loss"].includes(entry.result) : entry.result === filters.result)) && (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
+    return (!filters.query || search.includes(filters.query.toLowerCase())) && (!filters.pair || pair === filters.pair) && (!filters.direction || entry.direction === filters.direction) && (!filters.result || entry.result === filters.result) && (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
   }
   function render() {
     const uiState = captureUiState();
@@ -4466,7 +4471,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
             <input id="historySearch" type="search" placeholder="Search pair, direction, risk, reason…" value="${escapeAttr(autoScan.historyFilters.query)}" aria-label="Search signal history">
             <select id="historyPair" aria-label="Filter by pair"><option value="">All pairs</option>${[...new Set(autoScan.history.map((e) => e.pair))].sort().map((p) => `<option value="${escapeAttr(p)}" ${autoScan.historyFilters.pair === p ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select>
             <select id="historyDirection" aria-label="Filter by direction"><option value="">All directions</option>${["BUY", "SELL", "WAIT"].map((d) => `<option value="${d}" ${autoScan.historyFilters.direction === d ? "selected" : ""}>${d}</option>`).join("")}</select>
-            <select id="historyResult" aria-label="Filter by result"><option value="">All results</option>${["win", "loss", "pending"].map((d) => `<option value="${d}" ${autoScan.historyFilters.result === d ? "selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("")}</select>
+            <select id="historyResult" aria-label="Filter by result"><option value="">All results</option>${["win", "loss", "pending", "expired"].map((d) => `<option value="${d}" ${autoScan.historyFilters.result === d ? "selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("")}</select>
             <label>From <input id="historyFrom" type="date" value="${escapeAttr(autoScan.historyFilters.from)}"></label>
             <label>To <input id="historyTo" type="date" value="${escapeAttr(autoScan.historyFilters.to)}"></label>
             <button id="clearHistoryFilters" ${Object.values(autoScan.historyFilters).some(Boolean) ? "" : "disabled"}>Clear filters</button>
@@ -4495,7 +4500,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
   }
   function renderHistoryEntry(entry, idx) {
     const dirClass = entry.direction.toLowerCase();
-    const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : "○";
+    const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : entry.result === "expired" ? "⌛" : "○";
     const pair = escapeHtml(entry.pair);
     const direction = escapeHtml(entry.direction);
     const risk = escapeHtml(entry.risk);
@@ -4508,7 +4513,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
       <span class="h-conf">${entry.confidence}%</span>
       <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${risk}</span>
       <span class="h-vol">${entry.volatilityPct.toFixed(2)}%</span>
-      <span class="h-result ${entry.result}">${resultLabel}</span>
+      <span class="h-result ${entry.result}" title="${escapeAttr(entry.outcomeType || entry.result)}">${resultLabel}</span>
       <span><button class="h-delete" data-del="${entryId}" title="Delete entry">✕</button><button class="h-trade-btn" data-trade="${entryId}" title="Open trade" ${entry.direction === "WAIT" ? "disabled" : ""}>→</button><span class="h-expand">▼</span></span>
     </div>
     <div class="history-detail" id="hd-${idx}">
@@ -4522,6 +4527,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
         <div class="hd-item"><span>Risk mode</span><span>${risk}</span></div>
         <div class="hd-item"><span>Volatility</span><span>${entry.volatilityPct.toFixed(2)}%</span></div>
         <div class="hd-item"><span>Result</span><span style="color:${entry.result === "win" ? "var(--buy)" : entry.result === "loss" ? "var(--sell)" : "var(--muted-2)"}">${escapeHtml(entry.result.charAt(0).toUpperCase() + entry.result.slice(1))}</span></div>
+        ${entry.outcomeType ? `<div class="hd-item"><span>Outcome reason</span><span>${escapeHtml(entry.outcomeType === "expiry" ? "Expired without target or stop hit" : `Price reached ${entry.outcomeType}`)}</span></div>` : ""}
         <div class="hd-item"><span>Buy score</span><span>${entry.buyScore}/7</span></div>
         <div class="hd-item"><span>Sell score</span><span>${entry.sellScore}/7</span></div>
       </div>
@@ -4623,7 +4629,8 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
           const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1e3;
           const before = parsed.length;
           autoScan.history = parsed.map(sanitizeHistoryEntry).filter((e) => e && (e.result !== "pending" || (e.id || 0) > cutoff));
-          if (autoScan.history.length !== before) saveHistory();
+          const hasLegacyExpiry = parsed.some((e) => e && e.outcomeType === "expiry" && (e.result === "win" || e.result === "loss"));
+          if (autoScan.history.length !== before || hasLegacyExpiry) saveHistory();
         }
       }
     } catch {
@@ -5737,32 +5744,55 @@ This will overwrite your current strategy config and scan pairs.`)) return;
     const pending = autoScan.history.filter((e) => isTradeableHistoryEntry(e) && e.result === "pending" && e.stop != null && e.target != null && !e.autoPaper);
     if (pending.length === 0) return;
     const pairs = [...new Set(pending.map((e) => e.pair))];
-    const priceCache = {};
+    const candleCache = {};
     for (const pair of pairs) {
       const [base, quote] = pair.split("/");
       try {
-        const data = await fetchLivePrice(base, quote);
-        if (data) priceCache[pair] = data.price;
+        const cryptoPair = nonFiat.has(base) || binanceFiat.has(base) && quote === "USD";
+        const rows = cryptoPair ? await fetchBinanceRows(base, quote, "1h", 1e3) : await fetchForexRows(base, quote, "1h", true);
+        const times = rows.map((row) => Date.parse(row.time || row.date)).filter(Number.isFinite).sort((a, b) => a - b);
+        const gaps = times.slice(1).map((time, index) => time - times[index]).filter((gap) => gap > 0).sort((a, b) => a - b);
+        const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : Infinity;
+        candleCache[pair] = medianGap <= 4 * 60 * 60 * 1e3 ? rows.filter((row) => {
+          const time = Date.parse(row.time || row.date);
+          return Number.isFinite(time) && time >= Date.now() - 8 * 24 * 60 * 60 * 1e3;
+        }) : [];
       } catch {
       }
     }
     const now = Date.now();
     let changed = false;
     for (const entry of pending) {
-      const current = priceCache[entry.pair];
-      if (current == null) continue;
       const age = now - (entry.id || now);
       const stale = age > 7 * 24 * 60 * 60 * 1e3;
-      if (entry.direction === "BUY") {
-        entry.result = current >= entry.target ? "win" : current <= entry.stop ? "loss" : stale ? (current - entry.entry) / entry.entry * 100 > 0.3 ? "win" : "loss" : "pending";
-        entry.outcomeType = current >= entry.target ? "target" : current <= entry.stop ? "stop" : stale ? "expiry" : null;
-      } else {
-        entry.result = current <= entry.target ? "win" : current >= entry.stop ? "loss" : stale ? (current - entry.entry) / entry.entry * 100 < -0.3 ? "win" : "loss" : "pending";
-        entry.outcomeType = current <= entry.target ? "target" : current >= entry.stop ? "stop" : stale ? "expiry" : null;
+      const candles = (candleCache[entry.pair] || []).filter((row) => {
+        const time = Date.parse(row.time || row.date);
+        return Number.isFinite(time) && time >= (entry.id || 0);
+      });
+      let hit = null;
+      for (const candle of candles) {
+        const high = Number(candle.high), low = Number(candle.low);
+        if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+        const targetHit = entry.direction === "BUY" ? high >= entry.target : low <= entry.target;
+        const stopHit = entry.direction === "BUY" ? low <= entry.stop : high >= entry.stop;
+        if (targetHit && stopHit) {
+          hit = "stop";
+          break;
+        }
+        if (stopHit) {
+          hit = "stop";
+          break;
+        }
+        if (targetHit) {
+          hit = "target";
+          break;
+        }
       }
+      entry.result = hit ? hit === "target" ? "win" : "loss" : stale ? "expired" : "pending";
+      entry.outcomeType = hit || (stale ? "expiry" : null);
       if (entry.result !== "pending") {
         changed = true;
-        if (entry.mlPrediction) {
+        if ((entry.outcomeType === "target" || entry.outcomeType === "stop") && entry.mlPrediction) {
           const pred = entry.mlPrediction;
           if (Number.isFinite(pred.win) && (entry.outcomeType === "target" || entry.outcomeType === "stop")) {
             mlStats.entryEvaluated++;

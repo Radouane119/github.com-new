@@ -185,7 +185,7 @@ function signalMatchesHistoryFilters(entry) {
   return (!filters.query || search.includes(filters.query.toLowerCase())) &&
     (!filters.pair || pair === filters.pair) &&
     (!filters.direction || entry.direction === filters.direction) &&
-    (!filters.result || (filters.result === "pending" ? !["win", "loss"].includes(entry.result) : entry.result === filters.result)) &&
+    (!filters.result || entry.result === filters.result) &&
     (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
 }
 
@@ -402,7 +402,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
             <input id="historySearch" type="search" placeholder="Search pair, direction, risk, reason…" value="${escapeAttr(autoScan.historyFilters.query)}" aria-label="Search signal history">
             <select id="historyPair" aria-label="Filter by pair"><option value="">All pairs</option>${[...new Set(autoScan.history.map(e => e.pair))].sort().map(p => `<option value="${escapeAttr(p)}" ${autoScan.historyFilters.pair === p ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select>
             <select id="historyDirection" aria-label="Filter by direction"><option value="">All directions</option>${["BUY", "SELL", "WAIT"].map(d => `<option value="${d}" ${autoScan.historyFilters.direction === d ? "selected" : ""}>${d}</option>`).join("")}</select>
-            <select id="historyResult" aria-label="Filter by result"><option value="">All results</option>${["win", "loss", "pending"].map(d => `<option value="${d}" ${autoScan.historyFilters.result === d ? "selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("")}</select>
+            <select id="historyResult" aria-label="Filter by result"><option value="">All results</option>${["win", "loss", "pending", "expired"].map(d => `<option value="${d}" ${autoScan.historyFilters.result === d ? "selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("")}</select>
             <label>From <input id="historyFrom" type="date" value="${escapeAttr(autoScan.historyFilters.from)}"></label>
             <label>To <input id="historyTo" type="date" value="${escapeAttr(autoScan.historyFilters.to)}"></label>
             <button id="clearHistoryFilters" ${Object.values(autoScan.historyFilters).some(Boolean) ? "" : "disabled"}>Clear filters</button>
@@ -432,7 +432,7 @@ ${alerts.length > 0 ? `<section class="alerts-section"><div class="alerts-head">
 
 function renderHistoryEntry(entry, idx) {
   const dirClass = entry.direction.toLowerCase();
-  const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : "○";
+  const resultLabel = entry.result === "win" ? "✓" : entry.result === "loss" ? "✗" : entry.result === "expired" ? "⌛" : "○";
   const pair = escapeHtml(entry.pair);
   const direction = escapeHtml(entry.direction);
   const risk = escapeHtml(entry.risk);
@@ -445,7 +445,7 @@ function renderHistoryEntry(entry, idx) {
       <span class="h-conf">${entry.confidence}%</span>
       <span class="h-risk ${entry.risk === "Low" ? "valid" : ""}">${risk}</span>
       <span class="h-vol">${entry.volatilityPct.toFixed(2)}%</span>
-      <span class="h-result ${entry.result}">${resultLabel}</span>
+      <span class="h-result ${entry.result}" title="${escapeAttr(entry.outcomeType || entry.result)}">${resultLabel}</span>
       <span><button class="h-delete" data-del="${entryId}" title="Delete entry">✕</button><button class="h-trade-btn" data-trade="${entryId}" title="Open trade" ${entry.direction === "WAIT" ? "disabled" : ""}>→</button><span class="h-expand">▼</span></span>
     </div>
     <div class="history-detail" id="hd-${idx}">
@@ -459,6 +459,7 @@ function renderHistoryEntry(entry, idx) {
         <div class="hd-item"><span>Risk mode</span><span>${risk}</span></div>
         <div class="hd-item"><span>Volatility</span><span>${entry.volatilityPct.toFixed(2)}%</span></div>
         <div class="hd-item"><span>Result</span><span style="color:${entry.result === 'win' ? 'var(--buy)' : entry.result === 'loss' ? 'var(--sell)' : 'var(--muted-2)'}">${escapeHtml(entry.result.charAt(0).toUpperCase() + entry.result.slice(1))}</span></div>
+        ${entry.outcomeType ? `<div class="hd-item"><span>Outcome reason</span><span>${escapeHtml(entry.outcomeType === "expiry" ? "Expired without target or stop hit" : `Price reached ${entry.outcomeType}`)}</span></div>` : ""}
         <div class="hd-item"><span>Buy score</span><span>${entry.buyScore}/7</span></div>
         <div class="hd-item"><span>Sell score</span><span>${entry.sellScore}/7</span></div>
       </div>
@@ -577,7 +578,8 @@ function loadHistory() {
         autoScan.history = parsed
           .map(sanitizeHistoryEntry)
           .filter(e => e && (e.result !== "pending" || (e.id || 0) > cutoff));
-        if (autoScan.history.length !== before) saveHistory();
+        const hasLegacyExpiry = parsed.some(e => e && e.outcomeType === "expiry" && (e.result === "win" || e.result === "loss"));
+        if (autoScan.history.length !== before || hasLegacyExpiry) saveHistory();
       }
     }
   } catch {}
